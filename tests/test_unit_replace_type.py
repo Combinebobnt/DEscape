@@ -44,6 +44,7 @@ _GATE_SIBLING = 659
 _OAK = 349
 _PINE = 350
 _GOLD_MINE = 66
+_WFALL, _WFALL_BACKGROUND, _SWFALL = 896, 1635, 2598  # 3, 3 and 2 runs
 _CLIFF = 264
 _WAR_GALLEY = 21
 _BATTERING_RAM = 35
@@ -135,6 +136,9 @@ def test_rotation_table() -> None:
     assert replaced_rotation(_HOUSE, _ARCHER, 7.0, 0) == (0.0, 0)
     # Wall -> tree is "any other pairing".
     assert replaced_rotation(_STONE_WALL, _OAK, 3.0, 0) == (0.0, 0)
+    # GH #330: waterfall -> waterfall keeps a run both have, and resets one SWFALL 2598 lacks.
+    assert replaced_rotation(_WFALL, _WFALL_BACKGROUND, 1.0, 0) == (1.0, 0)
+    assert replaced_rotation(_WFALL, _SWFALL, 2.0, 0) == (0.0, 0)
     # Anything -> gate: 0/0, even from INERT.
     assert replaced_rotation(_ARCHER, _GATE_UP, 1.25, 2) == (0.0, 0)
     assert replaced_rotation(_WATCH_TOWER, _GATE_UP, 7.0, 0) == (0.0, 0)

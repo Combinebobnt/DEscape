@@ -488,3 +488,32 @@ def test_a_late_portrait_for_the_previous_owner_is_ignored(archer_civ_portrait) 
     executor.run(1)
     _pump(lambda: card.portrait_source is not None)
     assert _portrait_centre(card) == _UNIT_RED
+
+
+# -- the owner's civ names the unit too (an Athenian Archer reads Bowman) ------------
+
+
+def test_set_civ_renames_a_derived_name_and_keeps_an_explicit_one(athenian_bowman) -> None:
+    card = _card(stable=True)
+    card.show_const(_ARCHER, prefix="Placing: ")
+    assert card.name_label.text() == "Placing: Archer"
+    card.set_civ(athenian_bowman)
+    assert card.name_label.text() == "Placing: Bowman"
+    card.set_civ(None)
+    assert card.name_label.text() == "Placing: Archer"
+    card.set_civ(athenian_bowman)
+    card.show_const(_ARCHER)
+    assert card.name_label.text() == "Bowman", "a const shown under the civ is named for it at once"
+    card.show_const(_ARCHER, name="Random archer")
+    card.set_civ(None)
+    assert card.name_label.text() == "Random archer"
+
+
+def test_a_civ_without_its_own_name_renames_nothing(athenian_bowman) -> None:
+    card = _card()
+    card.show_const(_ARCHER)
+    card.name_label.setText("left alone")
+    card.set_civ(1)
+    assert card.name_label.text() == "left alone"
+    card.set_civ(athenian_bowman)
+    assert card.name_label.text() == "Bowman"

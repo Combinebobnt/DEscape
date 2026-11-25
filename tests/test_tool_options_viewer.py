@@ -66,6 +66,7 @@ def _non_defaults(window) -> dict:
         "paste_units": False,
         "free_placement": True,
         "off_grid": True,
+        "place_random": True,
         "walls_skip_occupied": True,
         "gate_walls": True,
         "last_wall": walls[0],

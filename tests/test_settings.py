@@ -332,6 +332,14 @@ def test_distance_ticks_round_trips_through_the_file(tmp_path: Path, monkeypatch
     assert settings.get_distance_ticks() is True
 
 
+def test_distance_ticks_behind_terrain_defaults_off_and_round_trips(tmp_path: Path, monkeypatch) -> None:
+    """Off by default keeps the ruler painting exactly as before the option existed."""
+    assert settings.get_distance_ticks_behind_terrain() is False
+    settings.set_distance_ticks_behind_terrain(True)
+    monkeypatch.setattr(settings, "_distance_ticks_behind_terrain", None)
+    assert settings.get_distance_ticks_behind_terrain() is True
+
+
 def test_grid_overlay_defaults_off_at_the_default_appearance(tmp_path: Path) -> None:
     assert not (tmp_path / "config.yaml").exists()
     assert settings.get_grid_overlay() is False
@@ -1749,3 +1757,22 @@ def test_a_raising_save_listener_never_breaks_the_save(tmp_path: Path) -> None:
     assert _raw_config(tmp_path) == {"pan_speed": 900}
     assert heard == [{"pan_speed": 900}], "a later listener still runs"
     assert "Settings save listener failed" in debug_log.entries()[-1].message
+
+
+def test_trigger_section_headers_round_trip_and_tolerate_malformed_config(tmp_path: Path) -> None:
+    from descape.trigger_organize import DividerRule
+
+    rule = DividerRule.with_prefixes((">>", "//"), leading_rule=False)
+    settings.set_trigger_section_headers(rule)
+    settings._trigger_section_headers = None  # re-read from disk
+    assert settings.get_trigger_section_headers() == rule
+
+    _write_config(tmp_path, "trigger_section_headers: [1, 2]\n")
+    settings._trigger_section_headers = None
+    assert settings.get_trigger_section_headers() == DividerRule()
+    _write_config(tmp_path, "trigger_section_headers: {bare_rule: 'no', prefixes: ['[', 3, '>>']}\n")
+    settings._trigger_section_headers = None
+    assert settings.get_trigger_section_headers() == DividerRule.with_prefixes((">>",))
+
+    with pytest.raises(ValueError):
+        settings.set_trigger_section_headers(DividerRule.with_prefixes(("[",)))

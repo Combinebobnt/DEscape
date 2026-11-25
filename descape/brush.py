@@ -189,6 +189,19 @@ def brush_tiles(
     ]
 
 
+def lattice_tiles(
+    tiles: list[tuple[int, int]], origin: tuple[int, int], step: tuple[int, int]
+) -> list[tuple[int, int]]:
+    """The tiles of `tiles` on the lattice through `origin` with period `step`
+    per axis, in input order (TASK-086: Create Objects steps a multi-tile
+    object by its footprint). A (1, 1) step returns the list unchanged."""
+    sx, sy = step
+    if (sx, sy) == (1, 1):
+        return list(tiles)
+    ox, oy = origin
+    return [(x, y) for x, y in tiles if (x - ox) % sx == 0 and (y - oy) % sy == 0]
+
+
 def line_tiles(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
     """The 4-connected (supercover) tile path from (x0, y0) to (x1, y1),
     excluding the start tile and including the end: exactly |dx| + |dy|

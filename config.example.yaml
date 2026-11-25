@@ -59,6 +59,21 @@ wall_opacity_pct: 50
 # (false). Default: true.
 zoom_centered_on_cursor: true
 
+# Which trigger names head a section in the Triggers panel, Settings > General
+# > Trigger section headers. "--- Name ---" always does. Each toggle keeps one
+# more built-in shape (------, ----- Name, ~Name~); prefixes adds up to 8
+# case-sensitive starting tokens of your own (">>" makes ">> Setup" a header).
+# The scenario file is never changed. Default: every toggle true, no prefixes.
+trigger_section_headers:
+  bare_rule: true
+  leading_rule: true
+  tilde_wrap: true
+  prefixes: []
+
+# Double-click a trigger in the Triggers panel to rename it in place,
+# Settings > General. Off, right-click > Rename still does. Default: true.
+trigger_rename_double_click: true
+
 # What the mouse wheel does over the map, per modifier held, Settings >
 # Keybinds. Slots: plain, ctrl, shift, alt.
 # Actions: zoom, tool, tool_selection, brush_size, rotate, rotate_selection, pan_vertical, pan_horizontal, none.
@@ -140,6 +155,7 @@ view_layers:
 #   paste_units (default true): true or false
 #   free_placement (default false): true or false
 #   off_grid (default false): true or false
+#   place_random (default false): true or false
 #   walls_skip_occupied (default false): true or false
 #   gate_walls (default false): true or false
 #   last_wall (default 117): a wall unit id
@@ -487,9 +503,11 @@ keybinds:
   file_new: Ctrl+N
   file_new_default: ''
   file_open: Ctrl+O
+  file_browse_scenarios: ''
   file_close: Ctrl+W
   file_save: Ctrl+S
   file_save_as: Ctrl+Shift+S
+  file_convert: ''
   file_recover_autosave: ''
   file_exit: Ctrl+Q
   edit_undo: Ctrl+Z
@@ -557,6 +575,7 @@ keybinds:
   elevation_stepped: ''
   elevation_sloped: ''
   analysis_run: ''
+  script_open_folder: ''
   help_guide: F1
   help_keys: ''
   help_web_guide: ''
@@ -582,6 +601,7 @@ keybinds:
   filter_show_obstacles: ''
   filter_show_invisible: ''
   filter_show_garrisoned: ''
+  filter_show_inactive: ''
   filter_player_1: Ctrl+1
   filter_player_2: Ctrl+2
   filter_player_3: Ctrl+3
@@ -655,6 +675,11 @@ ruler_label_font_px: 18
 # legal; anything else falls back to the default.
 # Default: 12.
 distance_tick_font_px: 12
+
+# Settings > Appearance > Draw distance ticks behind elevated terrain: in
+# Stepped and Sloped, the map-edge distance ruler is hidden where raised
+# terrain covers the map border instead of drawing over it. Default: false.
+distance_ticks_behind_terrain: false
 
 # DEscape's own UI font, Settings > Appearance -- app chrome only (menus,
 # dialogs, panels, the status log); the map view's overlay text keeps its

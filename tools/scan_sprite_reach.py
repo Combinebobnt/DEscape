@@ -47,8 +47,9 @@ reach shifted by its offset -- a piece sitting 192px to one side needs that
 under-widen and leave a stale fragment. Town centre pieces net (0, 0) (finding
 5's cancellation) so this is a no-op for them; pastures are the real case.
 
-**Particle entries (GH #20, GH #67, GH #256) have no .sld.** Their one drawn
-frame is measured from the effect's atlas instead, scaled by the entry's
+**Particle entries (GH #20, GH #67, GH #256, GH #330) have no .sld.** Their
+drawn frames (frame 0, or each ImageAngles run's first frame on a waterfall)
+are measured from the effect's atlas instead, scaled by the entry's
 art_scale: _sprite_reach_px multiplies these constants by sprite_scale() alone,
 so a particle's reach has to be stated in the x1 px that product assumes.
 """
@@ -101,25 +102,33 @@ def frame_reach(frame, dx: int = 0, dy: int = 0) -> tuple[int, int, int, int] | 
     )
 
 
-def particle_scales() -> dict[str, float]:
-    """file_name -> art_scale for unit_graphic_map.json's particle entries (GH #20)."""
+def particle_scales() -> dict[str, tuple[float, int, int]]:
+    """file_name -> (art_scale, frame_count, angle_count) for
+    unit_graphic_map.json's particle entries (GH #20)."""
     return {
-        entry["file_name"]: float(entry["art_scale"])
+        entry["file_name"]: (float(entry["art_scale"]), int(entry["frame_count"]), int(entry["angle_count"]))
         for entry in unit_sprites.graphic_map().values() if entry.get("particle")
     }
 
 
-def particle_reach(name: str, art_scale: float) -> tuple[int, int, int, int] | None:
-    """frame_reach() for a particle entry: the ink box of the one frame it
-    draws, in the x1 native px the constants are in, so its own art_scale is
+def particle_reach(
+    name: str, art_scale: float, frame_count: int = 1, runs: int = 1,
+) -> tuple[int, int, int, int] | None:
+    """frame_reach() for a particle entry: the widest ink box of the frames it
+    draws, each run's first (`k * frame_count`, the waterfalls' ImageAngles
+    runs), in the x1 native px the constants are in, so its own art_scale is
     applied here (rounded up). None when the install lacks the effect. A
     particle has no .sld, so it is read through the configured install."""
-    native = unit_sprites._native_frame(name, 0)
-    if native is None:
-        return None
-    main, _playercolor, hx, hy = native
-    box = (hx, hy, main.shape[1] - hx, main.shape[0] - hy)
-    return tuple(math.ceil(side * art_scale) for side in box)
+    reach = None
+    for k in range(max(1, runs)):
+        native = unit_sprites._native_frame(name, k * frame_count)
+        if native is None:
+            return None
+        main, _playercolor, hx, hy = native
+        box = (hx, hy, main.shape[1] - hx, main.shape[0] - hy)
+        scaled = tuple(math.ceil(side * art_scale) for side in box)
+        reach = scaled if reach is None else tuple(max(a, b) for a, b in zip(reach, scaled, strict=True))
+    return reach
 
 
 def scan(graphics_dir: Path, entries: list[tuple[str, int, int]]):
@@ -139,7 +148,7 @@ def scan(graphics_dir: Path, entries: list[tuple[str, int, int]]):
     scales = particle_scales()
     for name, dx, dy in entries:
         if name in scales:
-            reaches = [particle_reach(name, scales[name])]
+            reaches = [particle_reach(name, *scales[name])]
             if reaches[0] is None:
                 unreadable += 1
                 continue

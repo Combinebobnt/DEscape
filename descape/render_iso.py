@@ -404,7 +404,7 @@ def _render_tile_iso(
         if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
             return
 
-    top_block = _top_block(tile, tile_px, textures, blend, terrain_override)
+    top_block = _top_block(tile, tile_px, textures, blend, terrain_override, angled=True)
 
     # Every paint is collected first, in paint order, then run on one backend
     # below, so the gates stay shared and the native call is one per tile.

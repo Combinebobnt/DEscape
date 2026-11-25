@@ -46,6 +46,10 @@ by `tests/test_ror_editing.py`:
   `rotation` equal to `initial_animation_frame` on each.
 - Gates: 20 orientation groups (no Fort gate), 12 visible consts; 12
   placements, all `7.0`, all on their span anchor.
+- Non-square object siblings (`descape/object_orientation.py`): 38 consts
+  in 6 four-groups and 7 pairs (no longhouse or blockers), against AoE2's 44
+  in 6 and 10, derived from each game's tables with no RoR placement
+  measured; pinned by `tests/test_object_orientation.py`, not this corpus test.
 - Cycle Variant: derived from the RoR table, so Farm 50 and RoR scenery
   are cyclable there though INERT in AoE2; 56,364 placements,
   all literal. A RoR farm stores 0-3 with `initial_animation_frame` 0.
@@ -95,7 +99,8 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   calls the same functions through `mirror_tools.unit_image()`: an ANGLE
   facing through `facing_image()`, a wall's shape index through
   `wall_index_image()` in an integer-encoded file only, a gate's
-  orientation through `reorient_gate_const()`, and every other rotation,
+  orientation through `reorient_gate_const()`, a bridge's, chain's,
+  longhouse's or blocker's through `reorient_object_const()`, and every other rotation,
   VARIANT and INERT alike, copied verbatim. `add()` is unvalidated, so the
   guard is `transform_block()`, pinned by `tests/test_region_transform.py`.
   After the re-paste each pasted wall takes its neighbour-derived shape
@@ -107,7 +112,8 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   Select region, all through `ViewerWindow.on_selection_transform()` or
   `_transform_region()`), planned by `region_transform.plan_in_place()`.
   Scope: existing units only (the selection plus what it holds, or the
-  units Copy Region would capture plus what they hold), edited in place
+  units Copy Region would capture plus what they hold, plus each gate's
+  corner pieces wherever their anchor tile is), edited in place
   so each keeps its `reference_id`, list slot, owner and every other
   field, and only the eight D4 elements. Every value comes from the same
   functions as Map mirroring and the region turn (`mirror_tools.unit_image()`):
@@ -115,7 +121,12 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   a wall's shape index through `wall_index_image()`, in an
   integer-encoded file only and only when the element changes it,
   written by `set_wall_variant()`; a gate's orientation through
-  `reorient_gate_const()`, written by `set_unit_const()`; and every other
+  `reorient_gate_const()`, and a non-square object's through
+  `reorient_object_const()`, written by `set_unit_const()`; a gate's
+  carried 1x1 corner piece (TASK-532) at its own image point, an end tile
+  of its gate's image, as `gate_orientation.corner_piece()` of the gate's
+  image const (`unit_images()`' `gate` index), written by
+  `set_unit_const()`; and every other
   rotation (cliffs, VARIANT, INERT) left verbatim, with no write at all.
   Guards: the three setters' own, plus `plan_in_place()` pinned by
   `tests/test_region_transform.py`. Allowed for its own reason, not the
@@ -138,8 +149,18 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   real facing angle, only on the consts `unit_rotation.rotation_is_angle()`
   calls ANGLE (the predicate Rotate uses, never the player id), maps through
   `mirror_tools.facing_image()`, whose 2x2 matrix is `TRANSFORMS`' own
-  linear part, so the facing cannot drift from the positions. Every other
-  rotation, VARIANT and INERT alike, is copied verbatim.
+  linear part, so the facing cannot drift from the positions. A gate's
+  image takes its orientation sibling through `reorient_gate_const()`, and
+  a bridge's, chain's, longhouse's or blocker's through
+  `reorient_object_const()` (`descape/object_orientation.py`, TASK-329): the
+  other axis's sibling under an axis-swapping element, and for a classic,
+  Asian or European bridge's top or bottom piece the end the element's
+  image of its run points to, so a turn or flip that reverses the run swaps
+  top and bottom (and broken top and broken bottom) on an unchanged span.
+  The mole and the DE bridge pieces (`s_bridge_piece_*`, whose ends are
+  rotation frames) keep their const and are reported as kept. Every other
+  rotation, VARIANT and INERT alike, is copied verbatim; a longhouse's
+  index is a roof style its two orientations share.
   The angular modes (3-way, 6-way rotational, 6-way reflective: tile-space
   rotations by multiples of 60 degrees, not D4 elements) extend this with
   three accepted approximations, each derived from the element's own
@@ -152,7 +173,11 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   that overlap is accepted, not repaired. A gate's image takes the
   orientation sibling nearest the
   rotated run direction (always 15 degrees off, never a tie), still via
-  `reorient_gate_const()`. A wall's axis-run index (0 or 1) swaps when the
+  `reorient_gate_const()`. A non-square object takes the other axis by the
+  wall rule's nearest axis below, and a bridge end the end whose run
+  direction is nearer its rotated one (never a tie, since the axis choice
+  rules out a perpendicular image), still via `reorient_object_const()`.
+  A wall's axis-run index (0 or 1) swaps when the
   element carries the x axis nearer the y axis (60 and 120 degrees and `a`
   do, 180 degrees and the other two reflections do not), under the same
   integer-encoded-file rule; the diagonal runs 3 and 4 stay verbatim in
@@ -174,6 +199,11 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   store frames unrelated to the variant. The rule is not measured for Return
   of Rome (no editor save, and its corpus was not checked for it), so there
   `set_variant()` and placement keep the stored frame.
+  The particle waterfalls (896, 1635, 2598, GH #330) are cyclable by this
+  same rule: their variants are their effect's `ImageAngles` runs (3, 3 and
+  2), written as literal indices, and a stored literal at or past the run
+  count wraps when drawn (an SWFALL at `2` draws run 0). What the game draws
+  for that value is unchecked.
   Its callers are Cycle Variant, the Rotate actions, the Rotation field,
   Move's pending turn (GH #280) and the wheel's selected-units choices (GH
   #356), the last two per the *Rotate* bullet above, and a script's
@@ -252,16 +282,19 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   frame, the row's next frame it has, alone (user decision 2026-10-19).
   Where that join would need a
   different-size piece the old cliff is left alone. The erase trigger
-  (GH #247): only a Cliff tool right-button stroke, only a surviving
-  cliff that was joined to a cliff the stroke erased and is left joined
+  (GH #247, GH #286): only a Cliff tool right-button stroke, an Eraser
+  stroke with its Cliffs target ticked, or a Delete, Cut Units or Find
+  and Replace Delete that removes a cliff; only a surviving cliff that
+  was joined to a cliff that stroke or Delete removed and is left joined
   to exactly one and touching no other surviving cliff (a junction's
   centre is left as it is), "joined" meaning a shared edge with legs of the same
   type where each piece's stored frame is shaped for that side
   (`cliff_chain.shaped_arms()`), and only the frame
   `cliff_connectivity.rewrite_frames()` gives that one arm at its own
-  size (`cliff_chain.erase_rewrites()`), hidden survivors included. Else
-  it is left alone, and none is rewritten if the map's units changed
-  during the drag. Allowed for the wall
+  size (`cliff_chain.erase_rewrites()`, through
+  `erase_rewrites_for_units()`), hidden survivors included. Else it is
+  left alone, and for a stroke none is rewritten if the map's units
+  changed during its drag. Allowed for the wall
   bullet's reason: the value is derived from the neighbours the piece now
   has, where an author-picked one is not.
 - *Replace* (Edit > Find and Replace, GH #144), via
@@ -323,7 +356,14 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `0.0` for any other const; a rolled type 10 variant's frame takes
   `frame_for()`'s value too. `add_many()` is unvalidated, so the guard is
   `random_rotation()`, pinned by `tests/test_place_rotation.py` and
-  `tests/test_scatter.py`.
+  `tests/test_scatter.py`. With Place Unit's own Random facing/variant
+  ticked (TASK-367), the pending state is `place_rotation.roll()`ed for the
+  picked const after each placement and on each new pick, and the ghost
+  and the click still read it through `rotation_for()`, inside the same
+  ANGLE and *Cycle Variant* scopes (`roll()` gives every other const the
+  empty state, so `0.0`); `random_rotation()` is `rotation_for()` of the
+  same `roll()`. The Unit Brush and Unit Line / Unit Shape read the state
+  unrolled; `tests/test_place_rotation.py`, `tests/test_place_preview.py`.
 - *Terrain planting's variant* (the Terrain tool's Trees and Eye candy,
   and File > New Map…'s, which `scenario_new` and
   `tools/gen_blank_maps.py` also reach): each new GAIA unit is
@@ -402,29 +442,67 @@ may use it.
   an off-map unit or a new footprint leaving the map, and a garrison the
   new const cannot hold or a host that cannot hold the new const.
 - `set_unit_const()` changes a gate's const only to one of the four
-  orientation siblings `descape/gate_orientation.py` derives for it. Its
+  orientation siblings `descape/gate_orientation.py` derives for it, and a
+  non-square object's (a bridge, chain, longhouse or blocker, TASK-329)
+  only to one of its own group's siblings from
+  `descape/object_orientation.py`, for the gate rule's reason: the
+  orientation lives in the const. Its
   callers are Rotate and the Rotation field (a selected gate cycles), Move
   (GH #280: a turn pending on a drag lands as the sibling, then the drop's
   position), and the *Selection transform* (TASK-256: a turned or flipped
-  gate takes `reorient_gate_const()`'s sibling, then its planned position),
-  all inside that same sibling-only scope. It
+  gate takes `reorient_gate_const()`'s sibling, and a turned or flipped
+  object `reorient_object_const()`'s, then its planned position),
+  all inside that same sibling-only scope. Rotate and the Rotation field
+  still skip a selected bridge. A gate's 1x1 corner pieces (TASK-532) are
+  callers within the same scope: every turn above that changes a gate's
+  const carries its pieces, each to the matching end tile of the new
+  footprint as `gate_orientation.corner_piece()` of the new const, one of
+  the piece's own four siblings, through
+  `placement_rules.companion_landing()` (Rotate, the Rotation field and a
+  drag's turn), or through `unit_images()`' `gate` index (the *Selection
+  transform*), then `set_position()` for its point. `companion_landing()`
+  raises for a const outside the piece's own siblings
+  (`tests/test_placement_rules.py`).
+  `mirror_tools.reorient_gate_const()`'s verbatim corner rule applies only
+  to a piece turned without its gate. It
   must re-anchor `x`/`y` by preserving the footprint's low corner
   (`span_low_corner()` forward, `render_units.span_anchor()` back), because the
   four orientations have four different spans and every corpus placement
   sits at `tile + span/2` per axis. `rotation` and `z` pass through
   verbatim as above: a gate's stored rotation is `0.0` or the junk sentinel
   `7.0`, and every sibling has `angle_count == 1`, so there is nothing
-  there to normalize.
+  there to normalize. A bridge, chain or blocker is INERT the same way
+  (every corpus bridge stores `0.0` or `7.0`), and a longhouse's three
+  frames are roof styles its two orientations share.
 - Map mirroring is not an exception to this rule: it never changes a placed
-  gate's const, it `add()`s a *new* gate whose const comes from
-  `mirror_tools.reorient_gate_const()` and whose anchor is re-derived from
-  that sibling's own span.
+  gate's or object's const, it `add()`s a *new* one whose const comes from
+  `mirror_tools.reorient_gate_const()` or `reorient_object_const()` and
+  whose anchor is re-derived from that sibling's own span.
 - A pasted region's turn (GH #197) is not an exception either, for the
   same reason: the turned block is re-pasted as *new* units, and a gate's
-  const comes from `reorient_gate_const()` through
-  `mirror_tools.unit_image()`. A selection or committed region turned in
-  place (TASK-256) does change a placed gate's const, through
-  `set_unit_const()` above.
+  const comes from `reorient_gate_const()`, an object's from
+  `reorient_object_const()`, through `mirror_tools.unit_image()`. A
+  selection or committed region turned in place (TASK-256) does change a
+  placed gate's or object's const, through `set_unit_const()` above.
+
+## A pasted unit's `reference_id`
+
+Every new unit's `reference_id` is minted by `UnitEditModel.add()` (or
+`add_many()`). The one exception is a same-document paste of a Unit Cut
+(Edit > Cut Units, then Paste Units): the cut block remembers each unit's
+own id and the document it came from (`RegionUnit.cut_reference_id`,
+`RegionBlock.cut_doc_id`, never saved with a block), and
+`region_clipboard.reusable_cut_ids()` hands `add(reference_id=)` each one
+that no live unit holds and that sits below the mint counter, each id once.
+So the first paste after a Cut moves the units, and a later paste, a paste
+after the Cut is undone, or a paste into another document mints, as a copy
+does. `add()` raises for an id a live unit holds
+(`reference_id_in_use()`), a negative one, or one at or past
+`next_unit_id`: every later mint is at least the counter, and `restore()`
+rewinds the lists and the counter together, so no paste can duplicate an
+id. A script's `editor.add_unit()` passes no id and always mints. Pinned by
+`tests/test_unit_model.py`, `tests/test_region_clipboard.py` and
+`tests/test_unit_clipboard_viewer.py`.
 
 ## What the game rewrites on save
 

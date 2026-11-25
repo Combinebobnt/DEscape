@@ -8,7 +8,7 @@ The View menu stays open while you tick its entries, so you can switch several i
 
 - **View > Isometric View (game-style)** draws Flat the way the game does: terrain as diamonds and units as upright sprites. Untick it for a plain top-down grid. It is greyed in Stepped and Sloped, which always draw that way.
 - **View > Zoom to Native Sprite Size** zooms so one tile spans 96 screen pixels, where unit sprites are drawn at their own size, pixel for pixel. It needs Graphics quality Default or Enhanced in **Settings > Appearance**, and is greyed in top-down Flat. At Enhanced the stop shows the high-resolution art scaled down by half.
-- Zooming with the wheel stops at each zoom level's own size on the way past, the native sprite size among them, so the map is drawn there without a second resample and looks sharpest. At Graphics quality Default, zooming in past the native size also reaches a stop where unit sprites are drawn at exactly twice their size, every pixel doubled.
+- Zooming with the wheel stops at each zoom level's own size on the way past, the native sprite size among them, so the map is drawn there without a second resample and looks sharpest. At Graphics quality Default, zooming in past the native size also reaches a stop where unit sprites are drawn at exactly twice their size, every pixel doubled. Between the native size and that stop, unit sprites (and top-down Flat's unit icons, at any size that is not a whole multiple) are resized smoothly so every pixel keeps an even size, when the native renderer is built.
 - **View > Show sprites** draws units as their real game sprites instead of coloured marks. It needs the AoE2:DE install path in **Settings > General**. Turning it on decodes the sprites once, which can take a few seconds.
 - **View > Show Stacked-Unit Badges** puts a count, in Units mode, over every spot where a unit is hidden under another. Grass and other passable eye candy never count. Click the spot repeatedly to cycle through the stack.
 - **View > Colour Selection by Owner** outlines selected units in their owner's colour. GAIA and the box you drag keep the Selection colour from **Settings > Appearance**.
@@ -60,9 +60,9 @@ The side panel, the status log, the minimap and Trigger Details can leave their 
 
 ## Filters
 
-The Filters button on the toolbar shows or hides units by kind and owner, in every mode. Its menu stays open while you tick entries: Show GAIA, Show Trees, Show Walls, Show Buildings, Show Eye Candy, Show Obstacles, Show Invisible Objects and Show Garrisoned Units, one entry per player, then All Players, No Players, **Filters > Show All** and **Filters > Hide All**.
+The Filters button on the toolbar shows or hides units by kind and owner, in every mode. Its menu stays open while you tick entries: Show GAIA, Show Trees, Show Walls, Show Buildings, Show Eye Candy, Show Obstacles, Show Invisible Objects, Show Garrisoned Units and Show Inactive Units, one entry per player, then All Players, No Players, **Filters > Show All** and **Filters > Hide All**.
 
-Hidden units can't be selected, and the Eraser never erases them, but **Edit > Find and Replace…** still finds them. Show Garrisoned Units starts off, as in the game: a garrisoned unit is stored at its host's position, so showing it stacks it on the host. Filters reset at every launch, so a map never opens with units hidden by a choice you have forgotten.
+Hidden units can't be selected, and the Eraser never erases them, but **Edit > Find and Replace…** still finds them. Show Garrisoned Units starts off, as in the game: a garrisoned unit is stored at its host's position, so showing it stacks it on the host. A unit whose Unit State is anything but Alive draws faded, and unticking Show Inactive Units hides it. Filters reset at every launch, so a map never opens with units hidden by a choice you have forgotten.
 
 ## Themes and fonts
 

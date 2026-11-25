@@ -7,12 +7,17 @@ opens the undo record and reports. That is what lets the before/after pair
 the in-game verification needs go through the real write path without
 instantiating a window.
 
-**Nothing is resolved mid-drag.** A node's neighbour set is not complete
-until the path is, so the whole plan is computed once from the committed
-tile list -- ChainStroke's accumulate-then-commit rule, for the same reason.
+**Nothing on a wall run's path is resolved mid-drag.** A node's neighbour
+set is not complete until the path is, so the whole plan is computed once
+from the committed tile list -- ChainStroke's accumulate-then-commit rule,
+for the same reason. A Move drag is different: its preview plans per tile
+crossing (TASK-523), over a scene walked once per drag (move_scene(), then
+plan_from_scene()).
 
-Two kinds of path tile are skipped (GH #124): a connector tile is still a
-neighbour, an occupied ("blocked") tile is a gap and never a neighbour.
+Three kinds of path tile are skipped: a connector tile is still a
+neighbour, while an occupied ("blocked", GH #124) tile and one whose terrain
+the wall's own restriction row refuses ("refused", TASK-328,
+placement_rules.TerrainGaps) are gaps and never neighbours.
 """
 
 from __future__ import annotations
@@ -87,12 +92,33 @@ class WallPlan:
     skipped: int
     # Path tiles left empty because blocked_tiles() named them (GH #124).
     blocked: int = 0
+    # Path tiles left empty because the wall can't stand on their terrain
+    # (TASK-328), and the first of them in path order, for the status line.
+    refused: int = 0
+    first_refused: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class RunGaps:
+    """A wall drag preview's gap tiles (TASK-328): the occupied ones and the
+    terrain-refused ones, either container. No __iter__: the terrain half is
+    read one tile at a time. The commit passes the halves separately."""
+
+    occupied: object = frozenset()
+    terrain: object = frozenset()
+
+    def __contains__(self, tile) -> bool:
+        return tile in self.occupied or tile in self.terrain
+
+    def __bool__(self) -> bool:
+        return bool(self.occupied) or bool(self.terrain)
 
 
 @dataclass
 class SceneCensus:
-    """What scenario_move_plan() reads off wall_scene()'s walk besides its two
-    answers (GH #266), so a move pays one walk, not two."""
+    """What a move's plan reads off wall_scene()'s walk besides its two
+    answers (GH #266), so a move pays one walk, not two: filled by
+    move_scene()'s walk, read by plan_from_scene()."""
 
     # id(unit) -> owner, for every connector the walk left out by exclude_ids.
     owners: dict[int, int] = field(default_factory=dict)
@@ -189,25 +215,31 @@ def plan_wall_run(
     existing_tiles: set[tuple[int, int]],
     existing_walls,
     blocked_tiles=frozenset(),
+    terrain_gaps=frozenset(),
 ) -> WallPlan:
     """Everything the commit will write, for a drag that named `tiles`.
 
     Pure: no scenario, no model, no Qt. `existing_tiles`/`existing_walls`
     come from wall_scene(), `blocked_tiles` from blocked_tiles() (empty with
-    the toggle off).
+    the toggle off), `terrain_gaps` any container of the tiles the wall
+    can't stand on (placement_rules.TerrainGaps; empty with Free placement).
 
     A path tile that already holds a connector is skipped rather than
     stacked, and still counts as a neighbour for everything around it -- a
     run drawn along an existing wall should reshape it, not double it.
-    A blocked tile is skipped too, but it is a gap: it never enters the
-    neighbour set, so the pieces either side resolve as run ends. The
-    connector rule is checked first, so a tile in both counts as `skipped`.
+    A refused or blocked tile is skipped too, but it is a gap: it never
+    enters the neighbour set, so the pieces either side resolve as run ends.
+    The connector rule is checked first, then terrain, then occupancy, so a
+    tile in several counts once, as the first (refusal()'s order).
     """
     unique = list(dict.fromkeys(tiles))
     free = [tile for tile in unique if tile not in existing_tiles]
-    placed = [tile for tile in free if tile not in blocked_tiles]
+    standable = [tile for tile in free if tile not in terrain_gaps] if terrain_gaps else free
+    placed = [tile for tile in standable if tile not in blocked_tiles]
     skipped = len(unique) - len(free)
-    blocked = len(free) - len(placed)
+    refused = len(free) - len(standable)
+    first_refused = next((tile for tile in free if tile in terrain_gaps), None) if refused else None
+    blocked = len(standable) - len(placed)
     all_tiles = existing_tiles | set(placed)
 
     nodes = []
@@ -228,7 +260,9 @@ def plan_wall_run(
         for dx, dy, _bit in unit_sprites.NEIGHBOUR_OFFSETS
     }
     rewrites = _neighbour_rewrites(existing_walls, neighbourhood, placed_set, all_tiles)
-    return WallPlan(nodes=nodes, rewrites=rewrites, skipped=skipped, blocked=blocked)
+    return WallPlan(
+        nodes=nodes, rewrites=rewrites, skipped=skipped, blocked=blocked, refused=refused, first_refused=first_refused
+    )
 
 
 def _neighbour_rewrites(
@@ -566,10 +600,14 @@ class WallMove:
 
 def plan_wall_moves(
     walls, *, pre_tiles, post_tiles, staying_walls, exclude=frozenset()
-) -> tuple[list[tuple[int, object, int]], list[tuple[int, object, int]]]:
-    """(rewrites, moved), both (player_id, unit, new_variant) lists: what
-    moving `walls` (WallMove) changes in wall shapes (GH #266). Pure, like
-    plan_wall_run().
+) -> tuple[list[tuple[int, object, int]], list[tuple[int, object, int]], list[tuple[int, object, int]]]:
+    """(rewrites, moved, landed), each a (player_id, unit, new_variant)
+    list: what moving `walls` (WallMove) changes in wall shapes (GH #266).
+    Pure, like plan_wall_run().
+
+    `landed` is every carried wall's derived shape, written or not, which a
+    drag's ghost draws (TASK-523); `moved` is the subset that differs from
+    the stored index.
 
     `pre_tiles`/`post_tiles` are every connector tile before and after the
     move, `staying_walls` the walls that keep their tile (ExistingWall), and
@@ -588,17 +626,19 @@ def plan_wall_moves(
     mask, and re-deriving there would rewrite a radian file's noise for nothing.
     """
     moved = []
+    landed = []
     for move in walls:
         mask = unit_sprites.neighbour_mask(*move.new_tile, post_tiles, diagonals=True)
         derived = unit_sprites.wall_variant_from_neighbours8(mask)
         if derived is None:
             derived = ISOLATED_VARIANT
+        landed.append((move.player_id, move.unit, derived))
         # The decoded index, as _neighbour_rewrites() compares.
         if unit_sprites.variant_index(move.unit.rotation, 5) != derived:
             moved.append((move.player_id, move.unit, derived))
     triggers = {move.old_tile for move in walls if move.old_tile not in post_tiles}
     triggers |= {move.new_tile for move in walls if move.new_tile not in pre_tiles}
-    return _changed_tile_rewrites(triggers, staying_walls, exclude, post_tiles), moved
+    return _changed_tile_rewrites(triggers, staying_walls, exclude, post_tiles), moved, landed
 
 
 def _changed_tile_rewrites(triggers, staying_walls, exclude, post_tiles) -> list[tuple[int, object, int]]:
@@ -832,6 +872,8 @@ class MovePlan:
     # Whether the plan overwrites or removes the file's last non-literal wall
     # values, flipping unit_sprites.file_is_radian() to integer.
     radian_flip: bool = False
+    # (player_id, unit, variant) for every carried wall, written or not: the drag ghost's landing shape (TASK-523).
+    landed: list[tuple[int, object, int]] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         # `blocked` alone changes nothing, as GateMovePlan's.
@@ -845,6 +887,52 @@ class MovePlan:
         return bool(self.removals or self.fills or self.radian_flip)
 
 
+@dataclass(frozen=True, eq=False)
+class MoveScene:
+    """move_scene()'s one walk of a move's scenario, which plan_from_scene()
+    reads and never mutates, so a drag's preview plans every tile crossing
+    over it (TASK-523). Compared by identity: it holds sets and a census."""
+
+    # id(unit) of every mover the walk left out.
+    moved_ids: frozenset[int]
+    static_tiles: set[tuple[int, int]]
+    static_walls: list[ExistingWall]
+    census: SceneCensus
+    # blocked_tiles() without the movers, or None when not walked.
+    blocked: set[tuple[int, int]] | None
+
+
+def move_scene(scenario, map_width: int, map_height: int, moved_ids, *, blocked: bool) -> MoveScene:
+    """The scene walk scenario_move_plan() makes, without the units in
+    `moved_ids`: wall_scene() with its census, plus blocked_tiles() when
+    `blocked` (a move with a gate part needs it)."""
+    moved_ids = frozenset(moved_ids)
+    census = SceneCensus()
+    static_tiles, static_walls = wall_scene(scenario, map_width, map_height, exclude_ids=moved_ids, census=census)
+    return MoveScene(
+        moved_ids=moved_ids,
+        static_tiles=static_tiles,
+        static_walls=static_walls,
+        census=census,
+        blocked=blocked_tiles(scenario, map_width, map_height, exclude_ids=moved_ids) if blocked else None,
+    )
+
+
+def _move_parts(moves, map_width: int, map_height: int, gate_walls: bool, consts) -> tuple[list, list]:
+    """(gate moves, carried walls as (unit, old tile, new tile)): the two
+    parts a move plans, either empty. Pure and O(moves)."""
+    gates = _gate_moves(moves, map_width, map_height, consts) if gate_walls else []
+    carried = []
+    for unit, x, y in moves:
+        if not unit_sprites.rotation_variant_eligible(unit.unit_const):
+            continue
+        old = _wall_tile(unit.unit_const, unit.x, unit.y, map_width, map_height)
+        new = _wall_tile(unit.unit_const, x, y, map_width, map_height)
+        if old is not None and new is not None and old != new:
+            carried.append((unit, old, new))
+    return gates, carried
+
+
 def scenario_move_plan(
     scenario, map_width: int, map_height: int, moves, *, gate_walls: bool, removable=None, consts=None
 ) -> MovePlan | None:
@@ -852,6 +940,7 @@ def scenario_move_plan(
     `moves`, [(unit, new_x, new_y), ...] as scenario_gate_moves() takes them,
     read off the scenario as it stands BEFORE the move in one scene walk.
     Qt-free, so the viewer and the pair tool plan through the same code.
+    The walk is move_scene() and the rest plan_from_scene() (TASK-523).
 
     None, before any walk, when no wall changes its tile and no gate does
     (or `gate_walls` is off). A wall moving onto or off the map is no
@@ -866,21 +955,35 @@ def scenario_move_plan(
     moves (GH #280): its old tiles stay its stored footprint, its new tiles
     are the landing const's. A wall's const never changes.
     """
-    gates = _gate_moves(moves, map_width, map_height, consts) if gate_walls else []
-    carried = []
-    for unit, x, y in moves:
-        if not unit_sprites.rotation_variant_eligible(unit.unit_const):
-            continue
-        old = _wall_tile(unit.unit_const, unit.x, unit.y, map_width, map_height)
-        new = _wall_tile(unit.unit_const, x, y, map_width, map_height)
-        if old is not None and new is not None and old != new:
-            carried.append((unit, old, new))
+    gates, carried = _move_parts(moves, map_width, map_height, gate_walls, consts)
     if not gates and not carried:
         return None
     moved_ids = frozenset(id(unit) for unit, _x, _y in moves)
-    census = SceneCensus()
-    static_tiles, static_walls = wall_scene(scenario, map_width, map_height, exclude_ids=moved_ids, census=census)
-    blocked = blocked_tiles(scenario, map_width, map_height, exclude_ids=moved_ids) if gates else None
+    scene = move_scene(scenario, map_width, map_height, moved_ids, blocked=bool(gates))
+    return plan_from_scene(
+        scene, map_width, map_height, moves, gate_walls=gate_walls, removable=removable, consts=consts
+    )
+
+
+def plan_from_scene(
+    scene: MoveScene, map_width: int, map_height: int, moves, *, gate_walls: bool, removable=None, consts=None
+) -> MovePlan | None:
+    """scenario_move_plan() after its walk: the same arguments, with the
+    scenario read through `scene` (move_scene() of these same movers), and
+    the same None rule. Pure: `scene` is never mutated.
+
+    Raises ValueError when the movers' ids differ from `scene.moved_ids`, or
+    when the move has a gate part and `scene.blocked` was not walked."""
+    if frozenset(id(unit) for unit, _x, _y in moves) != scene.moved_ids:
+        raise ValueError("plan_from_scene: the moves are not the scene's movers")
+    gates, carried = _move_parts(moves, map_width, map_height, gate_walls, consts)
+    if not gates and not carried:
+        return None
+    if gates and scene.blocked is None:
+        raise ValueError("plan_from_scene: a gate part needs a scene walked with blocked=True")
+    static_tiles, static_walls, census = scene.static_tiles, scene.static_walls, scene.census
+    # A copy: _moved_connector_tiles() adds every other mover's new tiles to it.
+    blocked = set(scene.blocked) if gates else None
     moved_tiles = _moved_connector_tiles(moves, map_width, map_height, blocked, consts)
     gate_plan = GateMovePlan(removals=[], fills=[], rewrites=[])
     if gates:
@@ -911,7 +1014,7 @@ def scenario_move_plan(
     post_tiles = static_tiles | moved_tiles | fill_tiles
     removed_ids = {id(unit) for _p, unit in gate_plan.removals}
     removed_tiles = {(wall.tx, wall.ty) for wall in static_walls if id(wall.unit) in removed_ids}
-    rewrites, moved = plan_wall_moves(
+    rewrites, moved, landed = plan_wall_moves(
         [WallMove(unit=unit, player_id=census.owners[id(unit)], old_tile=old, new_tile=new) for unit, old, new in carried],
         pre_tiles=pre_tiles,
         post_tiles=post_tiles,
@@ -944,6 +1047,7 @@ def scenario_move_plan(
         moved=moved,
         blocked=gate_plan.blocked,
         radian_flip=radian_flip,
+        landed=landed,
     )
 
 

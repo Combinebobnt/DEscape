@@ -59,6 +59,8 @@ _CODE_RE = re.compile(r"^([PSCF]?)GT([ABCD])([ABCX])(\d*)$")
 _ORIENTATIONS = ("A", "C", "B", "D")
 # World run angle per cycle step: orientation i runs along i * 45 degrees (either end).
 RUN_ANGLE_STEP_DEG = 45
+# Each orientation's run vector in tile coordinates, in _ORIENTATIONS' order.
+_RUN_VECTORS = ((1, 0), (1, 1), (0, 1), (1, -1))
 
 # The coarse Rotate multiplier, unit_rotation.quarter_turn_steps()' gate
 # counterpart: a step is 45 degrees, so a quarter turn is two of them.
@@ -121,6 +123,15 @@ def orientation_siblings(unit_const: int) -> tuple[int, ...] | None:
     test membership directly (UnitEditModel.set_unit_const's guard does).
     """
     return _siblings_by_const().get(unit_const)
+
+
+def run_vector(unit_const: int) -> tuple[int, int]:
+    """The tile vector a gate const's footprint runs along: A (1, 0), C
+    (1, 1), B (0, 1), D (1, -1). Raises for a const that is not a gate."""
+    siblings = orientation_siblings(unit_const)
+    if siblings is None:
+        raise ValueError(f"unit_const {unit_const} is not a gate: it has no run vector")
+    return _RUN_VECTORS[siblings.index(unit_const)]
 
 
 def is_gate(unit_const: int) -> bool:

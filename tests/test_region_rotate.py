@@ -418,3 +418,31 @@ def test_with_a_units_selection_rotate_turns_the_units_and_flip_flips_the_region
         assert _tiles(window) == flipped, "Rotate turned the region instead of the selection"
     finally:
         _close(window)
+
+
+def test_a_turned_pasted_bridge_takes_its_siblings_and_a_mole_is_counted_as_kept():
+    """TASK-329: an `a` run (bottom 607 at low x, middle 606, top 605) turned
+    by r becomes a `b` run with its top (608) at the low-y end; the mole has
+    no turned form, and the status line says so."""
+    window = _select_window()
+    try:
+        _add(window, [
+            (1, 607, *render_units.span_anchor(0, 0, 2, 3), 7.0, None),
+            (1, 606, *render_units.span_anchor(2, 0, 2, 3), 7.0, None),
+            (1, 605, *render_units.span_anchor(4, 0, 2, 3), 7.0, None),
+            (1, 2421, *render_units.span_anchor(0, 3, 3, 1), 0.0, None),
+        ])
+        window.on_region_selected((0, 0, 6, 4))
+        window.copy_region()
+        _paste(window)
+        window.rotate_cw_action.trigger()
+        assert _last_status(window).endswith(
+            "; 1 objects kept their orientation (cliffs, and objects with no turned form)"
+        )
+        pasted = sorted(
+            (float(u.y), u.unit_const) for units in window.scenario.unit_manager.units for u in units if u.x >= 30
+        )
+        assert [const for _y, const in pasted if const != 2421] == [608, 609, 610]
+        assert [const for _y, const in pasted if const == 2421] == [2421]
+    finally:
+        _close(window)

@@ -54,8 +54,9 @@ _NEUTRAL = "Default"
 
 @dataclass(frozen=True)
 class MoodGrade:
-    """One mood as paint operations: multiply per channel, then `tint` (each
-    0 to 1) over the result at `tint_alpha`."""
+    """One mood as paint operations: multiply per channel (each at most 1, all
+    1.0 meaning no Multiply fill), then `tint` (each 0 to 1) over the result at
+    `tint_alpha`."""
 
     name: str
     multiply: Rgb
@@ -63,14 +64,28 @@ class MoodGrade:
     tint_alpha: float
 
 
+# Slopes this close to equal share one SourceOver fill; Autumn, Misty and Murky sit at 0.95, Evening at 0.944.
+_UNIFORM_FLOOR = 0.945
+
+
 def _grade(name: str, params: MoodParams) -> MoodGrade:
+    """The formula is affine per channel, c' = s*c + 255*o, so one SourceOver
+    fill reaches it when the slopes match, else a Multiply then the fill."""
     gain = params.brightness / MOOD_PARAMS[_NEUTRAL].brightness
-    return MoodGrade(
-        name,
-        (gain * params.terrain_tint_color[0], gain * params.terrain_tint_color[1], gain * params.terrain_tint_color[2]),
-        (min(params.tint_color[0], 1.0), min(params.tint_color[1], 1.0), min(params.tint_color[2], 1.0)),
-        params.tint_factor,
-    )
+    f = params.tint_factor
+    slope = tuple((1 - f) * gain * t for t in params.terrain_tint_color)
+    offset = tuple(f * min(t, 1.0) for t in params.tint_color)
+    if min(slope) / max(slope) >= _UNIFORM_FLOOR:
+        mean = sum(slope) / 3
+        # Each channel's slope error is split about mid-grey rather than growing to white.
+        offset = tuple(max(0.0, o + (s - mean) / 2) for s, o in zip(slope, offset, strict=True))
+        alpha = max(1 - mean, *offset)
+        multiply = (1.0, 1.0, 1.0)
+    else:
+        alpha = max(1 - max(slope), *offset)
+        multiply = tuple(min(1.0, s / (1 - alpha)) for s in slope)
+    tint = tuple(o / alpha for o in offset) if alpha > 0.0 else (0.0, 0.0, 0.0)
+    return MoodGrade(name, multiply, tint, alpha)
 
 
 _GRADES = {name.lower(): _grade(name, params) for name, params in MOOD_PARAMS.items() if name != _NEUTRAL}
@@ -84,10 +99,9 @@ def grade_for(stored: str) -> MoodGrade | None:
 
 
 def apply(grade: MoodGrade, rgb: tuple[int, int, int]) -> tuple[int, int, int]:
-    """`rgb` under `grade`, the oracle for what the Qt paint produces: the
-    multiply saturates at 255 before the tint goes over it, as a fill does."""
+    """`rgb` under `grade`, the oracle for what the Qt paint produces."""
     alpha = grade.tint_alpha
     return tuple(
-        round((1 - alpha) * min(channel * gain, 255.0) + alpha * 255.0 * tint)
+        min(255, round((1 - alpha) * gain * channel + alpha * 255.0 * tint))
         for channel, gain, tint in zip(rgb, grade.multiply, grade.tint, strict=True)
     )

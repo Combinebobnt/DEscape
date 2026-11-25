@@ -28,6 +28,7 @@ from descape.unit_model import (
     merged_field_record,
 )
 from descape.viewer_common import (
+    _rects_bbox,
     _RotationDrag,
 )
 
@@ -70,9 +71,9 @@ class _ViewerUnitEditMixin:
     # blob, every UnitEditModel operation validates BEFORE it mutates (add()'s
     # player-range check, remove()'s garrison-reference guard, reassign()'s
     # range check, and set_position()/reassign()'s _locate() lookup all raise
-    # first, before touching any field) -- so an exception here always means
-    # nothing was touched, and aborting rather than committing a no-op record
-    # is correct.
+    # first, before touching any field) -- so an exception here means only the
+    # operations before the raising one landed, and rolling those back to the
+    # begin snapshot rather than committing a partial record is correct (TASK-503).
 
     @contextmanager
     def _unit_edit(
@@ -128,17 +129,19 @@ class _ViewerUnitEditMixin:
         terrain_current: no caller of this method writes a tile, so the tail
         is told the terrain mirrors are current (_after_unit_mutation()),
         except inside an open Erase stroke, whose Terrain Overlay writes are
-        not in the mirrors until it ends."""
+        not in the mirrors until it ends.
+
+        A raise inside the block rolls the units back and repaints (TASK-503)."""
         with perf_trace.op(label):
             model.begin_unit_edit(players, fields_only=fields_only)
             try:
                 yield model
             except Exception:
-                model.abort_unit_edit()
-                # A raise can leave the pick index half-patched (a Move's in-place patch), and
-                # Units entry reuses a non-None index: drop it so the next need rebuilds it.
+                # A raise can leave the pick index half-patched (a Move's in-place patch): drop it,
+                # and the rollback's refresh rebuilds it from the restored document.
                 self._stack_cycle = None
                 self.map_view.set_unit_index(None)
+                self._roll_back_tool_edit(model)
                 raise
             if drag is None:
                 model.commit_unit_edit(label, self.edit_history)
@@ -152,6 +155,21 @@ class _ViewerUnitEditMixin:
             self._update_edit_actions()
             if drag is None:
                 self._log_status(label)
+
+    def _roll_back_tool_edit(self, model: UnitEditModel, tile_record: TileDiffRecord | None = None) -> None:
+        """A one-shot tool edit that raised before its commit (TASK-503): puts
+        back `tile_record`'s unpushed tiles and the open unit edit, then
+        repaints wholesale, as a history jump does. Called from an `except`
+        that re-raises, so a raise here propagates chained to the original.
+        Strokes, trigger edits and Replace commit what landed instead."""
+        kinds, dirty = {"unit"}, []
+        try:
+            if tile_record is not None:
+                kinds.add("tile")
+                dirty = tile_record.undo(self.scenario.map_manager.terrain, None)
+            model.rollback_unit_edit()
+        finally:
+            self._refresh_after_history_move(kinds, dirty)
 
     def _fold_drag_record(self, drag: _RotationDrag, record: UnitDiffRecord) -> None:
         """A compass spoke's unpushed record: folded into the drag's own if that
@@ -222,7 +240,7 @@ class _ViewerUnitEditMixin:
         lower bound on its component, against its elevation_splice_cap(). The
         cache's elevations are still pre-edit here, so the new levels come
         from the map. Call it after the unit edit: the own-tile index is then
-        the post-edit one the patch reads, memoized on unit_gen."""
+        the post-edit one the patch reads, spliced by the model's deltas."""
         cache = self._cache
         if not elevation_changed or cache is None or not cache.with_units:
             return False
@@ -454,15 +472,19 @@ class _ViewerUnitEditMixin:
         render_paint.flat_tile_rects() of the touched tiles rather than a union
         bbox, widened to their 8 neighbours when the edit moves, adds or
         removes a wall or connector (a wall's drawn shape reads its 8-bit
-        neighbour mask). No blend ring (a unit edit moves no blend key) and no
-        evict rule.
+        neighbour mask). No blend ring (a unit edit moves no blend key). As the
+        terrain branch does (TASK-338, TASK-442), the rects patch at the level in
+        view only and every other resident level drops its chunks under them, so
+        a wholesale source fallback rebuilds only the visible level's icon layer
+        here; with no viewport target every level patches.
 
-        In the split, a `batch` whose bbox is large against the viewport
-        (_patch_area_exceeds_viewport()) evicts that bbox's chunks instead of
-        patching them: same correctness argument, since nothing outside the
-        bbox changed, and chunks off the bbox stay resident for the next pan.
-        The split prices the visible level alone (_TIGHT_PATCH_AREA_RATIO).
-        Single-unit tools always patch.
+        A `batch` whose bbox is large against the viewport evicts that bbox's
+        chunks instead of patching them: same correctness argument, since
+        nothing outside the bbox changed, and chunks off the bbox stay resident
+        for the next pan. Stepped/Sloped's split prices the visible level alone
+        (_patch_area_exceeds_viewport(), _TIGHT_PATCH_AREA_RATIO); Flat takes
+        its terrain rule (_flat_patch_exceeds_viewport(), _FLAT_EVICT_RATIO) and
+        evicts the rects' bbox at every level. Single-unit tools always patch.
 
         terrain_bbox (Stepped/Sloped, TASK-031.61 A4): a history move's
         terrain bbox, sources refreshed but not composited. The split repaints
@@ -470,9 +492,10 @@ class _ViewerUnitEditMixin:
         it too; the whole-canvas fallback already does; the early returns
         composite it alone, as the tile patch would have.
 
-        terrain_current (Stepped/Sloped, TASK-031.61 C0): passed to the split,
-        whose evictions then skip the terrain mirror re-read. The whole-canvas
-        fallback keeps its re-read, and the eager patches always re-read.
+        terrain_current (TASK-031.61 C0): passed to the split, whose evictions
+        then skip the terrain mirror re-read, as Flat's batch eviction does. The
+        whole-canvas fallback keeps its re-read, and the eager patches always
+        re-read.
 
         Stepped `batch` edits (TASK-031.61 C1) read both extents per 16x16-tile
         block of `changed` (_unit_edit_blocks()), the batch extent being their
@@ -527,8 +550,15 @@ class _ViewerUnitEditMixin:
                 # A wall's drawn shape reads its 8 neighbours, so theirs can change too.
                 touched = render_cache_splice._dilate(touched, mm.map_width, mm.map_height)
             rects = flat_tile_rects(touched, tile_px)
+            target = self.map_view.viewport_chunk_target()
+            if batch and self._flat_patch_exceeds_viewport(rects, tile_px, target):
+                bbox = _rects_bbox(rects)
+                with perf_trace.phase("unit_patch"):
+                    self._cache.invalidate_region(bbox, terrain_changed=not terrain_current)
+                self.map_view.invalidate_region(bbox)
+                return
             with perf_trace.phase("unit_patch"):
-                self._cache.patch_rects(rects)
+                self._cache.patch_rects(rects, levels=None if target is None else (target[0],))
             for rect in rects:
                 self.map_view.invalidate_region(rect)
             return

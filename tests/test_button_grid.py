@@ -844,3 +844,32 @@ def test_a_unit_portrait_fills_its_player_colour_region(monkeypatch, player) -> 
         assert image.pixelColor(0, 0).getRgb()[:3] == (0, 0, 0), "the opaque art stays"
     finally:
         _close(window)
+
+
+@pytest.mark.parametrize(
+    "player, unit, building", [(1, "Lancer", "Old Barracks"), (-1, "Knight", "Barracks")], ids=["player", "every_player"]
+)
+def test_a_unit_and_its_building_read_as_the_players_civ_names_them(monkeypatch, player, unit, building) -> None:
+    """Player 1's antiquity civ calls the Knight a Lancer (its committed civ id); "every player" keeps the standard names."""
+    from PyQt5.QtCore import Qt
+
+    from descape import asset_source, civ_art
+    from descape.button_grid import CELL_PX
+
+    own = {405049: "Lancer", 405105: "Old Barracks"}
+    real = asset_source.resource_string
+    monkeypatch.setattr(asset_source, "resource_string", lambda key, lang=None: own.get(key) or real(key, lang))
+    monkeypatch.setattr(civ_art, "player_portrait_civ", lambda _scenario, pid: 47 if pid == 1 else None)
+    window, _indices = _grid_window(
+        _CHANGE_TRAIN,
+        {"object_list_unit_id": _KNIGHT, "object_list_unit_id_2": _BARRACKS, "button_location": 2, "source_player": player},
+    )
+    try:
+        grid = _grid(window)
+        cell = _cell(grid, 1, 2)
+        assert cell.items[0] == (_KNIGHT, "unit")
+        assert cell.text() == cell.fontMetrics().elidedText(unit, Qt.ElideRight, CELL_PX - 4)
+        assert cell.toolTip().splitlines()[0] == unit
+        assert grid.header_label.text().startswith(f"Trained at: {building}")
+    finally:
+        _close(window)

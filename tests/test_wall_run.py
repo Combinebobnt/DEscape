@@ -1415,6 +1415,95 @@ def test_consts_for_a_gate_that_keeps_its_const_plan_as_no_consts_do():
     assert same == plain
 
 
+# --- the split a drag preview plans through (TASK-523) ---------------------
+
+
+def _ids(entries) -> list[tuple[int, int]]:
+    return [(id(u), v) for _p, u, v in entries]
+
+
+def _same_plan(plan, ref) -> None:
+    assert _ids(plan.rewrites) == _ids(ref.rewrites)
+    assert _ids(plan.moved) == _ids(ref.moved)
+    assert _ids(plan.landed) == _ids(ref.landed)
+    assert (plan.removals, plan.fills, plan.blocked, plan.radian_flip) == (ref.removals, ref.fills, ref.blocked, ref.radian_flip)
+
+
+def test_one_scene_plans_two_deltas_as_scenario_move_plan_does():
+    run = _x_run(5, 15, 10)
+    wall = run[5]
+    scenario = _walls_scenario(*run)
+    scene = wall_run.move_scene(scenario, 60, 60, {id(wall)}, blocked=False)
+    for dy in (3, 1):
+        moves = [(wall, wall.x, wall.y + dy)]
+        plan = wall_run.plan_from_scene(scene, 60, 60, moves, gate_walls=False)
+        _same_plan(plan, _plan_moves(scenario, moves))
+    assert _by_tile(plan.landed) == {(10, 10): 2}
+
+
+def test_plan_from_scene_never_mutates_the_scene():
+    """A box-on gate plus a villager: _moved_connector_tiles() adds the villager's new tile to `blocked`."""
+    villager = FakeUnit(x=30.5, y=30.5, unit_const=_VILLAGER)
+    gate, _walls, scenario = _gate_scenario([villager])
+    moves = _shifted([gate, villager], 5, 0)
+    scene = wall_run.move_scene(scenario, 60, 60, {id(gate), id(villager)}, blocked=True)
+    blocked, tiles = set(scene.blocked), set(scene.static_tiles)
+    for _ in range(2):
+        plan = wall_run.plan_from_scene(scene, 60, 60, moves, gate_walls=True)
+        _same_plan(plan, _plan_moves(scenario, moves, gate_walls=True))
+    assert plan.removals and plan.fills
+    assert (scene.blocked, scene.static_tiles) == (blocked, tiles)
+
+
+def test_plan_from_scene_raises_for_other_movers_or_a_gate_part_with_no_blocked_walk():
+    run = _x_run(5, 15, 10)
+    wall = run[5]
+    gate, _walls, gated = _gate_scenario()
+    scene = wall_run.move_scene(_walls_scenario(*run), 60, 60, {id(wall)}, blocked=False)
+    with pytest.raises(ValueError, match="movers"):
+        wall_run.plan_from_scene(scene, 60, 60, [(wall, 10.5, 13.5), (run[0], 5.5, 13.5)], gate_walls=False)
+    gate_scene = wall_run.move_scene(gated, 60, 60, {id(gate)}, blocked=False)
+    with pytest.raises(ValueError, match="blocked"):
+        wall_run.plan_from_scene(gate_scene, 60, 60, _shifted([gate], 5, 0), gate_walls=True)
+
+
+def test_a_box_on_wall_drop_with_no_gate_plans_over_a_scene_with_no_blocked_walk():
+    """_move_plan() passes gate_walls=True for every drop; with no gate there is no gate part to need it."""
+    run = _x_run(5, 15, 10)
+    wall = run[5]
+    scene = wall_run.move_scene(_walls_scenario(*run), 60, 60, {id(wall)}, blocked=False)
+    moves = [(wall, wall.x, wall.y + 3)]
+    boxed = wall_run.plan_from_scene(scene, 60, 60, moves, gate_walls=True)
+    _same_plan(boxed, wall_run.plan_from_scene(scene, 60, 60, moves, gate_walls=False))
+    assert _by_tile(boxed.rewrites) == {(9, 10): 2, (11, 10): 2}
+
+
+def test_landed_holds_every_carried_walls_shape_written_or_not():
+    tower = _wall_at(30, 30, rotation=2.0)
+    scenario = _walls_scenario(tower)
+    plan = _plan_moves(scenario, [(tower, 40.5, 40.5)])
+    assert (plan.landed, plan.moved, plan.rewrites) == ([(1, tower, 2)], [], [])
+    assert plan is not None and not plan
+    assert _plan_moves(scenario, [(tower, 30.6, 30.5)]) is None, "a move within the tile carries nothing"
+
+
+def test_only_the_wall_that_crosses_a_tile_edge_lands():
+    run = _x_run(9, 12, 10)
+    crossing, staying = run[1], run[2]
+    crossing.y = 10.95
+    plan = _plan_moves(_walls_scenario(*run), _shifted([crossing, staying], 0, 0.1))
+    assert plan.landed == [(1, crossing, 2)]
+
+
+def test_a_carried_wall_storing_radian_1_lands_as_the_int_1_and_is_not_written():
+    above, below = _wall_at(20, 11, rotation=1.0), _wall_at(20, 13, rotation=1.0)
+    noisy = _wall_at(40, 40, rotation=_RADIAN_1)
+    plan = _plan_moves(_walls_scenario(above, below, noisy), [(noisy, 20.5, 12.5)])
+    ((_player, unit, variant),) = plan.landed
+    assert (unit, variant, type(variant)) == (noisy, 1, int)
+    assert plan.moved == []
+
+
 # --- a gate's const change (GH #339): orientation cycle and Replace --------
 
 
@@ -1930,3 +2019,80 @@ def test_set_cliff_frame_is_bounded_by_the_const_s_own_frame_count(monkeypatch):
     model.set_cliff_frame(marble, 22)
     model.commit_unit_edit("Place cliffs", EditHistory())
     assert marble.rotation == 22.0
+
+
+# --- terrain gaps (TASK-328: wall runs follow the terrain rule) ---------
+
+
+def _plan_gaps(tiles, existing=(), blocked=frozenset(), gaps=frozenset()):
+    existing_tiles, existing_walls = _existing(existing)
+    return wall_run.plan_wall_run(
+        tiles,
+        unit_const=WALL,
+        existing_tiles=existing_tiles,
+        existing_walls=existing_walls,
+        blocked_tiles=frozenset(blocked),
+        terrain_gaps=frozenset(gaps),
+    )
+
+
+def test_a_terrain_gap_mid_run_leaves_ends_either_side():
+    plan = _plan_gaps([(x, 10) for x in range(5, 11)], gaps={(7, 10)})
+    assert _variants(plan) == {(5, 10): 2, (6, 10): 2, (8, 10): 2, (9, 10): 0, (10, 10): 2}
+    assert (plan.refused, plan.blocked, plan.skipped) == (1, 0, 0)
+    assert plan.first_refused == (7, 10)
+
+
+def test_a_connector_on_a_terrain_gap_is_skipped_and_still_a_neighbour():
+    """A run along an old wall on a shallow ford still reshapes it."""
+    wall = _wall_at(7, 10, rotation=2.0)
+    plan = _plan_gaps([(x, 10) for x in range(5, 11)], [wall], gaps={(7, 10)})
+    assert (plan.skipped, plan.refused) == (1, 0)
+    assert _variants(plan)[(6, 10)] == 0 and _variants(plan)[(8, 10)] == 0
+    assert plan.rewrites == [(1, wall, 0)]
+    assert plan.first_refused is None
+
+
+def test_a_tile_both_refused_and_blocked_counts_as_refused_only():
+    plan = _plan_gaps([(x, 10) for x in range(5, 11)], blocked={(7, 10)}, gaps={(7, 10)})
+    assert (plan.refused, plan.blocked) == (1, 0)
+    assert len(plan.nodes) == 5
+
+
+def test_refused_blocked_and_skipped_count_independently():
+    plan = _plan_gaps(
+        [(x, 10) for x in range(5, 12)], [_wall_at(5, 10)], blocked={(7, 10), (8, 10)}, gaps={(10, 10)}
+    )
+    assert (plan.skipped, plan.blocked, plan.refused) == (1, 2, 1)
+    assert sorted(_variants(plan)) == [(6, 10), (9, 10), (11, 10)]
+
+
+def test_first_refused_is_the_first_in_path_order():
+    path = [(x, 10) for x in range(10, 4, -1)]
+    plan = _plan_gaps(path, gaps={(6, 10), (8, 10)})
+    assert plan.first_refused == (8, 10)
+    assert plan.refused == 2
+
+
+def test_a_wholly_refused_path_plans_nothing():
+    tiles = [(x, 10) for x in range(5, 11)]
+    plan = _plan_gaps(tiles, [_wall_at(5, 11)], gaps=set(tiles))
+    assert plan.nodes == [] and plan.rewrites == []
+    assert (plan.refused, plan.blocked, plan.skipped) == (6, 0, 0)
+    assert plan.first_refused == (5, 10)
+
+
+def test_without_terrain_gaps_the_plan_counts_none():
+    plan = _plan([(x, 10) for x in range(5, 11)], blocked={(7, 10)})
+    assert (plan.refused, plan.first_refused) == (0, None)
+    assert plan.blocked == 1
+
+
+def test_run_gaps_contain_either_half_and_are_true_when_either_is():
+    occupied, terrain = frozenset({(1, 1)}), frozenset({(2, 2)})
+    gaps = wall_run.RunGaps(occupied, terrain)
+    assert (1, 1) in gaps and (2, 2) in gaps and (3, 3) not in gaps
+    assert gaps
+    assert wall_run.RunGaps(occupied, frozenset()) and wall_run.RunGaps(frozenset(), terrain)
+    assert not wall_run.RunGaps(frozenset(), frozenset())
+    assert not wall_run.RunGaps()

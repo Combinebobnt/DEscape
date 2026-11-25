@@ -138,12 +138,13 @@ def test_compose_and_invert_agree_with_the_transforms():
     assert compose("id", "r") == "r"
 
 
-@pytest.mark.parametrize("const", [OAK, WALL, HOUSE, CASTLE, ARCHER])
+@pytest.mark.parametrize("const", [OAK, WALL, HOUSE, CASTLE, ARCHER, 605, 608, 2559])
 @pytest.mark.parametrize("mode_id", [1, 2, 3, 5, 6, 9])
 def test_an_image_occupies_the_reflection_of_its_sources_tiles(const, mode_id):
     """The footprint parity rule, run through the real TRANSFORMS rather than
-    a table re-typed here. Square spans only: a non-square span has no const
-    to carry its swapped shape, which is what unsquare_spans reports."""
+    a table re-typed here. Square spans, plus bridges and a longhouse, whose
+    orientation siblings carry the swapped shape (TASK-329); a non-square span
+    with none is what unsquare_spans reports."""
     source = _at(const, mode_id)
     plan = _plan([source], mode_id=mode_id)
     src_tiles = set(render_units.unit_occupied_tiles(source, N, N))
@@ -307,20 +308,19 @@ BLOCKER_1X3 = 2423  # (1, 3) since GH #121
 BLOCKER_3X1 = 2424
 
 
-def test_a_blocker_keeps_its_orientation_under_an_axis_swap_and_is_reported():
-    """GH #121's named side effect: a blocker now takes the span > 1 path. It
-    has no orientation sibling, so the image keeps 1x3, re-anchored from the
-    reflected footprint's min corner, and unsquare_spans says so."""
+def test_a_blocker_takes_its_orientation_sibling_under_an_axis_swap_and_is_reported():
+    """GH #121's blocker takes the span > 1 path, and since TASK-329 its 3x1
+    sibling under an axis swap: the image occupies the reflection of its
+    source's tiles, and `reoriented` (not unsquare_spans) says so."""
     source = _at(BLOCKER_1X3, 1)
     plan = _plan([source], mode_id=1)
-    assert plan.unsquare_spans == [source]
+    assert plan.unsquare_spans == [] and plan.gates == []
+    assert plan.reoriented == [source]
     (image,) = plan.images
     assert swaps_axes(image.element)
-    assert image.unit_const == BLOCKER_1X3
-    reflected = [TRANSFORMS[image.element](tx, ty, N) for tx, ty in render_units.unit_occupied_tiles(source, N, N)]
-    low = (min(t[0] for t in reflected), min(t[1] for t in reflected))
-    tiles = render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N)
-    assert set(tiles) == {(low[0], low[1] + k) for k in range(3)}
+    assert image.unit_const == BLOCKER_3X1
+    reflected = {TRANSFORMS[image.element](tx, ty, N) for tx, ty in render_units.unit_occupied_tiles(source, N, N)}
+    assert set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N)) == reflected
 
 
 def test_a_blocker_under_a_non_swapping_element_occupies_its_reflection():
@@ -1195,3 +1195,72 @@ def _six_way_round_trip(loaded, tmp_path):
 
 def _f32(value: float) -> float:
     return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
+# TASK-329: bridges, chain, longhouse and blockers take their orientation siblings.
+A_TOP, A_MIDDLE, A_BOTTOM, B_MIDDLE = 605, 606, 607, 609
+MOLE = 2421  # (3, 1), no transposed partner
+DE_BRIDGE_PIECE = 1840  # (1, 2), excluded by family rule
+
+
+def test_a_bridge_top_under_a_half_turn_becomes_its_bottom_with_no_axis_swap():
+    source = _at(A_TOP, 5)
+    plan = _plan([source], mode_id=5)
+    (image,) = plan.images
+    assert image.element == "r2" and image.unit_const == A_BOTTOM
+    assert plan.reoriented == [source] and plan.gates == [] and plan.unsquare_spans == []
+    tiles = set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N))
+    assert tiles == {TRANSFORMS["r2"](tx, ty, N) for tx, ty in render_units.unit_occupied_tiles(source, N, N)}
+
+
+def test_a_mole_and_a_de_bridge_piece_still_keep_their_orientation_and_are_reported():
+    mole, piece = _at(MOLE, 1), _at(DE_BRIDGE_PIECE, 1, nth=40)
+    plan = _plan([mole, piece], mode_id=1)
+    assert plan.unsquare_spans == [mole, piece]
+    assert plan.reoriented == [] and plan.gates == []
+    assert sorted(image.unit_const for image in plan.images) == sorted([MOLE, DE_BRIDGE_PIECE])
+
+
+def test_a_bridge_only_mirror_reports_objects_not_gates():
+    plan = _plan([_at(A_TOP, 6), _at(A_MIDDLE, 6, nth=60)], mode_id=6)
+    assert plan.gates == []
+    assert len(plan.reoriented) == 2
+    # r, r2, r3 of an `a` top: b bottom, a bottom, b top; of an `a` middle: b middle, itself, b middle.
+    assert sorted(image.unit_const for image in plan.images) == [606, 607, 608, 609, 609, 610]
+
+
+def test_a_bridge_landing_on_itself_as_another_const_straddles_and_is_never_dropped():
+    """An `a` top piece across mode 8's mx axis: its mx image is its bottom
+    sibling on its own spot, which the position dedup must not swallow."""
+    bridge = FakeUnit(A_TOP, *render_units.span_anchor(31, 40, 2, 3))
+    source = plan_mirror(FakeMapManager(), 8, 0, False, False).source_indices
+    assert int(bridge.y) * N + int(bridge.x) in source
+    plan = _plan([bridge], mode_id=8)
+    assert plan.straddling == [bridge] and plan.blocked
+    assert [(o.element, o.unit_const, o.x, o.y) for o in plan.overlapping if o.element == "mx"] == [
+        ("mx", A_BOTTOM, bridge.x, bridge.y)
+    ]
+
+
+def test_two_images_on_one_spot_with_one_changed_const_emit_once():
+    """A `b` middle piece across mode 9's my axis: my fixes it, so each axis-swapped
+    image is reached twice (r and r . my land together, both the `a` middle piece)."""
+    piece = FakeUnit(B_MIDDLE, *render_units.span_anchor(49, 31, 3, 2))
+    source = plan_mirror(FakeMapManager(), 9, 0, False, False).source_indices
+    assert int(piece.y) * N + int(piece.x) in source
+    plan = _plan([piece], mode_id=9)
+    spots = [(image.unit_const, image.x, image.y) for image in plan.images]
+    assert len(spots) == len(set(spots)) == 3, spots
+    assert sorted(const for const, _x, _y in spots) == [A_MIDDLE, A_MIDDLE, B_MIDDLE]
+
+
+@pytest.mark.parametrize("overlaps", [None, OVERLAPS_SKIP])
+def test_two_images_on_one_spot_as_different_siblings_never_both_land(overlaps):
+    """Mode 8's mx-straddling `a` top: my and r2 reach one spot as 605 and 607,
+    so the second is an overlap, not a second bridge stacked on the first."""
+    bridge = FakeUnit(A_TOP, *render_units.span_anchor(31, 40, 2, 3))
+    plan = _plan([bridge], mode_id=8, **({} if overlaps is None else {"overlaps": overlaps}))
+    positions = [(image.x, image.y) for image in plan.images]
+    assert len(positions) == len(set(positions)), [(i.element, i.unit_const, i.x, i.y) for i in plan.images]
+    assert plan.straddling == [bridge]
+    assert any(o.element == "r2" and o.unit_const == A_BOTTOM for o in plan.overlapping)

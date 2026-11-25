@@ -18,6 +18,11 @@ section_end_slot() to pick the display slots it writes, and its section move
 That is safe because the partition written is the partition displayed: a
 false-positive divider moves a block the user can see, whole, and costs a
 nesting level, never data.
+
+Which names are dividers is one process-global DividerRule
+(divider_rule()/set_divider_rule()), read by every function here. Only the
+viewer sets it, from Settings > General > Trigger section headers; batch
+scripts and tools keep DEFAULT_DIVIDER_RULE, the built-in rule.
 """
 
 from __future__ import annotations
@@ -160,46 +165,173 @@ def leading_divider_run(name: str) -> int:
     return lead
 
 
+MAX_PREFIXES = 8
+MAX_PREFIX_LEN = 16
+_LONE_TAG_OPENERS = frozenset(_TAG_DELIMITERS)
+
+
+def prefix_error(token: str) -> str:
+    """Why `token` cannot be an extra header prefix, or "" when it can: the one
+    validator for Settings load and the dialog."""
+    if not token:
+        return "a prefix is empty"
+    if any(c.isspace() for c in token):
+        return f"{token!r} contains whitespace"
+    if len(token) > MAX_PREFIX_LEN:
+        return f"{token!r} is longer than {MAX_PREFIX_LEN} characters"
+    if token in _LONE_TAG_OPENERS:
+        return f"{token!r} alone would make every {token}tag{_TAG_DELIMITERS[token]} trigger a header"
+    if all(c in _DIVIDER_CHARS for c in token):
+        return f"{token!r} is a divider rule: use the shape checkboxes instead"
+    return ""
+
+
+@dataclass(frozen=True)
+class DividerRule:
+    """Which name shapes head a section. The two-sided `--- X ---` shape is
+    always on (New Section writes it); the other built-in shapes can be
+    switched off, and `prefixes` adds starting tokens of the user's own.
+    `prefixes` is kept longest first so two equal rules compare equal."""
+
+    bare_rule: bool = True
+    leading_rule: bool = True
+    tilde_wrap: bool = True
+    prefixes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "prefixes", tuple(sorted(self.prefixes, key=lambda t: (-len(t), t))))
+
+    @classmethod
+    def with_prefixes(cls, prefixes: Sequence[str], **toggles: bool) -> DividerRule:
+        return cls(prefixes=tuple(prefixes), **toggles)
+
+    def error(self) -> str:
+        """Why this rule cannot be made active, or "" when it can."""
+        if len(self.prefixes) > MAX_PREFIXES:
+            return f"at most {MAX_PREFIXES} prefixes"
+        if len(set(self.prefixes)) != len(self.prefixes):
+            return "a prefix is listed twice"
+        return next((err for err in map(prefix_error, self.prefixes) if err), "")
+
+    @classmethod
+    def from_config(cls, value: object) -> DividerRule:
+        """The rule a `trigger_section_headers` config value describes. Never
+        raises: a malformed value or toggle falls back to its default, and an
+        invalid, duplicate or ninth-and-later prefix is dropped."""
+        if not isinstance(value, dict):
+            return DEFAULT_DIVIDER_RULE
+        toggles = {}
+        for key in ("bare_rule", "leading_rule", "tilde_wrap"):
+            flag = value.get(key)
+            if isinstance(flag, bool):
+                toggles[key] = flag
+        prefixes: list[str] = []
+        raw = value.get("prefixes")
+        for token in raw if isinstance(raw, list) else ():
+            if isinstance(token, str) and not prefix_error(token) and token not in prefixes:
+                prefixes.append(token)
+        return cls(prefixes=tuple(prefixes[:MAX_PREFIXES]), **toggles)
+
+    def to_config(self) -> dict[str, object]:
+        return {
+            "bare_rule": self.bare_rule,
+            "leading_rule": self.leading_rule,
+            "tilde_wrap": self.tilde_wrap,
+            "prefixes": list(self.prefixes),
+        }
+
+
+DEFAULT_DIVIDER_RULE = DividerRule()
+_rule = DEFAULT_DIVIDER_RULE
+
+
+def divider_rule() -> DividerRule:
+    """The active rule every function here reads."""
+    return _rule
+
+
+def set_divider_rule(rule: DividerRule) -> None:
+    """Make `rule` active process-wide. Only the viewer calls this, from
+    Settings; batch scripts and tools keep DEFAULT_DIVIDER_RULE. Raises
+    ValueError for a rule DividerRule.error() refuses (a caller bug: the
+    dialog and the settings loader both validate first)."""
+    global _rule
+    err = rule.error()
+    if err:
+        raise ValueError(err)
+    _rule = rule
+
+
+def _builtin_shape(stripped: str) -> str | None:
+    """Which built-in shape a stripped name has: "two_sided", "bare_rule",
+    "leading_rule", "tilde_wrap", or None."""
+    if all(c in _DIVIDER_CHARS for c in stripped):
+        return "bare_rule" if len(stripped) >= _DIVIDER_BARE_RUN else None
+    lead = leading_divider_run(stripped)
+    trail = 0
+    while trail < len(stripped) and stripped[-(trail + 1)] in _DIVIDER_CHARS:
+        trail += 1
+    if lead >= _DIVIDER_RUN:
+        if trail >= _DIVIDER_RUN:
+            return "two_sided"
+        after = stripped[lead]
+        return "leading_rule" if after.isspace() or after.isalnum() else None
+    if lead == 1 and trail == 1 and stripped[0] == stripped[-1] == _DIVIDER_WRAP and stripped[1:-1].strip():
+        return "tilde_wrap"
+    return None
+
+
+def _matched_prefix(stripped: str, rule: DividerRule) -> str | None:
+    for token in rule.prefixes:
+        if stripped.startswith(token):
+            rest = stripped[len(token):].strip()
+            if rest and not all(c in _DIVIDER_CHARS for c in rest):
+                return token
+    return None
+
+
+def _divider_match(name: str) -> tuple[str, str | None] | None:
+    """("builtin", shape) or ("prefix", token) for a header under the active
+    rule, else None. Built-in shapes are tried first and keep their own cut."""
+    stripped = name.strip()
+    if not stripped:
+        return None
+    rule = _rule
+    shape = _builtin_shape(stripped)
+    if shape == "two_sided" or (shape is not None and getattr(rule, shape)):
+        return "builtin", shape
+    token = _matched_prefix(stripped, rule)
+    return ("prefix", token) if token is not None else None
+
+
 def is_divider(name: str) -> bool:
-    """Whether `name` reads as a `--- Section ---`-style header.
+    """Whether `name` reads as a `--- Section ---`-style header under the
+    active DividerRule (divider_rule()).
 
     A name consisting entirely of >=3 characters from _DIVIDER_CHARS is a
-    bare divider (`------`); a 2-character `--` is neither a real rule nor two
-    overlapping runs of one. Otherwise, stripped, a name is a divider in any
-    of three shapes:
+    bare divider (`------`, toggle `bare_rule`); a 2-character `--` is
+    neither a real rule nor two overlapping runs of one. Otherwise, stripped,
+    a name is a divider in any of three built-in shapes:
 
     - it starts with >=2 AND ends with >=2 of them (`--- Setup ---`,
-      `---Setup---`, `--Start--`);
+      `---Setup---`, `--Start--`), always on;
     - it starts with >=2 of them followed by whitespace or a letter or digit
-      (`----- ambush-setup`, `--lost-both-path`). The character after the run
-      keeps an arrow such as `--> Attack` out;
-    - one `~` on each side of a title (`~Part I~`). `~` is the only character
-      the corpus wraps singly; `*Boss*` reads as emphasis and stays out.
+      (`----- ambush-setup`, `--lost-both-path`, toggle `leading_rule`). The
+      character after the run keeps an arrow such as `--> Attack` out;
+    - one `~` on each side of a title (`~Part I~`, toggle `tilde_wrap`). `~`
+      is the only character the corpus wraps singly; `*Boss*` reads as
+      emphasis and stays out.
+
+    Failing those, it is a divider when it starts with one of the rule's
+    `prefixes` followed by something other than whitespace or divider
+    characters (`>> Setup` under prefix `>>`).
 
     A false positive here costs a cosmetic nesting level, never data: the
     header row IS the divider trigger, so it stays selectable, editable, and
     movable either way. That is what makes a fuzzy heuristic acceptable --
     see the plan's "the one invariant that makes false positives safe".
     """
-    stripped = name.strip()
-    if not stripped:
-        return False
-    if all(c in _DIVIDER_CHARS for c in stripped):
-        return len(stripped) >= _DIVIDER_BARE_RUN
-
-    lead = leading_divider_run(name)
-    trail = 0
-    while trail < len(stripped) and stripped[-(trail + 1)] in _DIVIDER_CHARS:
-        trail += 1
-    if lead >= _DIVIDER_RUN:
-        after = stripped[lead]
-        return trail >= _DIVIDER_RUN or after.isspace() or after.isalnum()
-    return (
-        lead == 1
-        and trail == 1
-        and stripped[0] == stripped[-1] == _DIVIDER_WRAP
-        and bool(stripped[1:-1].strip())
-    )
+    return _divider_match(name) is not None
 
 
 @dataclass(frozen=True)
@@ -224,14 +356,20 @@ def split_divider(name: str) -> tuple[str, str, str] | None:
     is leading whitespace, the maximal leading divider run and the whitespace
     after it; suffix the mirror image, trailing whitespace included. None for
     a non-divider and for a divider with no title slot (a bare run, or runs
-    around nothing but whitespace).
+    around nothing but whitespace). A prefix header's prefix is its leading
+    whitespace, the prefix token and the whitespace after it; its suffix is
+    trailing whitespace only.
     """
-    if not is_divider(name):
-        return None
-    stripped = name.strip()
-    if all(c in _DIVIDER_CHARS for c in stripped):
+    match = _divider_match(name)
+    if match is None or match[1] == "bare_rule":
         return None
     start = len(name) - len(name.lstrip())
+    if match[0] == "prefix":
+        start += len(match[1])
+        while name[start].isspace():
+            start += 1
+        end = len(name.rstrip())
+        return name[:start], name[start:end], name[end:]
     while name[start] in _DIVIDER_CHARS:
         start += 1
     while name[start].isspace():
@@ -308,13 +446,21 @@ COPY_SUFFIX = " (copy)"
 def copied_name(name: str, suffix: str = COPY_SUFFIX) -> str:
     """The name a copy of `name` gets (GH #134): `suffix` inside a titled
     divider's title, so the copy still heads a section of its own; a bare
-    run like `------` verbatim; anything else with `suffix` appended."""
+    run like `------` verbatim; anything else with `suffix` appended.
+
+    `name` verbatim too whenever the suffixed name's header status would
+    differ (`------` with `bare_rule` off, a lone `>>` under a `>>` prefix):
+    trigger_model.display_order_with_copies_inserted() places copies from the
+    source names, so a copy that turned into a header would take over the
+    rest of its section."""
     parts = split_divider(name)
     if parts is not None:
-        return parts[0] + parts[1] + suffix + parts[2]
-    if is_divider(name):
+        copied = parts[0] + parts[1] + suffix + parts[2]
+    elif is_divider(name):
         return name
-    return name + suffix
+    else:
+        copied = name + suffix
+    return copied if is_divider(copied) == is_divider(name) else name
 
 
 def divider_title_error(name: str, title: str) -> str:

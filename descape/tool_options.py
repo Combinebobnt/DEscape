@@ -116,6 +116,7 @@ OPTIONS: tuple[ToolOption, ...] = (
     ToolOption("paste_units", "Paste units", "paste", BOOL, True),
     ToolOption("free_placement", "Free placement", "placement", BOOL, False),
     ToolOption("off_grid", "Off-grid", "placement", BOOL, False),
+    ToolOption("place_random", "Random facing/variant (Place Unit)", "placement", BOOL, False),
     ToolOption("walls_skip_occupied", "Walls skip occupied tiles", "placement", BOOL, False),
     ToolOption("gate_walls", "Moving a gate updates walls", "placement", BOOL, False),
     ToolOption(

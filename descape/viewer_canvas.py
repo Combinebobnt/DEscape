@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
 from descape import (
     colour_mood,
     edge_ticks,
+    ghost_sprite,
     grid_overlay,
     iso_geometry,
     perf_trace,
@@ -245,17 +246,12 @@ def level_rect_for(cache, mip: int, scene_rect: QRectF, k: int = 0) -> tuple[int
 
 def paint_colour_grade(painter: QPainter, rect: QRectF, grade: colour_mood.MoodGrade) -> None:
     """Paints `grade` (colour_mood.apply() is the oracle) over what `rect`
-    already holds: Multiply gives dst*k, ColorDodge with 1 - 1/m gives dst*m
-    (m > 1), each within a level of the formula."""
+    already holds: a Multiply fill when a channel needs one, then a SourceOver
+    tint. No ColorDodge: it and Multiply blend per pixel, SourceOver has a SIMD path."""
     painter.save()
-    darken = tuple(min(m, 1.0) for m in grade.multiply)
-    brighten = tuple(max(m, 1.0) for m in grade.multiply)
-    if min(darken) < 1.0:
+    if min(grade.multiply) < 1.0:
         painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-        painter.fillRect(rect, QColor.fromRgbF(*darken))
-    if max(brighten) > 1.0:
-        painter.setCompositionMode(QPainter.CompositionMode_ColorDodge)
-        painter.fillRect(rect, QColor.fromRgbF(*(1.0 - 1.0 / m for m in brighten)))
+        painter.fillRect(rect, QColor.fromRgbF(*grade.multiply))
     if grade.tint_alpha > 0.0:
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.fillRect(rect, QColor.fromRgbF(*grade.tint, grade.tint_alpha))
@@ -896,6 +892,7 @@ class TickPaintStats:
         self.axis_labels_drawn = 0
         self.minor_len_px = 0.0
         self.major_len_px = 0.0
+        self.overhang_clipped = False
 
 
 class EdgeTickItem(QGraphicsItem):
@@ -910,7 +907,9 @@ class EdgeTickItem(QGraphicsItem):
     drag-paint stroke, and a 480x480 at interval 4 is 484 ticks. Do not
     "simplify" the rebuild back into paint(). paint() culls that fixed run
     list against option.exposedRect and batches the survivors per pen, which
-    is what keeps a small repaint cheap.
+    is what keeps a small repaint cheap. The same rule holds for
+    self._overhang, the terrain holes Settings > Appearance's "behind
+    elevated terrain" clips out (edge_ticks.terrain_overhang()).
 
     Marks are drawn in DEVICE space, under a reset transform, so a tick is a
     fixed pixel length and a label stays upright and readable at any zoom.
@@ -954,6 +953,9 @@ class EdgeTickItem(QGraphicsItem):
         self._base_rect = QRectF(map_rect)
         self._bounding_rect = QRectF(map_rect)
         self._font = map_overlay_font(edge_ticks.LABEL_FONT_PX)
+        self._overhang: tuple[QPolygonF, ...] = ()
+        self._overhang_rects: tuple[QRectF, ...] = ()
+        self._behind_terrain = False
         self.stats = TickPaintStats()
         # Same flag, same reason as MapCanvasItem: without it Qt reports the
         # whole boundingRect as exposed and paint()'s cull can never fire.
@@ -1016,6 +1018,36 @@ class EdgeTickItem(QGraphicsItem):
         self._pad = pad
         self._apply_geometry()
 
+    def set_overhang(self, polys) -> None:
+        """The scene-space terrain overhang paint() clips out while behind-terrain is on."""
+        self._overhang = tuple(polys)
+        self._overhang_rects = tuple(poly.boundingRect() for poly in self._overhang)
+        self.update()
+
+    def set_behind_terrain(self, on: bool) -> None:
+        if on == self._behind_terrain:
+            return
+        self._behind_terrain = on
+        self.update()
+
+    def _overhang_clip(self, option) -> QPainterPath | None:
+        """The item rect with each exposed overhang polygon as a hole, or None
+        to paint unclipped, byte-identical to the option being off."""
+        if not self._behind_terrain:
+            return None
+        rect = getattr(option, "exposedRect", None)
+        everything = rect is None or rect.isEmpty()
+        holes = [p for p, r in zip(self._overhang, self._overhang_rects, strict=True) if everything or r.intersects(rect)]
+        if not holes:
+            return None
+        clip = QPainterPath()
+        clip.setFillRule(Qt.OddEvenFill)
+        clip.addRect(self._bounding_rect)
+        for poly in holes:
+            clip.addPolygon(poly)
+            clip.closeSubpath()
+        return clip
+
     def boundingRect(self) -> QRectF:
         return self._bounding_rect
 
@@ -1032,9 +1064,14 @@ class EdgeTickItem(QGraphicsItem):
             stats = TickPaintStats()
             self.stats = stats
             exposed = self._exposed_device_rect(world, option)
+            clip = self._overhang_clip(option)
 
             painter.save()
             try:
+                if clip is not None:
+                    # Set in scene space; QPainter keeps it in device space, so it survives the reset.
+                    painter.setClipPath(clip, Qt.IntersectClip)
+                    stats.overhang_clipped = True
                 painter.resetTransform()
                 painter.setFont(self._font)
                 for run in self._runs:
@@ -1679,7 +1716,8 @@ class UnitGhostItem(QGraphicsItem):
     only two precedents here, and every other overlay in this module draws
     geometry alone.
 
-    **It touches no render-cache state at all**, which is the whole design.
+    **It writes no render-cache pixels or unit layers**, which is the whole design
+    (TASK-291: it only reads the painted level's proj and corner_rise).
     Every unit mutation routes through ViewerWindow._after_unit_mutation(),
     whose three steps are whole-canvas (invalidate_units' unvectorized walk
     over every unit, a whole-canvas invalidate_region, and SlopedChunkCache.
@@ -1723,6 +1761,11 @@ class UnitGhostItem(QGraphicsItem):
         self._refusal_color = QColor(Qt.red)
         self._garrison_color = QColor(Qt.yellow)
         self._bounding_rect = QRectF()
+        # TASK-291: (GhostSprite, look) members and the canvas cache whose level paint() draws, plus
+        # mip -> _images_at()'s entries, built on the first paint at that level.
+        self._sprites: list = []
+        self._cache = None
+        self._level_images: dict[int, list] = {}
         self.setOpacity(self.GHOST_OPACITY)
 
     @property
@@ -1754,21 +1797,26 @@ class UnitGhostItem(QGraphicsItem):
     def _retint(self) -> None:
         self._tint_cache = {}
         self._tinted = [None if t is None else self._tint(*t) for t in self._tint_sources]
+        self._level_images = {}
         self.update()
 
-    def set_sprites(self, draws, refused: bool = False, garrison: bool = False) -> bool:
+    def set_sprites(self, draws, refused: bool = False, garrison: bool = False, *, sprites=(), cache=None) -> bool:
         """draws: render.unit_sprite_draws_at()'s (draw, px, py) triples, in
         canvas pixels -- which ARE scene coordinates, since scene space is
         pinned to the reference mip (MapCanvasItem's plan decision D2).
+        `sprites` are the ghost_sprite.GhostSprite members those draws are the
+        level 0 of, drawn at the canvas's level when `cache` is given.
 
         Returns whether anything is left to show, so the caller can fall back
         to the coloured mark on an empty resolve rather than leaving a stale
         ghost on screen. `refused` wins over `garrison`."""
+        look = self.REFUSED if refused else self.GARRISON if garrison else None
+        members = [(member, look) for member in sprites]
         if refused:
-            return self.set_content((), (), refused_draws=draws)
+            return self.set_content((), (), refused_draws=draws, sprites=members, cache=cache)
         if garrison:
-            return self.set_content((), (), garrison_draws=draws)
-        return self.set_content(draws, ())
+            return self.set_content((), (), garrison_draws=draws, sprites=members, cache=cache)
+        return self.set_content(draws, (), sprites=members, cache=cache)
 
     def set_mark(self, polygons, color: tuple[int, int, int], refused: bool = False, garrison: bool = False) -> bool:
         """polygons: unit_pick.unit_polygons()' plain (x, y) point lists, in
@@ -1782,13 +1830,25 @@ class UnitGhostItem(QGraphicsItem):
         return self.set_content((), [(polygons, color)])
 
     def set_content(
-        self, draws, marks, refused_draws=(), refused_marks=(), garrison_draws=(), garrison_marks=()
+        self, draws, marks, refused_draws=(), refused_marks=(), garrison_draws=(), garrison_marks=(),
+        *, sprites=(), cache=None,
     ) -> bool:
         """Sprite draws and coloured marks together, for a group ghost whose
         members resolve differently. `marks` is a list of (polygons, color).
         The refused_ pair is the same shape, drawn refused (TASK-327), and the
-        garrison_ pair in the garrison look (TASK-549)."""
+        garrison_ pair in the garrison look (TASK-549).
+
+        `sprites` (TASK-291): the (GhostSprite, look) members whose level-0
+        draws make up the three draw lists. With the canvas `cache`, paint()
+        draws them at the level the canvas paints, resolved on its first paint
+        there; without it, level 0 is drawn at every zoom."""
         self.prepareGeometryChange()
+        # The last level images' sources stay tinted: the next content is usually the same members moved.
+        live: set[int] = {id(entry[1]) for entries in self._level_images.values() for entry in entries}
+        order = (None, self.REFUSED, self.GARRISON)
+        self._sprites = sorted(sprites, key=lambda pair: order.index(pair[1]))
+        self._cache = cache if self._sprites else None
+        self._level_images = {}
         self._arrays = []
         self._images = []
         self._marks = []
@@ -1806,7 +1866,6 @@ class UnitGhostItem(QGraphicsItem):
                     self._refused_marks.append(look == self.REFUSED)
                     self._garrison_marks.append(look == self.GARRISON)
                     rect = rect.united(polygon.boundingRect())
-        live: set[int] = set()
         for draw_list, look in ((draws, None), (refused_draws, self.REFUSED), (garrison_draws, self.GARRISON)):
             for draw, ax, ay in draw_list:
                 rgba = np.ascontiguousarray(draw.rgba)
@@ -1826,9 +1885,27 @@ class UnitGhostItem(QGraphicsItem):
         # Only what this content draws stays cached: a group drag re-sends the same sources every move.
         self._tint_cache = {key: hit for key, hit in self._tint_cache.items() if key[0] in live}
         self._tinted = [None if t is None else self._tint(*t) for t in self._tint_sources]
+        if self._cache is not None:
+            # Each level rounds its own anchor, hotspot and size; the pad holds every level's rect.
+            pad = ghost_sprite.level_pad(self._cache)
+            rect = rect.adjusted(-pad, -pad, pad, pad)
         self._bounding_rect = rect
         self.update()
         return bool(self._images or self._marks)
+
+    def _images_at(self, mip: int) -> list:
+        """Level `mip`'s (QImage, source rgba, held array, x0, y0, scale) per sprite piece, once per content."""
+        hit = self._level_images.get(mip)
+        if hit is None:
+            hit = self._level_images[mip] = []
+            for draw, x0, y0, s, look in ghost_sprite.level_entries(self._sprites, self._cache, mip):
+                hold = np.ascontiguousarray(draw.rgba) if look is None else None
+                if hold is None:
+                    image = self._tint(draw.rgba, look)
+                else:
+                    image = QImage(hold.data, hold.shape[1], hold.shape[0], 4 * hold.shape[1], QImage.Format_RGBA8888)
+                hit.append((image, draw.rgba, hold, x0, y0, s))
+        return hit
 
     def _tint(self, source: np.ndarray, look: str) -> QImage:
         """A copy of `source` with its RGB blended toward `look`'s colour,
@@ -1881,8 +1958,19 @@ class UnitGhostItem(QGraphicsItem):
                 painter.setPen(pen)
                 painter.setBrush(brush)
             painter.drawPolygon(polygon)
-        for (image, x, y), tinted in zip(self._images, self._tinted, strict=True):
-            painter.drawImage(QPointF(x, y), image if tinted is None else tinted)
+        # TASK-291: the canvas's own level rule on the same painter (MapCanvasItem._select_mip()).
+        mip = 0 if self._cache is None else self._cache.mip_for_scale(_max_axis_scale(painter.deviceTransform()))
+        if mip == 0:
+            for (image, x, y), tinted in zip(self._images, self._tinted, strict=True):
+                painter.drawImage(QPointF(x, y), image if tinted is None else tinted)
+            return
+        # The canvas's overloads too (_level_blocks()): the point one at scale 1, else target and source rects.
+        for image, _source, _hold, x, y, s in self._images_at(mip):
+            if s == 1.0:
+                painter.drawImage(QPointF(x, y), image)
+            else:
+                w, h = image.width(), image.height()
+                painter.drawImage(QRectF(x * s, y * s, w * s, h * s), image, QRectF(0, 0, w, h))
 
 
 class CameraMarkerItem(QGraphicsItem):

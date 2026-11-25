@@ -11,8 +11,15 @@ otherwise, the same order descape/game_dataset.py resolves at runtime.
 passes and regen_game_data.py never does. Each generator calls set_lenient()
 after parsing its arguments; a guard that pins an invariant measured on the
 stock .dat then goes through refuse(), which raises SystemExit as before when
-strict, and when lenient records the message in WARNINGS and returns, so the
+strict, and when lenient records a warning in WARNINGS and returns, so the
 caller degrades only the object or row it guards.
+
+A warning is a record (GH #323): `text` is `message (fallback)`, the
+developer's wording a mod author's bug report needs; `kind` is one of
+WARNING_KINDS, what the user sees differently; `subject` is what it is about,
+an int id, a tuple of ids or None. Each kind's subject is a unit const or a
+terrain id by the kind (descape/data_mod_menu.py's WARNING_TEXT, which holds
+the user's wording; tools import nothing from descape/).
 """
 
 from __future__ import annotations
@@ -27,8 +34,22 @@ ROR_SUBPATH = Path("modes") / "Pompeii"
 DAT_SUBPATH = Path("resources") / "_common" / "dat" / "empires2_x2_p1.dat"
 
 _lenient = False
-# Insertion-ordered and de-duplicated: per-civ loops repeat a message.
-WARNINGS: list[str] = []
+# What a lenient warning means to the user; the viewer's WARNING_TEXT words each one.
+WARNING_KINDS = (
+    "parts_dropped",
+    "not_drawn",
+    "no_garrison_flags",
+    "age_art",
+    "civ_art",
+    "footprint",
+    "placement_unchecked",
+    "invisible_rule",
+    "terrain_class",
+    "terrain_blend",
+)
+# {"text", "kind", "subject"} records, insertion-ordered and de-duplicated on
+# text: per-civ loops repeat a message.
+WARNINGS: list[dict] = []
 
 
 def add_dataset_argument(parser: argparse.ArgumentParser) -> None:
@@ -61,14 +82,21 @@ def lenient() -> bool:
     return _lenient
 
 
-def refuse(message: str, fallback: str) -> None:
+def refuse(message: str, fallback: str, kind: str, subject: int | tuple[int, ...] | None = None) -> None:
     """Strict: raise SystemExit(message). Lenient: record `message (fallback)`
-    in WARNINGS and return, and the caller takes `fallback`."""
+    with its kind and subject in WARNINGS and return, and the caller takes
+    `fallback`. An unknown `kind` raises ValueError either way."""
+    if kind not in WARNING_KINDS:
+        raise ValueError(f"unknown warning kind {kind!r}")
     if not _lenient:
         raise SystemExit(message)
-    warning = f"{message} ({fallback})"
-    if warning not in WARNINGS:
-        WARNINGS.append(warning)
+    text = f"{message} ({fallback})"
+    if all(warning["text"] != text for warning in WARNINGS):
+        if isinstance(subject, tuple):
+            subject = tuple(int(member) for member in subject) or None
+        elif subject is not None:
+            subject = int(subject)
+        WARNINGS.append({"text": text, "kind": kind, "subject": subject})
 
 
 def game_root(install: Path, dataset: str) -> Path:

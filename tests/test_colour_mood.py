@@ -45,18 +45,25 @@ def test_every_mood_but_default_has_a_grade_and_a_usable_tint() -> None:
         grade = grade_for(name)
         assert grade is not None, name
         assert all(0.0 <= c <= 1.0 for c in grade.tint), name
+        assert all(0.0 < m <= 1.0 for m in grade.multiply), name
         assert 0.0 <= grade.tint_alpha <= 1.0, name
 
 
 def test_winters_tint_above_one_is_clamped() -> None:
-    assert colour_mood.MOOD_PARAMS["Winter"].tint_color[2] > 1.0
-    assert grade_for("Winter").tint[2] == 1.0
+    params = colour_mood.MOOD_PARAMS["Winter"]
+    assert params.tint_color[2] > 1.0
+    grade = grade_for("Winter")
+    assert grade.tint_alpha * grade.tint[2] == pytest.approx(params.tint_factor * 1.0)
 
 
 def test_a_grade_is_relative_to_default() -> None:
-    """A mood at Default's own brightness with white tints would change nothing."""
-    default = colour_mood.MOOD_PARAMS["Default"]
-    assert grade_for("Murky").multiply[2] == pytest.approx(colour_mood.MOOD_PARAMS["Murky"].brightness / default.brightness)
+    """Default's own values grade to nothing: the textures already look like Default."""
+    grade = colour_mood._grade("probe", colour_mood.MOOD_PARAMS["Default"])
+    assert grade.multiply == (1.0, 1.0, 1.0) and grade.tint_alpha == 0.0
+    assert all(apply(grade, rgb) == rgb for rgb in SWATCHES.values())
+    # Murky has Default's brightness and a white terrain tint, so only its tint moves blue.
+    murky = colour_mood.MOOD_PARAMS["Murky"]
+    assert apply(grade_for("Murky"), (128, 128, 128))[2] == round(0.9 * 128 + murky.tint_factor * 255 * murky.tint_color[2])
 
 
 def test_a_grade_is_frozen() -> None:
@@ -73,9 +80,59 @@ def test_the_gh165_night_pair(default, night) -> None:
     assert all(abs(a - b) <= 6 for a, b in zip(got, night, strict=True)), got
 
 
-def test_apply_saturates_the_multiply_before_the_tint() -> None:
-    grade = MoodGrade("probe", (2.0, 2.0, 2.0), (0.0, 0.0, 0.0), 0.5)
-    assert apply(grade, (200, 200, 200)) == (128, 128, 128)
+def _fitted(name: str, channel: int, level: float) -> float:
+    """The module docstring's formula, unrounded and unclamped: what a grade approximates."""
+    params, default = colour_mood.MOOD_PARAMS[name], colour_mood.MOOD_PARAMS["Default"]
+    slope = (1 - params.tint_factor) * params.brightness / default.brightness * params.terrain_tint_color[channel]
+    return slope * level + params.tint_factor * 255 * min(params.tint_color[channel], 1.0)
+
+
+def test_apply_does_not_saturate_before_the_tint() -> None:
+    """Desert brightens: its red at 250 lands on the formula's 249.6, not on a
+    clamped 255 under the tint (242), and white stays in range."""
+    desert = grade_for("Desert")
+    assert _fitted("Desert", 0, 250) == pytest.approx(249.6, abs=0.05)
+    assert apply(desert, (250, 250, 250))[0] == 250
+    assert all(c <= 255 for c in apply(desert, (255, 255, 255)))
+    assert apply(MoodGrade("probe", (1.0, 1.0, 1.0), (1.0, 1.0, 1.0), 0.5), (255, 255, 255)) == (255, 255, 255)
+
+
+# Per mood: does it need the Multiply fill, and its worst error in levels over 40..200 (TASK-557 Measured 5).
+FILLS = {
+    "Desert": (False, 0.0),
+    "Jungle": (False, 1.6),
+    "Winter": (False, 4.0),
+    "Autumn": (False, 3.2),
+    "Spring": (False, 2.5),
+    "Arctic": (False, 9.3),
+    "Brumous": (False, 1.6),
+    "Misty": (False, 2.5),
+    "Murky": (False, 2.7),
+    "Summer": (False, 3.4),
+    "Night": (True, 0.0),
+    "Darkness": (True, 0.0),
+    "Evening": (True, 0.0),
+    "Twilight": (True, 0.0),
+    "Swamp": (True, 0.0),
+    "Savannah": (True, 0.0),
+    "Rainforest": (True, 3.1),
+    "Steppes": (True, 4.0),
+}
+
+
+def test_the_fills_table_covers_every_mood() -> None:
+    assert set(FILLS) == set(option_fields.COLOUR_MOODS[1:])
+
+
+@pytest.mark.parametrize("name", list(FILLS))
+def test_each_moods_fills_and_error(name) -> None:
+    """The census moods (Desert, Jungle, Winter, Autumn) take one fill, Night two."""
+    multiply, bound = FILLS[name]
+    grade = grade_for(name)
+    assert (min(grade.multiply) < 1.0) is multiply
+    # apply() rounds, so half a level on top of the bound.
+    worst = max(abs(apply(grade, (c, c, c))[ch] - _fitted(name, ch, c)) for c in range(40, 201) for ch in range(3))
+    assert worst <= bound + 0.51, worst
 
 
 # -- the Qt paint ------------------------------------------------------------------
@@ -93,15 +150,16 @@ SWATCHES = {
 
 
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("fmt", ["Format_RGB32", "Format_ARGB32_Premultiplied"])
 @pytest.mark.parametrize("name", option_fields.COLOUR_MOODS[1:])
-def test_the_qt_paint_matches_apply(name) -> None:
+def test_the_qt_paint_matches_apply(name, fmt) -> None:
     from PyQt5.QtCore import QRectF
     from PyQt5.QtGui import QColor, QImage, QPainter
 
     from descape.viewer_canvas import paint_colour_grade
 
     grade = grade_for(name)
-    image = QImage(len(SWATCHES), 1, QImage.Format_RGB32)
+    image = QImage(len(SWATCHES), 1, getattr(QImage, fmt))
     for x, rgb in enumerate(SWATCHES.values()):
         image.setPixelColor(x, 0, QColor(*rgb))
     painter = QPainter(image)
@@ -113,3 +171,37 @@ def test_the_qt_paint_matches_apply(name) -> None:
         got = (pixel.red(), pixel.green(), pixel.blue())
         want = apply(grade, rgb)
         assert all(abs(a - b) <= 2 for a, b in zip(got, want, strict=True)), (swatch, got, want)
+
+
+def _painted_modes(grade: MoodGrade) -> list[int]:
+    """The composition modes paint_colour_grade() sets for `grade`, in order."""
+    from PyQt5.QtCore import QRectF
+    from PyQt5.QtGui import QImage, QPainter
+
+    from descape.viewer_canvas import paint_colour_grade
+
+    class Spy(QPainter):
+        def setCompositionMode(self, mode) -> None:
+            modes.append(mode)
+            super().setCompositionMode(mode)
+
+    modes: list[int] = []
+    image = QImage(4, 4, QImage.Format_RGB32)
+    image.fill(0x808080)
+    painter = Spy(image)
+    paint_colour_grade(painter, QRectF(0, 0, 4, 4), grade)
+    painter.end()
+    return modes
+
+
+@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
+@pytest.mark.parametrize("name", option_fields.COLOUR_MOODS[1:])
+def test_no_grade_paints_a_per_pixel_dodge(name) -> None:
+    """ColorDodge blends per pixel (TASK-557): every grade is a SourceOver
+    tint, after a Multiply only where FILLS says the mood needs one."""
+    from PyQt5.QtGui import QPainter
+
+    modes = _painted_modes(grade_for(name))
+    assert QPainter.CompositionMode_ColorDodge not in modes
+    multiply = [QPainter.CompositionMode_Multiply] if FILLS[name][0] else []
+    assert modes == [*multiply, QPainter.CompositionMode_SourceOver]

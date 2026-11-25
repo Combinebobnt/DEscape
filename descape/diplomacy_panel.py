@@ -346,7 +346,7 @@ class DiplomacyPanel(QWidget):
         text = ", ".join(summary) + "."
         tooltip = (
             "A cell stored as a value no editor could show truthfully is shown "
-            "as stored instead -- hover it for details."
+            "as stored instead. Hover it for details."
         )
 
         # The self-cell note: per selected player, not per file (see module
@@ -359,7 +359,7 @@ class DiplomacyPanel(QWidget):
             text += f" Self-stance stored as {label}."
             tooltip += (
                 f" Player {self._player_id}'s own stance toward itself is stored "
-                f"as {label} rather than the default (Enemy) -- kept exactly as "
+                f"as {label} rather than the default (Enemy), kept exactly as "
                 "recorded. There is no row for it here, since a player's "
                 "relationship to itself is not a real in-game setting."
             )

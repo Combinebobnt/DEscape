@@ -10,7 +10,9 @@ each unit's reference_id. Both take each unit's const, position and rotation
 from mirror_tools.unit_image(), the functions Mirror Map uses. So an ANGLE
 facing goes through facing_image(), a wall's shape index through
 wall_index_image() (integer-encoded files only), a gate through
-reorient_gate_const(), and every other rotation is copied verbatim.
+reorient_gate_const(), a bridge, chain, longhouse or blocker through
+reorient_object_const() (object_orientation.py's siblings, a bridge's ends
+included), and every other rotation is copied verbatim.
 
 Only the eight D4 elements, which are exact on the tile lattice. The block sits
 in block-local coordinates on an N x N square, N = max(width, height), the
@@ -25,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
-from descape import gate_orientation, mirror_tools, render_units, unit_rotation, unit_sprites
+from descape import gate_orientation, mirror_tools, object_orientation, render_units, unit_rotation, unit_sprites
 from descape.region_clipboard import RegionBlock
 from descape.terrain_palette import tile_span
 
@@ -41,7 +43,7 @@ ROTATE_CW, ROTATE_CCW, FLIP_WEST_NORTH, FLIP_WEST_SOUTH = "r", "r3", "mx", "my"
 class BlockTransform:
     block: RegionBlock
     # Units drawn as before though the block turned: a non-square span with no
-    # orientation sibling under an axis-swapping element, and every cliff.
+    # gate or object orientation sibling under an axis-swapping element, and every cliff.
     kept_orientation: int
 
 
@@ -49,7 +51,9 @@ def _keeps_orientation(unit_const: int, element: str) -> bool:
     if unit_const in unit_sprites.cliff_consts():
         return True
     span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
-    return span_x != span_y and element in mirror_tools.AXIS_SWAPPING and not gate_orientation.is_gate(unit_const)
+    if span_x == span_y or element not in mirror_tools.AXIS_SWAPPING:
+        return False
+    return not gate_orientation.is_gate(unit_const) and not object_orientation.has_siblings(unit_const)
 
 
 def _frame(element: str, w: int, h: int) -> tuple[int, int, int, int, int]:
@@ -75,10 +79,14 @@ def unit_images(units, element: str, w: int, h: int, file_radian: bool) -> list[
     n, low_x, low_y, _new_w, _new_h = _frame(element, w, h)
     images = [mirror_tools.unit_image(u, u.dx, u.dy, element, n, file_radian) for u in units]
     result = []
-    for unit, (unit_const, own_x, own_y, rotation) in zip(units, images, strict=True):
-        x, y = own_x, own_y
+    for unit, (own_const, own_x, own_y, rotation) in zip(units, images, strict=True):
+        x, y, unit_const = own_x, own_y, own_const
         if 0 <= unit.garrison_slot < len(images):
             _holder_const, x, y, _holder_rotation = images[unit.garrison_slot]
+        gate = getattr(unit, "gate", -1)
+        if 0 <= gate < len(images):
+            # TASK-532: a carried corner piece takes its gate image's own corner, not reorient_gate_const()'s verbatim one.
+            unit_const = gate_orientation.corner_piece(images[gate][0]) or own_const
         result.append((unit_const, x - low_x, y - low_y, rotation))
     return result
 
@@ -151,13 +159,15 @@ class LocalUnit(NamedTuple):
     dx: float
     dy: float
     garrison_slot: int
+    gate: int = -1  # the member index of the gate this unit is a corner piece of (TASK-532)
 
 
 @dataclass(frozen=True)
 class FirstUnit:
     """A placed unit as a selection transform first found it (TASK-256).
     `key` is the caller's handle for it, opaque here; `holder` is the index in
-    the same list of the unit it is garrisoned in, or -1."""
+    the same list of the unit it is garrisoned in, or -1; `gate` the index of
+    the gate whose corner piece it is, or -1 (TASK-532)."""
 
     key: object
     unit_const: int
@@ -165,6 +175,7 @@ class FirstUnit:
     y: float
     rotation: float
     holder: int = -1
+    gate: int = -1
 
 
 # InPlaceImage.rotation_write's two kinds: a facing for set_rotation(), a shape index for set_wall_variant().
@@ -197,8 +208,9 @@ def plan_in_place(
     edits rather than new ones (TASK-256). The images are unit_images()', so
     the per-const rules are the region turn's and Mirror Map's: an ANGLE
     facing through facing_image(), a wall's shape index through
-    wall_index_image() in an integer-encoded file only, a gate through
-    reorient_gate_const(), every other rotation verbatim (rotation_write None).
+    wall_index_image() in an integer-encoded file only, a gate or a non-square
+    object through mirror_tools.image_const(), every other rotation verbatim
+    (rotation_write None).
     The image rectangle is centred on `rect`'s doubled centre by anchor_for(),
     so a caller that always plans from the same first state and the element
     composed since cannot drift. `tiles` is `rect`'s tiles-only block, turned
@@ -211,7 +223,7 @@ def plan_in_place(
     w, h = tx1 - tx0, ty1 - ty0
     if tiles is not None and (tiles.width, tiles.height) != (w, h):
         raise ValueError(f"plan_in_place: a {tiles.width}x{tiles.height} tiles block for a {w}x{h} rect")
-    local = [LocalUnit(u.unit_const, u.rotation, u.x - tx0, u.y - ty0, u.holder) for u in first_units]
+    local = [LocalUnit(u.unit_const, u.rotation, u.x - tx0, u.y - ty0, u.holder, u.gate) for u in first_units]
     _n, _low_x, _low_y, new_w, new_h = _frame(element, w, h)
     ax, ay = _centred((tx0 + tx1, ty0 + ty1), new_w, new_h)
     images = tuple(

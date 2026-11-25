@@ -238,14 +238,94 @@ def test_the_autosave_tick_records_the_chosen_mod(window, mods, tmp_path):
     assert autosave.entries()[0].data_mod == data_mods.identity(mods.alpha)
 
 
-def test_a_mods_derive_warnings_are_logged_once_and_counted_in_its_tooltip(window, mods, tmp_path, monkeypatch):
-    """GH #262: the summary, up to WARNING_LINES warning lines and the rest's count,
-    once per cache key; once it is logged, the menu item's tooltip carries the count."""
+def _warning(kind: str, subject=None, text: str = "gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)"):
+    return dat_derive.DeriveWarning(text, kind, subject)
+
+
+# GH #323: a derive's records as the status log groups them. Distinct units 45-48, 60, 61, 70 (7),
+# terrains 3 and 4 (2) and three warnings that name nothing: 12 objects or terrains.
+GROUPED = (
+    *(_warning("parts_dropped", const) for const in (45, 46, 47, 48, 45)),
+    _warning("not_drawn", (60, 61)),
+    _warning("no_garrison_flags", 70),
+    _warning("terrain_blend", 3),
+    _warning("terrain_blend", (3, 4)),
+    _warning("placement_unchecked"),
+    _warning("other"),
+    _warning("other"),
+)
+
+
+def _names(monkeypatch) -> None:
+    monkeypatch.setattr(object_catalog, "display_name", lambda const: f"Unit {const}")
+
+
+def test_the_summary_groups_by_kind_with_counts_and_examples(monkeypatch):
     from descape import data_mod_menu
 
-    cap = data_mod_menu.WARNING_LINES
-    warnings = tuple(f"gen_unit_graphic_map.py: unit_const {i} broke a rule (drawn alone)" for i in range(cap + 5))
-    mods.tables[mods.alpha] = dataclasses.replace(mods.tables[mods.alpha], warnings=warnings)
+    _names(monkeypatch)
+    folder = Path("/cache/key")
+    tables = game_dataset.DataModTables("key", folder, Path("/mods/Alpha"), "Alpha", warnings=GROUPED)
+    text = data_mod_menu.WARNING_TEXT
+
+    def line(kind: str, n: int, examples: str = "") -> str:
+        return f"  {(text[kind].one if n == 1 else text[kind].many).format(n=n)}{examples}."
+
+    assert data_mod_menu.warning_summary(tables).splitlines() == [
+        "Data mod Alpha loads simplified: DEscape shows 12 of its objects or terrains differently from the game.",
+        line("parts_dropped", 4, " (Unit 45, Unit 46, Unit 47, ...)"),
+        line("not_drawn", 2, " (Unit 60, Unit 61)"),
+        line("terrain_blend", 2),
+        line("other", 2),
+        line("no_garrison_flags", 1, " (Unit 70)"),
+        line("placement_unchecked", 1),
+        (
+            "Your scenario is saved as usual. For a bug report to the mod's author or DEscape, "
+            f"the technical details are in {folder / 'meta.json'}."
+        ),
+    ], "descending count, ties in WARNING_TEXT order; examples for unit kinds only, a tuple counted per member"
+    assert data_mod_menu.simplified_count(GROUPED) == 12
+
+
+def test_the_header_counts_a_unit_once_across_kinds_and_keeps_units_and_terrains_apart():
+    from descape import data_mod_menu
+
+    warnings = (
+        _warning("parts_dropped", 45),
+        _warning("no_garrison_flags", 45),
+        _warning("parts_dropped", 3),
+        _warning("terrain_blend", 3),
+    )
+    assert data_mod_menu.simplified_count(warnings) == 3, "unit 45 once, unit 3 and terrain 3 apart"
+
+
+def test_the_summary_examples_are_distinct_names(monkeypatch):
+    from descape import data_mod_menu
+
+    monkeypatch.setattr(object_catalog, "display_name", lambda const: "Shield Generator" if const < 50 else f"Unit {const}")
+    warnings = tuple(_warning("not_drawn", const) for const in (45, 46, 60))
+    tables = game_dataset.DataModTables("key", Path("/cache/key"), Path("/m"), "M", warnings=warnings)
+    assert "(Shield Generator, Unit 60)." in data_mod_menu.warning_summary(tables).splitlines()[1]
+
+
+def test_a_summary_of_every_kind_is_in_plain_words(monkeypatch):
+    """GH #323: the generators' developer wording (re-run tools/..., _SCOPE, unit_const) stays in meta.json."""
+    from descape import data_mod_menu
+
+    _names(monkeypatch)
+    jargon = "gen_unit_graphic_map.py: unit_const 45 in _COMPOSITE_SCOPE -- re-run tools/measure_piece_slots.py, re-verify the .dat"
+    warnings = tuple(_warning(kind, 45, jargon) for kind in data_mod_menu.WARNING_TEXT)
+    tables = game_dataset.DataModTables("key", Path("/cache/key"), Path("/m"), "M", warnings=warnings)
+    summary = data_mod_menu.warning_summary(tables)
+    assert len(summary.splitlines()) == len(data_mod_menu.WARNING_TEXT) + 2
+    for word in ("tools/", "re-run", "re-verify", "unit_const", "_SCOPE", ".dat"):
+        assert word not in summary, word
+
+
+def test_a_mods_derive_warnings_are_logged_once_and_counted_in_its_tooltip(window, mods, tmp_path, monkeypatch):
+    """GH #262: the summary, once per cache key; once it is logged, the menu item's tooltip carries the count."""
+    _names(monkeypatch)
+    mods.tables[mods.alpha] = dataclasses.replace(mods.tables[mods.alpha], warnings=GROUPED)
     mods.cached(mods.alpha)
     lines = _logged(window, monkeypatch)
     a, b = _scenario(tmp_path, "a.aoe2scenario"), _scenario(tmp_path, "b.aoe2scenario")
@@ -254,16 +334,15 @@ def test_a_mods_derive_warnings_are_logged_once_and_counted_in_its_tooltip(windo
     _menu(window)["Alpha"].trigger()
 
     def summaries():
-        return [line for line in lines if line.startswith(f"Data mod Alpha: {cap + 5} warnings")]
+        return [line for line in lines if line.startswith("Data mod Alpha loads simplified")]
 
     assert len(summaries()) == 1
     body = summaries()[0].splitlines()
-    assert len(body) == 1 + cap + 1
-    assert body[1:cap + 1] == [f"  {warning}" for warning in warnings[:cap]]
+    assert body[1].startswith("  4 objects") and "(Unit 45, Unit 46, Unit 47, ...)" in body[1]
     folder = mods.tables[mods.alpha].tables_dir
-    assert "5 more" in body[-1] and str(folder / "meta.json") in body[-1]
-    assert f"{cap + 5} warnings" in _menu(window)["Alpha"].toolTip()
-    assert "warning" not in _menu(window)["Beta"].toolTip(), "a mod not picked has no count"
+    assert str(folder / "meta.json") in body[-1]
+    assert "(12 objects shown simplified; see the status log)" in _menu(window)["Alpha"].toolTip()
+    assert "simplified" not in _menu(window)["Beta"].toolTip(), "a mod not picked has no count"
     _menu(window)["None (the game's own data)"].trigger()
     window.load_scenario(b)
     _menu(window)["Alpha"].trigger()
@@ -273,7 +352,7 @@ def test_a_mods_derive_warnings_are_logged_once_and_counted_in_its_tooltip(windo
 
 def test_a_cached_mods_tooltip_counts_without_a_second_summary(window, mods, tmp_path, monkeypatch):
     """Beta shares Alpha's derive (same .dat, same key): its summary is not repeated, its count still shows."""
-    warnings = ("gen_unit_stats.py: one rule (dropped)",)
+    warnings = (_warning(dat_cache.OTHER_KIND, text="gen_unit_stats.py: one rule (dropped)"),)
     alpha = dataclasses.replace(mods.tables[mods.alpha], warnings=warnings)
     mods.tables[mods.alpha] = alpha
     mods.tables[mods.beta] = dataclasses.replace(mods.tables[mods.beta], key=alpha.key, warnings=warnings)
@@ -284,7 +363,7 @@ def test_a_cached_mods_tooltip_counts_without_a_second_summary(window, mods, tmp
     _menu(window)["Alpha"].trigger()
     _menu(window)["Beta"].trigger()
     assert len([line for line in lines if line.startswith("Data mod ")]) == 1
-    assert "(1 warning;" in _menu(window)["Beta"].toolTip()
+    assert "(1 object shown simplified;" in _menu(window)["Beta"].toolTip()
 
 
 def test_a_mod_without_warnings_logs_no_summary(window, mods, monkeypatch):
@@ -292,7 +371,7 @@ def test_a_mod_without_warnings_logs_no_summary(window, mods, monkeypatch):
     lines = _logged(window, monkeypatch)
     _menu(window)["Alpha"].trigger()
     assert game_dataset.data_mod() == mods.tables[mods.alpha]
-    assert not [line for line in lines if "warnings" in line]
+    assert not [line for line in lines if "simplified" in line]
     assert _menu(window)["Alpha"].toolTip() == "subscribed//Alpha"
 
 

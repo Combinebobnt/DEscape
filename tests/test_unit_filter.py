@@ -683,3 +683,49 @@ def test_every_compositor_round_trips_the_garrison_gate_byte_identically() -> No
         )
         cache.set_unit_filter(UnitFilter())
         assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: did not restore"
+
+
+# --- Show Inactive Units (Unit State) -----------------------------------
+
+
+def _inactive_scenario() -> FakeScenario:
+    """Alive, Remove and Foundation units under a player and GAIA, plus an
+    unlabelled raw byte, which reads as live."""
+    tiles = [SyntheticTile(x=x, y=y, elevation=0) for y in range(MAP_H) for x in range(MAP_W)]
+    units_by_player = [[] for _ in range(9)]
+    units_by_player[1] = [
+        SyntheticUnit(x=3.5, y=3.5, unit_const=_PLAIN_CONST, reference_id=30),
+        SyntheticUnit(x=5.5, y=5.5, unit_const=_PLAIN_CONST, reference_id=31),
+        SyntheticUnit(x=7.5, y=7.5, unit_const=_BUILDING_CONST, reference_id=32),
+        SyntheticUnit(x=11.5, y=3.5, unit_const=_PLAIN_CONST, reference_id=33),
+    ]
+    units_by_player[GAIA_PLAYER_ID] = [
+        SyntheticUnit(x=2.5, y=10.5, unit_const=_TREE_CONST, reference_id=40),
+        SyntheticUnit(x=4.5, y=10.5, unit_const=_TREE_CONST, reference_id=41),
+    ]
+    for unit, status in zip((*units_by_player[1], *units_by_player[GAIA_PLAYER_ID]), (2, 7, 0, 42, 2, 7), strict=True):
+        unit.status = status
+    return FakeScenario(MAP_W, MAP_H, tiles, units_by_player)
+
+
+def test_show_inactive_false_hides_every_ghosted_unit_under_every_owner() -> None:
+    scn = _inactive_scenario()
+    kept = {u.reference_id for _pid, u in _expected_visible(scn, UnitFilter(show_inactive=False))}
+    assert kept == {30, 33, 40}, "Remove and Foundation hide, for a player and GAIA; a raw 42 stays"
+    assert {u.reference_id for _pid, u in _expected_visible(scn, UnitFilter())} == {30, 31, 32, 33, 40, 41}
+
+
+def test_is_default_false_for_show_inactive() -> None:
+    assert not UnitFilter(show_inactive=False).is_default
+    assert UnitFilter(show_inactive=True).is_default
+
+
+def test_every_compositor_round_trips_the_inactive_gate_byte_identically() -> None:
+    scn = _inactive_scenario()
+    for make in (_flat_cache, _iso_cache, _sloped_cache):
+        cache = make(scn, UnitFilter())
+        before = _whole_canvas(cache).copy()
+        cache.set_unit_filter(UnitFilter(show_inactive=False))
+        assert not np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: changed no pixels"
+        cache.set_unit_filter(UnitFilter())
+        assert np.array_equal(before, _whole_canvas(cache)), f"{type(cache).__name__}: did not restore"

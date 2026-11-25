@@ -937,6 +937,9 @@ def test_the_preview_shows_the_mark_the_line_and_the_rulers_distance(style) -> N
         for tile in ((57, 44), (58, 60)):
             _move(view, _mark_pos(view, tile))
             assert view._tile_pick_label is label, "reused across moves"
+            # Re-placed every move, so never device-cached (TASK-519); the run label is.
+            assert label.cacheMode() == label.NoCache and label.data(1) is None
+            assert old_label.cacheMode() == old_label.DeviceCoordinateCache
             assert label.text() == ruler.format_measurement(ruler.measure(origin, tile))
             assert label.pos() == view._ruler_anchor(tile)
             box = view._tile_pick_item.path().boundingRect()

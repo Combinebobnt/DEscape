@@ -25,6 +25,12 @@ It follows the Rotate rules (ViewerWindow.on_unit_rotate) per const:
 The owner does not change any of this: a GAIA creatable turns and places its
 facing like any player's, and render.stored_rotation() draws it (GH #217).
 
+With Place Unit's Random facing/variant ticked (TASK-367) the viewer replaces
+the pending state with roll()'s for the picked const after each placement and
+on each new pick, so the ghost shows the next click's draw before the click.
+A turn or an Eyedropper pick then sets that next click's value alone. The
+Unit Brush's per-unit random_rotation() is rotation_for() of the same roll().
+
 Qt-free and install-free (it reads the committed tables through the modules
 above), so the default test tier covers it.
 """
@@ -95,19 +101,25 @@ def steps_for_coarse(const: int, direction: int) -> int:
     return direction
 
 
-def random_rotation(rng: random.Random, const: int, owner: int) -> float:
-    """A random facing or variant for one Unit Brush placement (GH #170),
-    still through rotation_for(): an ANGLE const rolls a facing on its own
-    grid, a cyclable const a variant index, and every other const (walls,
-    gates, cliffs, INERT) draws nothing from `rng` and gets 0.0."""
+def roll(rng: random.Random, const: int) -> PlaceRotation:
+    """A random pending state for `const`: a facing on its own grid for an
+    ANGLE const, a variant index for a cyclable one, and PlaceRotation() for
+    every other const (walls, gates, cliffs, INERT), which draws nothing from
+    `rng`. Place Unit's Random facing/variant (TASK-367) holds it as the
+    pending state, so ghost and click still read it through rotation_for()."""
     if unit_rotation.rotation_is_angle(const):
         count = unit_rotation.angle_count_for(const)
-        state = PlaceRotation(facing=unit_rotation.facing_to_rotation(rng.randrange(count), count))
-    elif unit_variant.is_cyclable(const):
-        state = PlaceRotation(variant=rng.randrange(unit_variant.variant_count_for(const)), variant_const=const)
-    else:
-        state = PlaceRotation()
-    return rotation_for(state, const, owner)
+        return PlaceRotation(facing=unit_rotation.facing_to_rotation(rng.randrange(count), count))
+    if unit_variant.is_cyclable(const):
+        return PlaceRotation(variant=rng.randrange(unit_variant.variant_count_for(const)), variant_const=const)
+    return PlaceRotation()
+
+
+def random_rotation(rng: random.Random, const: int, owner: int) -> float:
+    """A random facing or variant for one Unit Brush placement (GH #170),
+    still through rotation_for(): roll()'s state, so every const roll() draws
+    nothing for gets 0.0."""
+    return rotation_for(roll(rng, const), const, owner)
 
 
 def rotation_for(state: PlaceRotation, const: int, owner: int) -> float:

@@ -64,7 +64,7 @@ class _ViewerViewMixin:
         self.filters_button.setText("Filters")
         self.filters_button.setPopupMode(QToolButton.InstantPopup)
         self.filters_button.setToolTip(
-            "Show/hide units by owner or kind -- affects every mode, and hidden units can't be selected"
+            "Show/hide units by owner or kind. This affects every mode, and hidden units can't be selected"
         )
         self.filters_button.setEnabled(False)  # re-gated by _update_tool_enabled()
 
@@ -76,7 +76,7 @@ class _ViewerViewMixin:
 
         self.show_trees_action = QAction("Show Trees", self, checkable=True, checked=True)
         self.show_trees_action.setToolTip(
-            "Trees are the bulk of a typical file's ~9,988 GAIA objects -- hiding them alone "
+            "Trees are the bulk of a typical file's ~9,988 GAIA objects, so hiding them alone "
             "usually leaves the map readable"
         )
         self.show_trees_action.toggled.connect(self._on_filter_changed)
@@ -84,7 +84,7 @@ class _ViewerViewMixin:
 
         self.show_walls_action = QAction("Show Walls", self, checkable=True, checked=True)
         self.show_walls_action.setToolTip(
-            "Walls and gates -- up to 2,004 in one example file, and they hide what is "
+            "Walls and gates (up to 2,004 in one example file). They hide what is "
             "behind and inside them"
         )
         self.show_walls_action.toggled.connect(self._on_filter_changed)
@@ -92,7 +92,7 @@ class _ViewerViewMixin:
 
         self.show_buildings_action = QAction("Show Buildings", self, checkable=True, checked=True)
         self.show_buildings_action.setToolTip(
-            "Every building except walls and gates -- up to 1,113 in one example file. "
+            "Every building except walls and gates (up to 1,113 in one example file). "
             "Trebuchets and other packable siege count as units and stay visible"
         )
         self.show_buildings_action.toggled.connect(self._on_filter_changed)
@@ -100,7 +100,7 @@ class _ViewerViewMixin:
 
         self.show_eye_candy_action = QAction("Show Eye Candy", self, checkable=True, checked=True)
         self.show_eye_candy_action.setToolTip(
-            "Grass, flowers, stumps and barrels -- up to 2,445 in one example file. "
+            "Grass, flowers, stumps and barrels (up to 2,445 in one example file). "
             "Gold, stone and berry bushes are resources, not eye candy, and stay visible"
         )
         self.show_eye_candy_action.toggled.connect(self._on_filter_changed)
@@ -108,8 +108,8 @@ class _ViewerViewMixin:
 
         self.show_obstacles_action = QAction("Show Obstacles", self, checkable=True, checked=True)
         self.show_obstacles_action.setToolTip(
-            "Rocks, ruins, statues and mountains that units cannot walk through -- "
-            "up to 521 in one example file"
+            "Rocks, ruins, statues and mountains that units cannot walk through "
+            "(up to 521 in one example file)"
         )
         self.show_obstacles_action.toggled.connect(self._on_filter_changed)
         menu.addAction(self.show_obstacles_action)
@@ -127,11 +127,19 @@ class _ViewerViewMixin:
         # tower. Turning it on is how an occupant becomes selectable again.
         self.show_garrisoned_action = QAction("Show Garrisoned Units", self, checkable=True, checked=False)
         self.show_garrisoned_action.setToolTip(
-            "Units inside a building or a transport -- hidden by default, as in game. "
+            "Units inside a building or a transport, hidden by default as in game. "
             "The Inspector's Garrison block lists and edits them without this"
         )
         self.show_garrisoned_action.toggled.connect(self._on_filter_changed)
         menu.addAction(self.show_garrisoned_action)
+
+        self.show_inactive_action = QAction("Show Inactive Units", self, checkable=True, checked=True)
+        self.show_inactive_action.setToolTip(
+            "Units whose Unit State is not Alive (Remove, Dead, Foundation and the rest), drawn faded. "
+            "Untick to hide them"
+        )
+        self.show_inactive_action.toggled.connect(self._on_filter_changed)
+        menu.addAction(self.show_inactive_action)
 
         menu.addSeparator()
         self.player_actions: dict[int, QAction] = {}
@@ -152,15 +160,15 @@ class _ViewerViewMixin:
         menu.addSeparator()
         self.filter_show_all_action = QAction("Show All", self)
         self.filter_show_all_action.setToolTip(
-            "Check every entry above -- GAIA, Trees, Walls, Buildings, Eye Candy, Obstacles, Invisible Objects, "
-            "Garrisoned Units, and all players"
+            "Check every entry above: GAIA, Trees, Walls, Buildings, Eye Candy, Obstacles, Invisible Objects, "
+            "Garrisoned Units, Inactive Units, and all players"
         )
         self.filter_show_all_action.triggered.connect(lambda: self._set_all_filters(True))
         menu.addAction(self.filter_show_all_action)
         self.filter_hide_all_action = QAction("Hide All", self)
         self.filter_hide_all_action.setToolTip(
-            "Uncheck every entry above -- GAIA, Trees, Walls, Buildings, Eye Candy, Obstacles, Invisible Objects, "
-            "Garrisoned Units, and all players"
+            "Uncheck every entry above: GAIA, Trees, Walls, Buildings, Eye Candy, Obstacles, Invisible Objects, "
+            "Garrisoned Units, Inactive Units, and all players"
         )
         self.filter_hide_all_action.triggered.connect(lambda: self._set_all_filters(False))
         menu.addAction(self.filter_hide_all_action)
@@ -214,7 +222,7 @@ class _ViewerViewMixin:
         self._on_filter_changed()
 
     def _set_all_filters(self, checked: bool) -> None:
-        """Same as _set_all_players, but also the eight kind toggles -- the
+        """Same as _set_all_players, but also the nine kind toggles -- the
         menu's "Show All"/"Hide All" shortcuts at the bottom."""
         for action in (
             self.show_gaia_action,
@@ -225,6 +233,7 @@ class _ViewerViewMixin:
             self.show_obstacles_action,
             self.show_invisible_action,
             self.show_garrisoned_action,
+            self.show_inactive_action,
         ):
             action.blockSignals(True)
             action.setChecked(checked)
@@ -254,6 +263,7 @@ class _ViewerViewMixin:
             show_obstacles=self.show_obstacles_action.isChecked(),
             show_invisible=self.show_invisible_action.isChecked(),
             show_garrisoned=self.show_garrisoned_action.isChecked(),
+            show_inactive=self.show_inactive_action.isChecked(),
             players=None if all_checked else checked,
         )
 
@@ -560,6 +570,8 @@ class _ViewerViewMixin:
             parts.append("invisible objects hidden")
         if not self._unit_filter.show_garrisoned:
             parts.append("garrisoned units hidden")
+        if not self._unit_filter.show_inactive:
+            parts.append("inactive units hidden")
         if self._unit_filter.players is not None:
             shown = sorted(self._unit_filter.players)
             parts.append(f"players {shown}" if shown else "no players")

@@ -201,6 +201,21 @@ wall_opacity_pct: {view_layers.WALL_OPACITY_DEFAULT_PCT}
 # (false). Default: true.
 zoom_centered_on_cursor: true
 
+# Which trigger names head a section in the Triggers panel, Settings > General
+# > Trigger section headers. "--- Name ---" always does. Each toggle keeps one
+# more built-in shape (------, ----- Name, ~Name~); prefixes adds up to 8
+# case-sensitive starting tokens of your own (">>" makes ">> Setup" a header).
+# The scenario file is never changed. Default: every toggle true, no prefixes.
+trigger_section_headers:
+  bare_rule: true
+  leading_rule: true
+  tilde_wrap: true
+  prefixes: []
+
+# Double-click a trigger in the Triggers panel to rename it in place,
+# Settings > General. Off, right-click > Rename still does. Default: true.
+trigger_rename_double_click: true
+
 # What the mouse wheel does over the map, per modifier held, Settings >
 # Keybinds. Slots: {_WHEEL_SLOTS}.
 # Actions: {_WHEEL_ACTIONS}.
@@ -583,6 +598,11 @@ ruler_label_font_px: {settings.RULER_LABEL_FONT_PX_DEFAULT}
 # legal; anything else falls back to the default.
 # Default: {settings.DISTANCE_TICK_FONT_PX_DEFAULT}.
 distance_tick_font_px: {settings.DISTANCE_TICK_FONT_PX_DEFAULT}
+
+# Settings > Appearance > Draw distance ticks behind elevated terrain: in
+# Stepped and Sloped, the map-edge distance ruler is hidden where raised
+# terrain covers the map border instead of drawing over it. Default: false.
+distance_ticks_behind_terrain: false
 
 # DEscape's own UI font, Settings > Appearance -- app chrome only (menus,
 # dialogs, panels, the status log); the map view's overlay text keeps its

@@ -250,6 +250,7 @@ _TOGGLE_ACTION_IDS = (
     "filter_show_obstacles",
     "filter_show_invisible",
     "filter_show_garrisoned",
+    "filter_show_inactive",
     *(f"filter_player_{pid}" for pid in range(1, 9)),
 )
 
@@ -1271,7 +1272,7 @@ def _row_widgets(dialog, action_id: str) -> list:
 
 def test_the_recover_autosave_row_sits_between_save_as_and_exit_blank_and_its_bound_key_opens_the_dialog() -> None:
     """Pass conditions:
-    - the File section lists file_save_as, file_recover_autosave, file_exit consecutively;
+    - the File section lists file_save_as, file_convert (GH #307), file_recover_autosave, file_exit consecutively;
     - its key edit starts empty;
     - typing Ctrl+F10 into that edit binds the action, and pressing Ctrl+F10 on the shown,
       active window opens a visible RecoverAutosaveDialog.
@@ -1291,7 +1292,7 @@ def test_the_recover_autosave_row_sits_between_save_as_and_exit_blank_and_its_bo
         try:
             ids = _file_section_ids(dialog)
             at = ids.index("file_recover_autosave")
-            assert ids[at - 1 : at + 2] == ["file_save_as", "file_recover_autosave", "file_exit"]
+            assert ids[at - 2 : at + 2] == ["file_save_as", "file_convert", "file_recover_autosave", "file_exit"]
             edit = dialog._keybind_edits["file_recover_autosave"]
             assert edit.keySequence().isEmpty()
             assert settings.keybind_holder("Ctrl+F10") is None

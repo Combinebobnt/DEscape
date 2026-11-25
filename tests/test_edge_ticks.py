@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 
 from descape import edge_ticks, iso_geometry
@@ -409,3 +410,168 @@ def test_a_one_tile_map_still_produces_a_ruler() -> None:
         for run in edge_ticks.edge_runs(1, 1, 4, **kwargs):
             assert run.tiles == (0,)
             assert run.majors == (True,)
+
+
+# --- terrain_overhang: the ruler drawn behind elevated terrain --------------
+#
+# The two rise sources: Stepped's per-corner max of flat tops, and Sloped's
+# corner_rise under the live "max" rule (render_sloped.SLOPE_CORNER_RULE).
+
+_W, _H = 12, 9
+
+
+def _ov_proj():
+    return _proj(_W, _H, 32, 0, 15)
+
+
+def _rise(elevations, proj, sloped: bool):
+    if sloped:
+        return iso_geometry.corner_rise_px(elevations, proj, rule="max")
+    return edge_ticks.stepped_corner_rise(elevations, proj)
+
+
+def _overhang(elevations, sloped: bool):
+    proj = _ov_proj()
+    return edge_ticks.terrain_overhang(_rise(elevations, proj, sloped), proj, sloped=sloped), proj
+
+
+def _depth(elevations, proj, sloped: bool) -> np.ndarray:
+    """How far terrain rises past the border, per Stepped lattice point or Sloped px column."""
+    rise = _rise(elevations, proj, sloped)
+    if sloped:
+        env, ground = edge_ticks.sloped_envelope(rise, proj)
+        return (ground - env)[ground < np.iinfo(np.int64).max]
+    (poly,) = edge_ticks.terrain_overhang(rise, proj)
+    n = len(poly) // 2
+    return poly[n:][::-1, 1] - edge_ticks.ROOT_PX - poly[:n, 1]
+
+
+def _ground_line(x, proj, w: int = _W):
+    """The analytic elevation-0 upper border at scene x."""
+    k = np.asarray(x, dtype=np.float64) / proj.half_w
+    return proj.origin_y + proj.half_h - proj.half_h * np.minimum(k, 2 * w - k)
+
+
+@pytest.mark.parametrize("sloped", [False, True])
+def test_a_flat_elevation_0_map_has_no_overhang(sloped: bool) -> None:
+    """Pins that both rise sources share the anchors' elevation-0 reference."""
+    assert _overhang(np.zeros((_H, _W), dtype=np.int64), sloped)[0] == ()
+
+
+@pytest.mark.parametrize("sloped", [False, True])
+def test_one_raised_upper_left_edge_tile_gives_one_polygon_as_deep_as_its_rise(sloped: bool) -> None:
+    elevations = np.zeros((_H, _W), dtype=np.int64)
+    elevations[0, 5] = 3
+    polys, proj = _overhang(elevations, sloped)
+    assert len(polys) == 1
+    xs = polys[0][:, 0]
+    # The tile's painted columns: a diamond's two edge columns hold no pixels.
+    assert xs.min() <= 5 * proj.half_w + 1 and xs.max() >= 7 * proj.half_w - 1, "does not span the tile"
+    assert _depth(elevations, proj, sloped).max() == 3 * proj.elev_step
+
+
+@pytest.mark.parametrize("sloped", [False, True])
+def test_a_tall_tile_overhangs_only_when_it_clears_two_half_h_per_row_in(sloped: bool) -> None:
+    proj = _ov_proj()
+    deep = np.zeros((_H, _W), dtype=np.int64)
+    deep[4, 5] = 10  # 40 px of rise, 4 rows in: 64 px below the border
+    assert _overhang(deep, sloped)[0] == ()
+    near = np.zeros((_H, _W), dtype=np.int64)
+    near[1, 5] = 5  # 20 px of rise, 1 row in: 16 px below the border
+    assert 5 * proj.elev_step > 2 * proj.half_h
+    # Sloped is pixel-exact, and its rounded column cuts may leave a one-column break.
+    assert len(_overhang(near, sloped)[0]) >= 1
+
+
+@pytest.mark.parametrize("sloped", [False, True])
+def test_raised_bottom_edge_tiles_never_overhang(sloped: bool) -> None:
+    elevations = np.zeros((_H, _W), dtype=np.int64)
+    elevations[1:, 0] = 3  # the x0 edge, less the west tip tile on y0
+    elevations[_H - 1, : _W - 1] = 3  # the y1 edge, less the east tip tile on x1
+    assert _overhang(elevations, sloped)[0] == ()
+
+
+@pytest.mark.parametrize("sloped", [False, True])
+def test_a_uniform_min_elevation_1_map_overhangs_both_upper_edges_by_one_step(sloped: bool) -> None:
+    elevations = np.ones((_H, _W), dtype=np.int64)
+    polys, proj = _overhang(elevations, sloped)
+    assert len(polys) == 1, "one strip, unbroken over the top tip"
+    xs = polys[0][:, 0]
+    assert xs.min() <= proj.half_w and xs.max() >= (_W + _H - 1) * proj.half_w
+    depth = _depth(elevations, proj, sloped)
+    assert set(depth.tolist()) == {proj.elev_step}
+
+
+def _brute_sloped_env(corner_rise, proj) -> np.ndarray:
+    """Per-px-column top over EVERY tile, from sloped_tile_outline placed at render_sloped's base."""
+    env = np.full(proj.canvas_w, np.iinfo(np.int64).max, dtype=np.int64)
+    h, w = corner_rise.shape[0] - 1, corner_rise.shape[1] - 1
+    for y in range(h):
+        for x in range(w):
+            corners = (corner_rise[y, x], corner_rise[y, x + 1], corner_rise[y + 1, x], corner_rise[y + 1, x + 1])
+            base_x, base_y = iso_geometry.tile_screen_origin(x, y, 0, proj)
+            base_y -= int(min(corners))
+            outline = iso_geometry.sloped_tile_outline(proj.tile_px, *(int(c) for c in corners))
+            for col, row in outline[: len(outline) // 2 : 2]:
+                env[base_x + col] = min(env[base_x + col], base_y + row)
+    return env
+
+
+def _ridge_rise(proj) -> np.ndarray:
+    """Border tile (5, 0) with its NE and SW corners high and NW and SE low."""
+    rise = np.zeros((_H + 1, _W + 1), dtype=np.int64)
+    rise[0, 6] = rise[1, 5] = 5 * proj.elev_step
+    return rise
+
+
+@pytest.mark.parametrize("case", ["ridge", 0, 1, 2])
+def test_the_sloped_envelope_matches_every_tiles_drawn_outline(case) -> None:
+    """Sloped cuts each screen column on its own, so a ridge can poke above
+    a lattice interpolation. Against sloped_tile_outline (the exact pixel
+    boundary) over every tile: the band may skip a tile only if no column of
+    it clears the border."""
+    proj = _ov_proj()
+    if case == "ridge":
+        rise = _ridge_rise(proj)
+    else:
+        rng = np.random.default_rng(case)
+        rise = rng.integers(0, 6, size=(_H + 1, _W + 1)) * proj.elev_step
+    env, ground = edge_ticks.sloped_envelope(rise, proj)
+    brute = _brute_sloped_env(rise, proj)
+    covered = ground < np.iinfo(np.int64).max
+    assert np.array_equal(np.minimum(env, ground)[covered], np.minimum(brute, ground)[covered])
+    over = env < ground
+    assert over.any(), "vacuous: nothing overhangs"
+    # Each polygon's top is the envelope's own staircase over its run.
+    polys = edge_ticks.terrain_overhang(rise, proj, sloped=True)
+    for poly in polys:
+        # The top staircase runs left to right; the ground one comes back from the first max-x point.
+        top = poly[: int(np.argmax(poly[:, 0])) + 1]
+        start, end = int(top[0, 0]), int(top[-1, 0])
+        assert over[start:end].all() and not over[start - 1] and not over[end]
+        drawn = np.interp(np.arange(start, end) + 0.5, top[:, 0], top[:, 1])
+        assert np.array_equal(drawn, env[start:end]), (start, end)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_the_stepped_clip_sits_at_or_above_every_raised_top_face_pixel(seed: int) -> None:
+    """The lattice interpolation is conservative: every top-face pixel whose
+    centre is above the elevation-0 border has its centre inside a hole."""
+    proj = _ov_proj()
+    elevations = np.random.default_rng(seed).integers(0, 8, size=(_H, _W))
+    polys = edge_ticks.terrain_overhang(edge_ticks.stepped_corner_rise(elevations, proj), proj)
+    dst_y, dst_x, _sy, _sx = iso_geometry.diamond_indices(proj.tile_px)
+    brute = np.full(proj.canvas_w, np.inf)
+    for y in range(_H):
+        for x in range(_W):
+            ox, oy = iso_geometry.tile_screen_origin(x, y, int(elevations[y, x]), proj)
+            np.minimum.at(brute, ox + dst_x, oy + dst_y)
+    centres = np.arange(proj.canvas_w) + 0.5
+    env = np.full(proj.canvas_w, np.inf)
+    for poly in polys:
+        top = poly[: len(poly) // 2]
+        inside = (centres >= top[0, 0]) & (centres <= top[-1, 0])
+        env[inside] = np.minimum(env[inside], np.interp(centres[inside], top[:, 0], top[:, 1]))
+    above = brute + 0.5 < _ground_line(centres, proj)
+    assert above.any(), "vacuous: no pixel clears the border"
+    assert (env[above] <= brute[above] + 0.5).all()

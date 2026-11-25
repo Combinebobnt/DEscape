@@ -193,8 +193,9 @@ def test_strings_merge_bottom_up_along_the_chain_then_the_data_mod(tmp_path, mon
         game_dataset.set_active(fake_game.FAKE_ID)
         game_dataset.set_data_mod(mod)
         assert [asset_source.resource_string(key, "en") for key in (1, 2, 3, 4)] == ["base", "own", "mod", "modded"]
-        assert game_dataset.stack().strings_paths(install, "en")[:2] == [
+        assert game_dataset.stack().strings_paths(install, "en")[:3] == [
             install / key_value / "key-value-strings-utf8.txt",
+            install / key_value / "key-value-paphos-strings-utf8.txt",
             install / "modes/Fake" / key_value / "key-value-strings-utf8.txt",
         ]
 

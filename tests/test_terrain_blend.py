@@ -510,7 +510,7 @@ def test_the_block_cache_stays_within_its_byte_budget_and_evicts_the_least_recen
         terrain_blend.blended_block(key, *_offsets(x, 0, 32), 32)
     assert len(terrain_blend._blocks) == 3
     assert terrain_blend._block_bytes == 3 * 32 * 32 * 3
-    assert (key, *_offsets(0, 0, 32), 32) in terrain_blend._blocks
+    assert (key, *_offsets(0, 0, 32), 32, False) in terrain_blend._blocks
 
 
 def test_a_rebound_blend_table_is_never_served_stale_priorities(synthetic, monkeypatch):
@@ -872,3 +872,25 @@ def test_invalidate_marks_exactly_the_clipped_3x3(x, y):
     assert np.array_equal(unknown, want)
     key_map.invalidate(np.zeros(0, dtype=np.int64))
     assert np.array_equal((key_map.ids == terrain_blend.UNKNOWN).reshape(h, w), want)
+
+
+def test_an_angled_block_reads_the_angled_textures_and_is_cached_apart(synthetic, monkeypatch):
+    """TASK-691: Stepped and Sloped blend the prefiltered textures; Flat's block stays sharp."""
+    real = asset_source.terrain_texture_at
+    seen: set = set()
+
+    def texture_at(tid, size, angled=False):
+        seen.add(angled)
+        arr = real(tid, size)
+        return arr if arr is None or not angled else 255 - arr
+
+    monkeypatch.setattr(asset_source, "terrain_texture_at", texture_at)
+    tids, layers = _grid()
+    tids[:, 5:] = HIGH
+    (key,) = influences(tids, layers, [4], [2])
+    ox, oy = _offsets(4, 2, 32)
+    sharp = terrain_blend.blended_block(key, ox, oy, 32)
+    angled = terrain_blend.blended_block(key, ox, oy, 32, angled=True)
+    assert seen == {False, True} and not np.array_equal(sharp, angled)
+    assert terrain_blend.blended_block(key, ox, oy, 32) is sharp
+    assert terrain_blend.blended_block(key, ox, oy, 32, angled=True) is angled

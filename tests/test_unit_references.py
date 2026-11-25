@@ -372,3 +372,24 @@ def test_corpus_unit_references_match_the_plan(corpus_files) -> None:
     unpinned = {name: row for name, row in measured.items() if name not in _REFERENCES_PER_FILE}
     assert not unpinned, f"pin these new files' rows in _REFERENCES_PER_FILE: {unpinned}"
     assert measured == {name: _REFERENCES_PER_FILE[name] for name in measured}
+
+
+# -- TASK-168: a Set Objects box's list rule --
+
+
+def test_marquee_ids_add_appends_ascending_and_skips_present_ids() -> None:
+    assert unit_references.marquee_ids([9, 3], [7, 3, 1], toggle=False) == [9, 3, 1, 7]
+
+
+def test_marquee_ids_toggle_removes_present_and_appends_absent() -> None:
+    assert unit_references.marquee_ids([9, 3, 5], [7, 3, 1], toggle=True) == [9, 5, 1, 7]
+
+
+def test_marquee_ids_duplicates_in_the_box_collapse() -> None:
+    assert unit_references.marquee_ids([], [4, 2, 4, 2], toggle=False) == [2, 4]
+    assert unit_references.marquee_ids([4], [4, 4, 2], toggle=True) == [2]
+
+
+def test_marquee_ids_an_empty_box_changes_nothing() -> None:
+    for toggle in (False, True):
+        assert unit_references.marquee_ids([5, 1], [], toggle=toggle) == [5, 1]

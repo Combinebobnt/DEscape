@@ -45,6 +45,7 @@ DESCAPE_CEILINGS = {
     "viewer_options.py": 1700,  # baseline 2026-11-13
     "viewer_region.py": 1900,  # baseline 2026-11-13
     "viewer_triggers.py": 1900,  # baseline 2026-11-13
+    "viewer_unit_move.py": 1600,  # 2026-11-25: TASK-531/532 gate corner piece carries; the drag turn's carry belongs beside _move_group()
 }
 
 TESTS_CEILINGS = {

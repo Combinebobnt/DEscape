@@ -44,6 +44,7 @@ TOPICS: tuple[Topic, ...] = (
     Topic("diplomacy", "diplomacy.md", ("diplomacy",)),
     Topic("messages", "messages.md", ("messages",)),
     Topic("map_tools", "map-tools.md"),
+    Topic("scripts_and_addons", "scripts-and-addons.md"),
     Topic("view_and_filters", "view-and-filters.md"),
     Topic("settings", "settings.md"),
     Topic(KEYS_TOPIC_ID, "keyboard-and-mouse.md"),

@@ -65,9 +65,9 @@ from descape.viewer_common import (
 
 def clamp_paste_anchor(block, tx0: int, ty0: int, map_w: int, map_h: int) -> tuple[int, int]:
     """Paste Units' anchor (GH #192) shifted by whole tiles until every
-    top-level unit's footprint is on the map, measured as clamp_group_delta()
-    measures one. Unlike a move, a footprint overhanging an edge is pulled
-    back in. Occupants ride with their host and do not limit the shift.
+    top-level unit's footprint is on the map, each by its low corner and span
+    in whole tiles, a span-1 axis floored. Unlike a move, a footprint over an
+    edge is pulled back in. Occupants ride with their host and do not limit it.
     Unchanged when no shift fits the group (it is larger than the map)."""
     lo_x = lo_y = -math.inf
     hi_x = hi_y = math.inf
@@ -250,18 +250,21 @@ class _ViewerRegionMixin:
         self._update_tool_enabled()
         self._refresh_clipboard_dialog()
 
-    def copy_units(self, entries=None, quiet: bool = False) -> bool:
+    def copy_units(self, entries=None, quiet: bool = False, cut: bool = False) -> bool:
         """Copy Units (GH #192): pushes the selected units, and what they
         hold, as a clipboard entry without tiles. `entries` defaults to the
         Units-mode selection. No undo record: nothing is mutated. False when
-        there was nothing to copy."""
+        there was nothing to copy. Cut Units passes `cut`: the entry keeps
+        the units' ids for a paste into this document (TASK-341)."""
         if self.scenario is None:
             return False
         if entries is None:
             entries = self._selected_unit_entries()
         with perf_trace.op("copy"):
             with perf_trace.phase("region_copy"):
-                block = region_clipboard.copy_units(self.scenario.unit_manager, [e.unit for e in entries])
+                block = region_clipboard.copy_units(
+                    self.scenario.unit_manager, [e.unit for e in entries], cut_doc_id=self._doc_id if cut else ""
+                )
             if block is None:
                 return False
             self._push_clipboard(block)
@@ -512,6 +515,10 @@ class _ViewerRegionMixin:
         # Where the group's centre landed: the hovered tile unless the clamp shifted it.
         centre = tx0 + (block.width - 1) // 2, ty0 + (block.height - 1) // 2
         status = f"Pasted {_units_text(len(top_level), len(added) - len(top_level))} at ({centre[0]}, {centre[1]})"
+        cut_ids = {u.cut_reference_id for u in block.units} if block.cut_doc_id == self._doc_id else set()
+        kept = sum(1 for _p, unit in added if unit.reference_id in cut_ids)
+        if kept:
+            status += ", IDs kept" if kept == len(added) else f", {kept} of {len(added)} kept their IDs"
         status += _reshaping_clause(reshaped)
         if len(added) < len(block.units):
             status += f", {len(block.units) - len(added)} off the map skipped"
@@ -546,6 +553,22 @@ class _ViewerRegionMixin:
         if self.edit_history.peek_undo() is not self._paste_move.record:
             self._set_paste_move(None)
 
+    def _repaste_armed(self, state, block, tx0: int, ty0: int):
+        """_paste_block_at() with `state`'s flags, for a move or turn that has
+        already undone the armed paste: a raise puts that paste back (TASK-503)."""
+        try:
+            return self._paste_block_at(block, tx0, ty0, state.do_terrain, state.do_elevation, state.do_units)
+        except Exception:
+            self._restore_armed_paste(state)
+            raise
+
+    def _restore_armed_paste(self, state) -> None:
+        """Redoes the paste a move or turn undid, quietly, and re-arms it. Only
+        while it is still the next redo: a raise in the tile half pushed a record."""
+        if self.edit_history.peek_redo() is state.record:
+            self._move_history(state.record, self.edit_history.redo, "Redo", quiet=True)
+            self._set_paste_move(state)
+
     def on_region_move(self, dx: int, dy: int) -> None:
         """Commit a region drag: undo the paste that armed this, then re-paste
         the same snapshot at the new anchor.
@@ -573,9 +596,7 @@ class _ViewerRegionMixin:
         # terrain when set_tiles_elevation propagates its skirt.
         tx0, ty0 = state.anchor[0] + dx, state.anchor[1] + dy
         block = state.block
-        record, _parts, _units_skipped, _added, reshaped = self._paste_block_at(
-            block, tx0, ty0, state.do_terrain, state.do_elevation, state.do_units
-        )
+        record, _parts, _units_skipped, _added, reshaped = self._repaste_armed(state, block, tx0, ty0)
         if record is None:
             # The destination already matched the block byte for byte. Leave
             # it un-armed rather than re-arming on nothing to move to. This
@@ -632,14 +653,11 @@ class _ViewerRegionMixin:
             return
 
         self._move_history(self.edit_history.peek_undo(), self.edit_history.undo, "Undo", quiet=True)
-        record, _parts, _units_skipped, _added, reshaped = self._paste_block_at(
-            block, tx0, ty0, state.do_terrain, state.do_elevation, state.do_units
-        )
+        record, _parts, _units_skipped, _added, reshaped = self._repaste_armed(state, block, tx0, ty0)
         if record is None:
             # Nothing landed (say a units-only paste turned wholly off the map):
             # bring the paste back rather than let a turn make it vanish.
-            self._move_history(self.edit_history.peek_redo(), self.edit_history.redo, "Redo", quiet=True)
-            self._set_paste_move(state)
+            self._restore_armed_paste(state)
             self._log_status(f"{verb}: nothing would land there, left as it was")
             return
         self.on_region_selected(self._pasted_region(block, tx0, ty0))
@@ -657,7 +675,7 @@ class _ViewerRegionMixin:
         }[step]
         status += _reshaping_clause(reshaped)
         if result.kept_orientation:
-            status += f"; {result.kept_orientation} objects kept their orientation (cliffs, bridges)"
+            status += f"; {result.kept_orientation} objects kept their orientation (cliffs, and objects with no turned form)"
         self._log_status(status)
 
     # -- Flip and Rotate Group in place (TASK-256) ---------------------------
@@ -759,13 +777,29 @@ class _ViewerRegionMixin:
             if model is None:
                 return None
             rows += self._garrison_occupant_entries(model, captured)
+        rows, gates = self._with_gate_pieces(rows)
         members = tuple((entry.player_id, entry.unit) for entry in rows)
         tiles = dataclasses.replace(region_clipboard.copy_region(mm, self.scenario.unit_manager, *rect), units=())
         base = self.edit_history.peek_undo()
         return region_clipboard.Lift(
-            "region", (), members, self._first_units(members), rect, self._walls_radian(), base, base,
+            "region", (), members, self._first_units(members, gates), rect, self._walls_radian(), base, base,
             tiles=tiles, region=rect,
         )
+
+    def _with_gate_pieces(self, rows) -> tuple[list, dict[int, int]]:
+        """(`rows` plus each gate's corner pieces, deduped, {id(piece): its gate's
+        row index}): what a lift carries along (TASK-532), wherever a piece's anchor tile is."""
+        rows = list(rows)
+        found = self._gate_companion_entries(rows)
+        index = {id(entry.unit): i for i, entry in enumerate(rows)}
+        gates = {}
+        for gate_id, pieces in found.items():
+            for piece in pieces:
+                if id(piece.unit) not in index:
+                    index[id(piece.unit)] = len(rows)
+                    rows.append(piece)
+                gates[id(piece.unit)] = index[gate_id]
+        return rows, gates
 
     def _write_lift_region(self, model, state, plan, label: str):
         """The region half of _lift_step(): the turned tiles at the image
@@ -884,9 +918,9 @@ class _ViewerRegionMixin:
         model = self._ensure_unit_edits()
         if model is None:
             return None
-        rows = entries + self._garrison_occupant_entries(model, entries)
+        rows, gates = self._with_gate_pieces(entries + self._garrison_occupant_entries(model, entries))
         members = tuple((entry.player_id, entry.unit) for entry in rows)
-        first_units = self._first_units(members)
+        first_units = self._first_units(members, gates)
         mm = self.scenario.map_manager
         top = [unit for (_player_id, unit), first in zip(members, first_units, strict=True) if first.holder == -1]
         rect = units_region(top, mm.map_width, mm.map_height)
@@ -899,10 +933,12 @@ class _ViewerRegionMixin:
         )
 
     @staticmethod
-    def _first_units(members) -> tuple:
+    def _first_units(members, gates=None) -> tuple:
         """region_transform.FirstUnit per (player_id, unit) member, keyed by
         its index. A holder resolves only to a reference_id exactly one member
-        has, as copy_region() resolves garrison slots."""
+        has, as copy_region() resolves garrison slots. `gates` is
+        _with_gate_pieces()' {id(piece): gate index}."""
+        gates = gates or {}
         counts: dict[int, int] = {}
         for _player_id, unit in members:
             counts[unit.reference_id] = counts.get(unit.reference_id, 0) + 1
@@ -912,7 +948,9 @@ class _ViewerRegionMixin:
             inside = unit.garrisoned_in_id
             holder = -1 if inside in (-1, unit.reference_id) else slot.get(inside, -1)
             firsts.append(
-                region_transform.FirstUnit(i, unit.unit_const, float(unit.x), float(unit.y), float(unit.rotation), holder)
+                region_transform.FirstUnit(
+                    i, unit.unit_const, float(unit.x), float(unit.y), float(unit.rotation), holder, gates.get(id(unit), -1)
+                )
             )
         return tuple(firsts)
 
@@ -951,8 +989,9 @@ class _ViewerRegionMixin:
                 record = state.base
             elif state.kind == "units":
                 players = sorted({player_id for player_id, _unit in state.members})
+                # _unit_edit() rolls the writes back on a raise (TASK-503).
                 with self._unit_edit(model, label, players, fields_only=True):
-                    self._write_lift_units_or_restore(model, state, plan, label)
+                    self._write_lift_units(model, state, plan)
                 record = self.edit_history.peek_undo()
             else:
                 record = self._write_lift_region(model, state, plan, label)
@@ -973,8 +1012,9 @@ class _ViewerRegionMixin:
     def _lift_noun(self, state) -> str:
         if state.kind == "region":
             return "region"
-        selected = sum(1 for first in state.first_units if first.holder == -1)
-        return _units_text(selected, len(state.first_units) - selected)
+        # TASK-532: a gate's carried corner pieces are not counted.
+        selected = sum(1 for first in state.first_units if first.holder == -1 and first.gate == -1)
+        return _units_text(selected, sum(1 for first in state.first_units if first.holder != -1))
 
     def _lift_status(self, state, step: str, plan, first_step: bool) -> str:
         """"Flipped 12 units West ↔ North" or "Turned region ↻", with the
@@ -987,7 +1027,7 @@ class _ViewerRegionMixin:
             region_transform.FLIP_WEST_SOUTH: f"Flipped {self._lift_noun(state)} West ↔ South",
         }[step]
         if plan.kept_orientation:
-            status += f"; {plan.kept_orientation} objects kept their orientation (cliffs, bridges)"
+            status += f"; {plan.kept_orientation} objects kept their orientation (cliffs, and objects with no turned form)"
         if first_step:
             status += " (Enter to apply, Esc to undo)"
         return status
@@ -1019,7 +1059,8 @@ class _ViewerRegionMixin:
         checked = 0
         for image in plan.images:
             _player_id, unit = state.members[image.key]
-            if unit.garrisoned_in_id != -1:
+            # A carried corner piece lands inside its gate's image, which the gate's own check covers (TASK-532).
+            if unit.garrisoned_in_id != -1 or state.first_units[image.key].gate != -1:
                 continue
             checked += 1
             if state.kind == "units":
@@ -1043,7 +1084,7 @@ class _ViewerRegionMixin:
     @staticmethod
     def _write_lift_units(model, state, plan) -> None:
         """Each image onto its member, through the guarded setters only and in
-        this order: a gate's orientation sibling (set_unit_const()), the
+        this order: a gate's or object's orientation sibling (set_unit_const()), the
         position, then a facing (set_rotation()) or a wall's shape index
         (set_wall_variant()). Everything else about the unit stays."""
         for image in plan.images:
@@ -1145,41 +1186,49 @@ class _ViewerRegionMixin:
                     wall_plan = wall_run.scenario_paste_plan(self.scenario, mm.map_width, mm.map_height, targets)
                     rewrites = wall_plan.rewrites if wall_plan else []
                     owners = {int(t.unit.player) for t in targets} | {int(p) for p, _u, _v in rewrites}
+                    # A same-document Unit Cut's ids, each while still free: add()'s guard, checked up front.
+                    reuse = region_clipboard.reusable_cut_ids(block, self._doc_id, unit_edits)
                     unit_edits.begin_unit_edit(owners)
                     new_ids: dict[int, int] = {}
                     by_slot: dict[int, object] = {}
                     units = self.scenario.unit_manager.units
                     unit_splices = []
-                    with perf_trace.phase("paste_units"), unit_edits.batch_adds():
-                        for t in targets:
-                            u = t.unit
-                            added = unit_edits.add(
-                                player=u.player,
-                                unit_const=u.unit_const,
-                                x=t.x,
-                                y=t.y,
-                                z=u.z,
-                                rotation=u.rotation,  # verbatim from the block, which may be a turned one
-                                status=u.status,
-                                initial_animation_frame=u.initial_animation_frame,
-                                garrisoned_in_id=new_ids.get(t.holder_slot, -1),
-                                caption_string_id=u.caption_string_id,
-                                caption_string=u.caption_string,
-                                capture_flag=u.capture_flag,
-                            )
-                            new_ids[t.slot] = added.reference_id
-                            by_slot[t.slot] = added
-                            # add() appends, so the index is the tail (never _unit_list_index's scan).
-                            player_id = int(u.player)
-                            own, tiles = self._unit_footprint(added)
-                            unit_splices.append(
-                                UnitSplice(player_id, len(units[player_id]) - 1, added, None, own, (), tiles)
-                            )
-                            added_units.append((player_id, added))
-                    if wall_plan:
-                        wall_run.apply_rewrites(unit_edits, rewrites)
-                        for slot, index in wall_plan.shapes.items():
-                            unit_edits.set_wall_variant(by_slot[slot], index)
+                    try:
+                        with perf_trace.phase("paste_units"), unit_edits.batch_adds():
+                            for t in targets:
+                                u = t.unit
+                                added = unit_edits.add(
+                                    player=u.player,
+                                    unit_const=u.unit_const,
+                                    x=t.x,
+                                    y=t.y,
+                                    z=t.z,
+                                    rotation=u.rotation,  # verbatim from the block, which may be a turned one
+                                    status=u.status,
+                                    initial_animation_frame=u.initial_animation_frame,
+                                    garrisoned_in_id=new_ids.get(t.holder_slot, -1),
+                                    caption_string_id=u.caption_string_id,
+                                    caption_string=u.caption_string,
+                                    capture_flag=u.capture_flag,
+                                    reference_id=reuse.get(t.slot),
+                                )
+                                new_ids[t.slot] = added.reference_id
+                                by_slot[t.slot] = added
+                                # add() appends, so the index is the tail (never _unit_list_index's scan).
+                                player_id = int(u.player)
+                                own, tiles = self._unit_footprint(added)
+                                unit_splices.append(
+                                    UnitSplice(player_id, len(units[player_id]) - 1, added, None, own, (), tiles)
+                                )
+                                added_units.append((player_id, added))
+                        if wall_plan:
+                            wall_run.apply_rewrites(unit_edits, rewrites)
+                            for slot, index in wall_plan.shapes.items():
+                                unit_edits.set_wall_variant(by_slot[slot], index)
+                    except Exception:
+                        # The tiles written above go back with the units (TASK-503).
+                        self._roll_back_tool_edit(unit_edits, tile_record)
+                        raise
                     with perf_trace.phase("unit_commit"):
                         unit_record = unit_edits.commit_unit_edit(unit_label, self.edit_history, push=False)
                     children.append(unit_record)
@@ -1503,12 +1552,14 @@ class _ViewerRegionMixin:
         parts = [name, "GAIA" if owner == GAIA_PLAYER_ID else f"Player {owner}"]
         if unit_rotation.rotation_is_angle(const):
             self._place_rotation = dataclasses.replace(self._place_rotation, facing=unit.rotation)
+            self._place_roll_const = const  # TASK-367: the next click's value, no roll over it
             parts.append(self._placement_rotation_text(const, unit.rotation))
         elif unit_variant.is_cyclable(const):
             variant = unit_variant.variant_of(
                 unit.rotation, unit_rotation.angle_count_for(const), unit_variant.variant_count_for(const)
             )
             self._place_rotation = dataclasses.replace(self._place_rotation, variant=variant, variant_const=const)
+            self._place_roll_const = const
             parts.append(self._placement_rotation_text(const, unit.rotation))
         self.map_view.refresh_place_ghost()
         self._log_status(f"Picked {', '.join(parts)} from ({x}, {y}){note}")
@@ -1574,7 +1625,7 @@ class _ViewerRegionMixin:
             children: list = []
             # The unit half goes FIRST, before a single tile is touched: it is
             # the half that can still raise (remove_many refuses a garrisoned
-            # unit), and it rolls itself back through abort_unit_edit(). Doing
+            # unit), and it rolls itself back through rollback_unit_edit(). Doing
             # it after the tile loop would leave the map mirrored with an
             # unpushed record and no undo.
             unit_record = self._apply_mirror_units(unit_plan)
@@ -1696,6 +1747,6 @@ class _ViewerRegionMixin:
                     capture_flag=capture_flag_of(source),
                 )
         except Exception:
-            model.abort_unit_edit()
+            self._roll_back_tool_edit(model)
             raise
         return model.commit_unit_edit("Mirror Map", self.edit_history, push=False)

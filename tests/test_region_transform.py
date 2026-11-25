@@ -45,7 +45,8 @@ GATE_DIAGONAL = 659  # 4x4, sparse diagonal footprint
 OAK = 349  # 1x1, VARIANT
 WALL = 117  # 1x1, five wall shapes
 CLIFF = 264  # 3x3 cliff
-BRIDGE = 605  # (2, 3), no orientation sibling
+BRIDGE = 605  # (2, 3), an `a` bridge's top piece
+MOLE = 2421  # (3, 1), no orientation sibling
 _RADIAN_3 = 3 * 2 * math.pi / 5
 
 
@@ -207,9 +208,10 @@ def test_kept_orientation_counts_cliffs_always_and_unsquare_spans_under_a_swap()
         _unit(BRIDGE, *render_units.span_anchor(5, 0, 2, 3)),
         _unit(GATE_NE, *render_units.span_anchor(0, 4, 4, 1)),
         _unit(ARCHER, 8.5, 5.5),
+        _unit(MOLE, *render_units.span_anchor(4, 3, 3, 1)),
     ]
     block = _block(9, 6, units)
-    assert transform_block(block, "r", False).kept_orientation == 2
+    assert transform_block(block, "r", False).kept_orientation == 2  # the cliff and the mole, not the bridge
     assert transform_block(block, "mx", False).kept_orientation == 1
 
 
@@ -465,6 +467,7 @@ def test_kept_orientation_counts_as_the_pasted_turn_does():
         FirstUnit(0, CLIFF, *render_units.span_anchor(40, 30, 3, 3), 0.0),
         FirstUnit(1, BRIDGE, *render_units.span_anchor(45, 30, 2, 3), 0.0),
         FirstUnit(2, GATE_NE, *render_units.span_anchor(40, 34, 4, 1), 0.0),
+        FirstUnit(3, MOLE, *render_units.span_anchor(45, 36, 3, 1), 0.0),
     ]
     assert plan_in_place(firsts, "r", _RECT, False).kept_orientation == 2
     assert plan_in_place(firsts, "mx", _RECT, False).kept_orientation == 1
@@ -479,3 +482,57 @@ def test_image_on_map_wants_the_whole_footprint():
     assert not image_on_map(GATE_NE, *render_units.span_anchor(-1, 5, 4, 1), 120, 120)
     assert image_on_map(GATE_NE, *render_units.span_anchor(10, 0, 4, 1), 120, 120)
     assert not image_on_map(GATE_NE, 12.0, -0.5, 120, 120)
+
+
+@pytest.mark.parametrize("element", ELEMENTS)
+def test_a_turned_bridge_keeps_its_top_and_bottom_at_the_screen_top_and_bottom_ends(element):
+    """TASK-329: an `a` bridge (bottom 607 at low x, middle 606, top 605 at
+    high x) under each D4 element takes its orientation siblings, a top piece
+    at the end nearer the screen top and a bottom piece at the other, measured
+    through tile_screen_origin() rather than the top-ward table."""
+    from descape import object_orientation
+
+    pieces = [_unit(c, *render_units.span_anchor(2 * k, 0, 2, 3)) for k, c in enumerate((607, 606, 605))]
+    turned = transform_block(_block(6, 3, pieces), element, False)
+    assert turned.kept_orientation == 0
+    block = turned.block
+    proj = iso_geometry.canvas_size_and_origin(block.width, block.height, 32, 0, 0)
+
+    def screen_y(unit) -> float:
+        tiles = render_units.occupied_tiles_for(unit.unit_const, unit.dx, unit.dy, block.width, block.height)
+        assert len(tiles) == 6, (element, unit)
+        return sum(iso_geometry.tile_screen_origin(tx, ty, 0, proj)[1] for tx, ty in tiles) / len(tiles)
+
+    # Units keep their order, so where the run reverses the first piece's image is the new top.
+    by_end = {object_orientation.group_state(u.unit_const)[1]: u for u in block.units}
+    assert sorted(by_end, key=str) == [0, 1, None], element
+    assert screen_y(by_end[0]) < screen_y(by_end[None]) < screen_y(by_end[1]), element
+    assert len({tile for u in block.units for tile in render_units.occupied_tiles_for(
+        u.unit_const, u.dx, u.dy, block.width, block.height)}) == 18, "the pieces still tile the turned block"
+
+
+@pytest.mark.parametrize("element", [e for e in ELEMENTS if e != "id"])
+def test_a_carried_corner_piece_takes_its_gate_images_corner_on_an_image_end_tile(element):
+    """TASK-532: for every gate with a corner const, a piece with `gate` set
+    lands on an end tile of its gate's image as corner_piece() of the image's
+    const; one without keeps reorient_gate_const()'s verbatim const, as the
+    paste turn and Mirror Map hand it."""
+    from descape import mirror_tools, placement_rules
+
+    gates = sorted(c for group in gate_orientation.groups().values() for c in group if gate_orientation.corner_piece(c))
+    assert len(gates) >= 32
+    for gate in gates:
+        corner = gate_orientation.corner_piece(gate)
+        x, y = render_units.span_anchor(2, 2, *tile_span(gate, render_units.NON_BUILDING_SPAN))
+        ends = placement_rules.end_tiles(gate, x, y)
+        firsts = [FirstUnit(0, gate, x, y, 0.0)]
+        firsts += [FirstUnit(1 + i, corner, tx + 0.5, ty + 0.25, 0.0, gate=0) for i, (tx, ty) in enumerate(ends)]
+        firsts.append(FirstUnit(3, corner, ends[0][0] + 0.5, ends[0][1] + 0.5, 0.0))
+        plan = plan_in_place(firsts, element, (0, 0, 8, 8), False)
+        image = plan.images[0]
+        image_ends = set(placement_rules.end_tiles(image.unit_const, image.x, image.y))
+        carried = plan.images[1:3]
+        assert {p.unit_const for p in carried} == {gate_orientation.corner_piece(image.unit_const)}, (gate, element)
+        assert {(int(p.x), int(p.y)) for p in carried} == image_ends, (gate, element)
+        assert all(p.rotation_write is None for p in carried)
+        assert plan.images[3].unit_const == mirror_tools.reorient_gate_const(corner, element) == corner

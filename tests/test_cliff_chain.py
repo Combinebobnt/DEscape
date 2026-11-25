@@ -13,6 +13,7 @@ low corner has `((x0 + y0) // 3) % 2 == 0`, else the higher.
 
 from __future__ import annotations
 
+import dataclasses
 import random
 from itertools import pairwise
 
@@ -1321,6 +1322,31 @@ def test_joined_arms_skips_the_given_cliffs():
     index = cliff_chain.index_cliffs(run)
     assert cliff_chain.joined_arms(run, index, 1) == {N, S}
     assert cliff_chain.joined_arms(run, index, 1, skip={0}) == {S}
+
+
+def _owned_column(frames):
+    """_column(1, frames), each piece given its own stand-in unit: the planner matches by id()."""
+    return [dataclasses.replace(c, unit=object()) for c in _column(1, frames)]
+
+
+def test_erase_rewrites_for_units_maps_removed_ids_onto_the_snapshot():
+    run = _owned_column([18, 2, 1, 2, 19])
+    index = cliff_chain.index_cliffs(run)
+    rewrites, left = cliff_chain.erase_rewrites_for_units(run, index, {id(run[2].unit)})
+    assert [(cliff, frame) for cliff, frame in rewrites] == [(run[1], 19), (run[3], 18)]
+    assert all(cliff.unit is run[k].unit for (cliff, _f), k in zip(rewrites, (1, 3), strict=True))
+    assert left == 0
+    # An id no snapshot cliff has: nothing removed from the run, nothing planned.
+    assert cliff_chain.erase_rewrites_for_units(run, index, {id(object())}) == ([], 0)
+    assert cliff_chain.erase_rewrites_for_units(run, index, set()) == ([], 0)
+
+
+def test_erase_rewrites_for_units_drops_a_survivor_with_no_live_unit():
+    run = _owned_column([18, 2, 1, 2, 19])
+    run[3] = dataclasses.replace(run[3], unit=None)
+    rewrites, left = cliff_chain.erase_rewrites_for_units(run, cliff_chain.index_cliffs(run), {id(run[2].unit)})
+    assert [(cliff.unit, frame) for cliff, frame in rewrites] == [(run[1].unit, 19)]
+    assert left == 0
 
 
 # -- ground truth: the drawn run's ink (needs a real AoE2:DE install) ----

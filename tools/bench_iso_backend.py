@@ -98,10 +98,12 @@ def warm_texture_cache(tiles, tile_px: int) -> None:
     size for every terrain_id actually present, so the first *timed* call
     doesn't pay for disk reads + Pillow decode/resize of a real .dds -- the
     5-11us/tile flat number is a steady-state figure, not a cold-cache one,
-    so this keeps the comparison apples-to-apples."""
+    so this keeps the comparison apples-to-apples. Both variants: Flat reads
+    the sharp texture, the iso styles the angled one."""
     size = asset_source.terrain_texture_size(tile_px)
     for tid in {t.terrain_id for t in tiles}:
-        asset_source.terrain_texture_at(tid, size)
+        for angled in (False, True):
+            asset_source.terrain_texture_at(tid, size, angled=angled)
 
 
 def bench_incremental(tiles, w: int, h: int, tile_px: int, reps: int = 2000) -> None:

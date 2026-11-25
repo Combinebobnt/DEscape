@@ -127,6 +127,13 @@ class _LeveledChunkCache(_ChunkCacheBase):
         """The corner_rise the level's sprite walk and re-anchor read."""
         return None
 
+    def level_sprite_inputs(self, mip: int) -> tuple[iso_geometry.IsoProjection, np.ndarray | None]:
+        """(proj, corner_rise) the level's own sprite walk resolves a unit
+        against, for a ghost drawn at that level (TASK-291). Geometry only: it
+        builds no unit layer. GUI thread only, as the canvas paint is."""
+        lvl = self._levels[mip]
+        return lvl.proj, self._level_corner_rise(lvl)
+
     def _level_heights(self, lvl: _IsoLevel) -> np.ndarray:
         """The heights array the level's sprites and unit pack are built against."""
         return self.elevations

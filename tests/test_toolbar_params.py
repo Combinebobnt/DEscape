@@ -536,3 +536,37 @@ def test_elevation_view_combo_explains_every_style() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_place_units_random_box_shows_under_place_unit_alone() -> None:
+    """TASK-367: Random facing/variant (Place Unit) sits right after Off-grid,
+    visible and enabled under Place Unit only, off by default."""
+    window = conftest.blank_window()
+    try:
+        check = window.place_random_check
+        assert check.text() == "Random facing/variant" and not check.isChecked()
+        assert "random facing" in check.toolTip() and "next click" in check.toolTip()
+        assert {"place_unit"} == viewer_common.PLACE_RANDOM_TOOLS
+        seen = set()
+        for mode in ("View", "Terrain", "Triggers", "Units"):
+            window.mode_combo.setCurrentText(mode)
+            for tool in settings.TOOLS:
+                action = getattr(window, f"{tool.tool_id}_action", None)
+                if action is None or not action.isVisible() or not action.isEnabled():
+                    continue
+                action.setChecked(True)
+                assert window._current_tool == tool.tool_id
+                shown = tool.tool_id == "place_unit"
+                assert window.place_random_param_action.isVisible() == shown, (mode, tool.tool_id)
+                assert check.isEnabled() == shown, (mode, tool.tool_id)
+                seen.add(tool.tool_id)
+        assert {"place_unit", "move", "unit_brush", "unit_line", "unit_shape", "draw"} <= seen
+
+        window.mode_combo.setCurrentText("Units")
+        window.place_unit_action.setChecked(True)
+        assert window.tool_param_separator_action.isVisible()
+        order = window.off_grid_check.parentWidget().actions()
+        assert order.index(window.place_random_param_action) == order.index(window.off_grid_param_action) + 1
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

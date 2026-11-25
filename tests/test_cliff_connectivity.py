@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from descape import cliff_connectivity
+from descape.scenario_format import ScenarioFormat
 
 import conftest
 
@@ -550,3 +553,29 @@ def test_held_out_cliffs_sit_on_the_shape_table_and_lay_out_by_the_modal_offset(
     corner_hit, corner_n = gen.all_tall_corner_offsets(held, tables)
     assert corner_n > 1000
     assert corner_hit / corner_n >= 0.99, f"(iii) all-3x3 corner edges {corner_hit}/{corner_n}"
+
+
+@pytest.mark.test_map
+def test_scan_skips_pre_de_files_and_counts_both_kinds_of_skip(tmp_path, monkeypatch) -> None:
+    """The table is DE cliff habit for a DE write path: a pre-DE load is left
+    out (and counted) unless asked for, an unloadable file is counted."""
+    gen = conftest.load_verify_module("gen_cliff_connectivity")
+    shutil.copy(ROOT / "tests" / "fixtures" / "test_map_240x240.aoe2scenario", tmp_path / "a.aoe2scenario")
+    (tmp_path / "broken.scx").write_bytes(b"not a scenario")
+    real_load = gen.load_map_and_units
+
+    def as_legacy(path):
+        loaded = real_load(path)
+        loaded.source_format = ScenarioFormat("1.21", 2, "1.22", "aoc", True)  # what a header-2 load sets
+        return loaded
+
+    skipped: Counter[str] = Counter()
+    de = gen.scan([tmp_path], skipped)
+    assert [f.name for f in de] == ["a.aoe2scenario"] and de[0].nodes, "fixture must carry cliffs"
+    assert skipped == Counter(unloadable=1)
+
+    monkeypatch.setattr(gen, "load_map_and_units", as_legacy)
+    skipped.clear()
+    assert gen.scan([tmp_path], skipped) == []
+    assert skipped == Counter(legacy=1, unloadable=1)
+    assert [f.name for f in gen.scan([tmp_path], include_legacy=True)] == ["a.aoe2scenario"]

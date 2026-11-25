@@ -295,7 +295,7 @@ def portrait_for(object_id: int, civ: int | None = None) -> tuple[int | None, bo
     return icon_for(object_id, civ), is_building(object_id) or object_id in _BUILDING_PORTRAIT_CONSTS
 
 
-def _takes_install_name(section: str, id_: int, dat_entry: dict, lang: str) -> bool:
+def _takes_install_name(section: str, id_: int, dat_entry: dict, lang: str, civ: int | None = None) -> bool:
     # TASK-507: with no strings file of its own a game reads its fallback's, which fit only a row the fallback shares.
     fallback = game_dataset.game().fallback
     if fallback is None or game_dataset.has_own_strings(lang):
@@ -303,7 +303,50 @@ def _takes_install_name(section: str, id_: int, dat_entry: dict, lang: str) -> b
     base_row = _committed_table(fallback)[section].get(str(id_))
     if base_row is None:
         return False
-    return (base_row.get("code"), base_row.get("string_id")) == (dat_entry.get("code"), dat_entry.get("string_id"))
+
+    def name_id(row: dict) -> object:
+        return row.get("string_id") if civ is None else row.get("civ_string_ids", {}).get(str(civ))
+
+    return (base_row.get("code"), name_id(base_row)) == (dat_entry.get("code"), name_id(dat_entry))
+
+
+def civ_name(object_id: int, civ: int | None, lang: str | None = None) -> str | None:
+    """The install's name for civ's own copy of object_id (the antiquity
+    civs' Bowman for the Archer), from the row's `civ_string_ids`; None for civ
+    None, no own name id, an id the install lacks, or a fallback-game row
+    whose civ id the fallback's table does not share."""
+    entry = _dat_entry("objects", object_id)
+    string_id = None if civ is None or entry is None else entry.get("civ_string_ids", {}).get(str(civ))
+    if string_id is None:
+        return None
+    lang = lang or asset_source.get_language()
+    text = asset_source.resource_string(string_id, lang)
+    return text if text and _takes_install_name("objects", object_id, entry, lang, civ) else None
+
+
+def name_civ_key(object_id: int, civ: int | None) -> int | None:
+    """civ when object_id's row has its own name id for it, else None:
+    portrait_civ_key()'s twin, so an owner switch that renames nothing is skipped."""
+    entry = _dat_entry("objects", object_id)
+    return civ if civ is not None and entry is not None and str(civ) in entry.get("civ_string_ids", {}) else None
+
+
+def owner_name(object_id: int, civ: int | None, base: str | None = None) -> str:
+    """civ_name(), else base, else display_name(): the name a unit of civ's
+    player shows. A base ending in DATA_MOD_TAG keeps the tag on the civ name."""
+    name = civ_name(object_id, civ)
+    if name is None:
+        return base or display_name(object_id)
+    return f"{name} {DATA_MOD_TAG}" if base and base.endswith(DATA_MOD_TAG) else name
+
+
+@game_dataset.cache(maxsize=8)
+def civ_named_ids(civ: int | None) -> frozenset[int]:
+    """Every object id whose row has its own name id for civ; empty for None."""
+    if civ is None:
+        return frozenset()
+    key = str(civ)
+    return frozenset(int(id_) for id_, row in _dat_table()["objects"].items() if key in row.get("civ_string_ids", {}))
 
 
 def resolve_name(id_: int, library_name: str, dat_entry: dict | None, lang: str | None = None, *, section: str) -> str:
@@ -338,6 +381,7 @@ def clear_caches() -> None:
     _combined_object_names.cache_clear()
     objects.cache_clear()
     techs.cache_clear()
+    civ_named_ids.cache_clear()
     _read_table.cache_clear()
 
 

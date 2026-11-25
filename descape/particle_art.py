@@ -1,6 +1,7 @@
 """Frames of a particle effect, for the units whose standing graphic is one
 (GH #20: Butterflies 1608-1610; GH #67: Seagulls 303; GH #256: Smoke 1308 and
-Flames 1333-1336). None of them draws from an .sld.
+Flames 1333-1336, and their hidden twins SMOKE 902 and FLAME1-4 939-942; GH
+#330: the waterfalls 896, 1635 and 2598). None of them draws from an .sld.
 
 Leaf module like unit_sprites: numpy, Pillow and stdlib, no Qt. Pixels come
 from the user's own install at runtime and nothing is shipped.
@@ -19,6 +20,13 @@ becomes its distance from the right. Only a real bool counts, as with the
 generator's check. That the game mirrors about the pivot too is an inference,
 like the pivot itself below.
 
+`ImageAngles` (the waterfalls) is a count of facings, each one contiguous run
+of `ImageCount / ImageAngles` frames in atlas order, so facing `a` starts at
+index `a * n`. native_frame()'s index spans every run. The generator gives such
+an entry angle_count = ImageAngles and frame_count = n, so unit_sprites'
+variant dispatch lands on a run's first frame. A value that is not an int >= 1
+dividing ImageCount draws nothing.
+
 An atlas frame is TexturePacker's "JSON array" record:
 
 - `frame` is where it sits in the atlas. Its w/h are the UNROTATED size, so a
@@ -29,7 +37,8 @@ An atlas frame is TexturePacker's "JSON array" record:
   default counter-clockwise turn restores it. Measured, since the two turns
   give the same shape: a restored frame matches the unrotated frame beside it
   in the loop better than its half-turn does on 38 of butterflies_2's 40 such
-  pairs (tests/test_particle_art.py re-measures it).
+  pairs (tests/test_particle_art.py re-measures it). A drawn frame is rotated
+  for the first time on the waterfalls: the first frames of runs 1 and 2.
 - `spriteSourceSize` is where the trimmed frame sits in the untrimmed
   `sourceSize` canvas, and `pivot` is a fraction of that canvas. The pivot is
   taken as the unit's ground anchor, which is an inference: nothing in the
@@ -66,16 +75,28 @@ def _particles_dir() -> Path | None:
 
 @lru_cache(maxsize=64)
 def _effect(directory: Path, name: str) -> dict | None:
-    """The effect's JSON, or None when it is absent, unreadable or not a plain
-    atlas run. `ImageAngles` (a frame run per facing, the waterfalls) is not
-    read, so an effect carrying it draws nothing rather than the wrong frame."""
+    """The effect's JSON, or None when it is absent, unreadable or has no
+    AtlasFile. A malformed `ImageAngles` (image_angles()) is None too, so it
+    draws nothing rather than the wrong frame."""
     try:
         effect = json.loads((directory / f"{name}.json").read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(effect, dict) or not isinstance(effect.get("AtlasFile"), str):
         return None
-    return None if "ImageAngles" in effect else effect
+    if "ImageAngles" in effect and image_angles(effect) is None:
+        return None
+    return effect
+
+
+def image_angles(effect: dict) -> int | None:
+    """The effect's `ImageAngles` run count (1 when absent), or None when it
+    is not an int >= 1 that divides an int `ImageCount`. The generator applies
+    the same rule."""
+    angles, count = effect.get("ImageAngles", 1), effect.get("ImageCount")
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (angles, count)):
+        return None
+    return angles if angles >= 1 and count % angles == 0 else None
 
 
 @lru_cache(maxsize=8)
@@ -125,9 +146,10 @@ def _cut(pixels: np.ndarray, record: dict):
 
 def native_frame(effect_name: str, index: int):
     """(main, None, hotspot_x, hotspot_y) for frame `index` of the effect's
-    own run, at the atlas's native resolution, or None. unit_sprites.
-    _native_frame()'s contract before its crop to ink: there is no
-    player-colour layer, and the effect's Scale is the caller's to apply."""
+    own run (every ImageAngles run), at the atlas's native resolution, or
+    None. unit_sprites._native_frame()'s contract before its crop to ink:
+    there is no player-colour layer, and the effect's Scale is the caller's
+    to apply."""
     directory = _particles_dir()
     if directory is None:
         return None

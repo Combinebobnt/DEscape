@@ -22,7 +22,7 @@ pytestmark = [
 TRIGGER_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
 CREATE_OBJECT = 11
-TREE_CONST = 349  # Oak tree; any const works, the stamp never reads it
+TREE_CONST = 349  # Oak tree, 1x1, so the stamp steps by one tile (TASK-086)
 TEMPLATE_TILE = (5, 5)
 # Off-centre by the east edge (map is 120 wide): the circle is clipped on one
 # side only, so an x/y swap in the funnel lands on a different tile set.
@@ -387,3 +387,208 @@ def test_a_stamped_trigger_round_trips_through_save(tmp_path: Path) -> None:
     manager = scenario_io.parse_triggers(scenario_io.load_map_and_units(out))
     assert manager is not None
     assert [_fields(e) for e in manager.triggers[0].effects] == expected
+
+
+# -- TASK-086: a multi-tile object steps by its footprint ---------------------
+
+HOUSE_CONST = 70  # 2x2
+GATE_X_CONST = 64  # Gate (Up.), the stone gate: 4 tiles along x, 1 along y
+
+
+def _retarget(window, index: int, const: int, location: tuple[int, int] | None = None) -> None:
+    from descape.trigger_fields import INT, FieldSpec
+
+    window.set_entry_field(0, "effect", index, FieldSpec("object_list_unit_id", INT), const)
+    if location is not None:
+        for name, value in zip(("location_x", "location_y"), location, strict=True):
+            window.set_entry_field(0, "effect", index, FieldSpec(name, INT), value)
+    window.trigger_panel.select_entry("effect", index)
+
+
+def _stamped(window, after: int) -> list[tuple[int, int]]:
+    return [(e.location_x, e.location_y) for e in _effects(window)[after + 1:]]
+
+
+def test_a_house_stamps_one_copy_per_2x2_footprint() -> None:
+    from descape import brush
+
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, HOUSE_CONST)
+        _set_brush(window, 4, brush.BRUSH_SHAPE_SQUARE)
+        records = len(window.edit_history.records)
+        window.stamp_create_objects(50, 50)
+        assert _stamped(window, index) == [(50, 50), (52, 50), (50, 52), (52, 52)]
+        assert len(window.edit_history.records) == records + 1
+        assert _last_status(window) == "Created 4 Create Object effects, one per 2x2 footprint"
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_stamped_houses_tile_a_block_by_the_games_anchor_rule() -> None:
+    """T2g: by GH #369's created_unit_point(), the four footprints abut with no gap or overlap."""
+    from descape import brush
+    from descape.render_units import NON_BUILDING_SPAN, created_unit_point
+    from descape.terrain_palette import tile_span
+
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, HOUSE_CONST)
+        _set_brush(window, 4, brush.BRUSH_SHAPE_SQUARE)
+        window.stamp_create_objects(50, 50)
+        sx, sy = tile_span(HOUSE_CONST, NON_BUILDING_SPAN)
+        covered: list[tuple[int, int]] = []
+        for x, y in _stamped(window, index):
+            px, py = created_unit_point(HOUSE_CONST, x, y)
+            x0, y0 = int(px - sx / 2), int(py - sy / 2)
+            own = [(tx, ty) for ty in range(y0, y0 + sy) for tx in range(x0, x0 + sx)]
+            assert len(own) == 4
+            covered += own
+        assert len(covered) == len(set(covered)), "two footprints overlap"
+        assert set(covered) == {(tx, ty) for ty in range(49, 53) for tx in range(49, 53)}
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_4x1_gate_steps_along_x_only() -> None:
+    """T2b, Trap 3: span_x pairs with location_x."""
+    from descape import brush
+
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, GATE_X_CONST)
+        _set_brush(window, 9, brush.BRUSH_SHAPE_LINE_X)
+        window.stamp_create_objects(50, 50)
+        assert _stamped(window, index) == [(46, 50), (50, 50), (54, 50)]
+        count = len(_effects(window))
+        _set_brush(window, 9, brush.BRUSH_SHAPE_LINE_Y)
+        window.stamp_create_objects(50, 60)
+        assert _stamped(window, count - 1) == [(50, y) for y in range(56, 65)]
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_second_house_click_skips_the_copies_that_would_overlap() -> None:
+    """T2c: the duplicate skip is a footprint-overlap skip for a multi-tile object."""
+    from descape import brush
+
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, HOUSE_CONST)
+        _set_brush(window, 4, brush.BRUSH_SHAPE_SQUARE)
+        window.stamp_create_objects(50, 50)
+        count = len(_effects(window))
+        window.stamp_create_objects(53, 50)
+        assert _stamped(window, count - 1) == [(55, 50), (55, 52)]
+        assert _last_status(window) == (
+            "Created 2 Create Object effects, one per 2x2 footprint (2 would overlap one already there)"
+        )
+        count = len(_effects(window))
+        records = len(window.edit_history.records)
+        window.stamp_create_objects(50, 50)
+        assert len(_effects(window)) == count
+        assert len(window.edit_history.records) == records
+        assert _last_status(window) == (
+            "Create Objects: every 2x2 spot here would overlap this object already there"
+        )
+    finally:
+        conftest.close_window(window)
+
+
+def test_an_unset_template_location_blocks_no_tile() -> None:
+    """T2d, Trap 1: a (-1, -1) template must not overlap a House at (0, 0)."""
+    from descape import brush
+
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, HOUSE_CONST, location=(-1, -1))
+        _set_brush(window, 1, brush.BRUSH_SHAPE_SQUARE)
+        window.stamp_create_objects(0, 0)
+        assert _stamped(window, index) == [(0, 0)]
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_hover_highlight_shows_only_the_anchor_tiles() -> None:
+    """T2e: the preview and the stamp share lattice_tiles(), so they cannot disagree."""
+    from descape import brush
+
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, HOUSE_CONST)
+        _set_brush(window, 4, brush.BRUSH_SHAPE_SQUARE)
+        window.create_objects_action.setChecked(True)
+        map_view = window.map_view
+        calls = []
+        original = map_view._set_highlight_tiles
+
+        def recording(tiles, key):
+            calls.append((list(tiles), key))
+            original(tiles, key)
+
+        map_view._set_highlight_tiles = recording
+        map_view.refresh_highlight((50, 50))
+        assert map_view._highlight_key == ("stamp", 50, 50, 4, brush.BRUSH_SHAPE_SQUARE, 1, (2, 2))
+        assert calls[-1][0] == [(50, 50), (52, 50), (50, 52), (52, 52)]
+        records = len(window.edit_history.records)
+        map_view.refresh_highlight((51, 50))
+        assert len(window.edit_history.records) == records, "a hover records nothing"
+        # Back to a 1x1 template: the plain key again.
+        _retarget(window, index, TREE_CONST)
+        map_view.refresh_highlight((50, 50))
+        assert map_view._highlight_key == (50, 50, 4, brush.BRUSH_SHAPE_SQUARE, 1)
+        assert len(calls[-1][0]) == 16
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_hover_step_query_builds_no_edit_model(tmp_path: Path) -> None:
+    """Trap 2: the hover never calls _ensure_trigger_edits(). A saved House template is
+    reopened, so the file has one and no model exists yet."""
+    from descape import brush
+    from descape.scenario_write import write_scenario
+
+    seeded = tmp_path / "house.aoe2scenario"
+    window = _window()
+    try:
+        index = _add_template(window)
+        _retarget(window, index, HOUSE_CONST)
+        write_scenario(window.scenario, seeded, triggers=window.trigger_edits)
+        window.edit_history.mark_saved()
+        window.load_scenario(seeded)
+        panel = window.trigger_panel
+        panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+        panel.select_entry("effect", index)
+        assert window.trigger_edits is None
+        _set_brush(window, 4, brush.BRUSH_SHAPE_SQUARE)
+        window.create_objects_action.setChecked(True)
+        assert window._create_objects_step() == (2, 2)
+        window.map_view.refresh_highlight((50, 50))
+        assert window.map_view._highlight_key[0] == "stamp"
+        assert window.trigger_edits is None, "a hover must not build the edit model"
+        panel.select_entry("effect", 0)  # the fixture's own type-20 effect
+        assert window._create_objects_step() == (1, 1)
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_toolbar_and_hint_tooltips_name_the_footprint_step() -> None:
+    from PyQt5.QtWidgets import QLabel
+
+    window = _window()
+    try:
+        wording = "one per footprint for a bigger object"
+        assert wording in window.create_objects_action.toolTip()
+        _add_template(window)
+        panel = window.trigger_panel
+        hints = [w for w in window.findChildren(QLabel) if w.text() == panel._CREATE_OBJECTS_HINT]
+        assert hints, "the Create Object form shows its Create Objects hint"
+        assert all(wording in hint.toolTip() for hint in hints)
+    finally:
+        conftest.close_window(window)

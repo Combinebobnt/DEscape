@@ -138,7 +138,7 @@ LAYERS: tuple[LayerSpec, ...] = (
         label="&Terrain Textures",
         tooltip=(
             "Draw each tile as its flat terrain colour instead of the real "
-            "terrain texture -- the same look as running with no AoE2DE "
+            "terrain texture, the same look as running with no AoE2DE "
             "install configured. Useful for reading elevation and unit "
             "placement without the texture detail."
         ),
@@ -168,8 +168,8 @@ LAYERS: tuple[LayerSpec, ...] = (
         tooltip=(
             "Draw a farm's footprint as its own farm terrain, tinted with the "
             "owner's colour. With this off a farm is no longer skipped at "
-            "paint time, so it draws as an ordinary coloured mark instead -- "
-            "this hides the terrain override, not the farm."
+            "paint time, so it draws as an ordinary coloured mark instead. "
+            "This hides the terrain override, not the farm."
         ),
         default=True,
         # All three caches drape: Stepped (P3 farm terrain), Sloped (Track C6,
@@ -187,7 +187,7 @@ LAYERS: tuple[LayerSpec, ...] = (
         tooltip=(
             "Draw tree sprites at 60% size so the tiles behind and beside a "
             "tree stay readable. The tree still stands on the same tile and "
-            "is still picked by its whole footprint -- this shrinks the art, "
+            "is still picked by its whole footprint: this shrinks the art, "
             "not the unit."
         ),
         # The first row here to default off: it changes the map away from
@@ -246,7 +246,7 @@ LAYERS: tuple[LayerSpec, ...] = (
         tooltip=(
             "Draw walls and gates see-through, at the opacity set in Settings "
             "> Appearance, so units behind a wall line show. A wall is still "
-            "picked by its footprint -- this changes the art, not the unit."
+            "picked by its footprint: this changes the art, not the unit."
         ),
         # Off, like Small Trees: it changes the map away from what the game shows.
         default=False,

@@ -728,9 +728,10 @@ class _ViewerToolbarMixin:
             "snapped to the grid and centred on the cursor, where the game's placement rules allow it "
             "(Free placement lifts them). With a wall picked, drag to place a run "
             "(one undo step per drag): it bends once, and Shift makes it one straight segment. "
-            "Walls are always tile-snapped and unrestricted, so Off-grid and Free placement don't apply to them. "
+            "Walls are always tile-snapped, so Off-grid doesn't apply to them, and Free placement lifts only "
+            "their terrain gap: a tile the wall can't stand on is left empty. "
             "A mouse wheel set to rotate (Settings > Keybinds) or the Rotate keys turn the preview "
-            "before you click, and later placements keep that facing or variant."
+            "before you click, and later placements keep that facing or variant (only the next one with Random facing/variant ticked)."
         )
         self.place_unit_action.toggled.connect(lambda on: on and self._on_tool_selected("place_unit"))
         tool_group.addAction(self.place_unit_action)
@@ -787,7 +788,7 @@ class _ViewerToolbarMixin:
         self.convert_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.convert_action.setToolTip(
             "Drag over units owned by a checked source player to reassign them to the chosen "
-            "owner (Units mode) -- one undo step per drag"
+            "owner (Units mode). One undo step per drag"
         )
         self.convert_action.toggled.connect(lambda on: on and self._on_tool_selected("convert"))
         tool_group.addAction(self.convert_action)
@@ -799,7 +800,7 @@ class _ViewerToolbarMixin:
         self.eraser_action.setCheckable(True)
         self.eraser_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.eraser_action.setToolTip(
-            "Drag to erase the objects under the brush that match a ticked Target -- one undo "
+            "Drag to erase the objects under the brush that match a ticked Target. One undo "
             "step per drag. Objects hidden by Filters are never erased; erasing a building "
             "also erases its garrison."
         )
@@ -813,9 +814,10 @@ class _ViewerToolbarMixin:
         self.create_objects_action.setCheckable(True)
         self.create_objects_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.create_objects_action.setToolTip(
-            "Select a Create Object effect, then click the map: adds one copy of it per tile "
-            "under the brush (Triggers mode), skipping tiles that already have one -- "
-            "one undo step per click"
+            "Select a Create Object effect, then click the map (Triggers mode): adds one copy of it "
+            "per tile under the brush (one per footprint for a bigger object), skipping tiles that "
+            "already have one. "
+            "One undo step per click"
         )
         self.create_objects_action.toggled.connect(
             lambda on: on and self._on_tool_selected("create_objects")
@@ -1112,7 +1114,8 @@ class _ViewerToolbarMixin:
             self.eraser_target_actions[name] = action
         self.eraser_target_actions["overlay"].setToolTip("Clear the layered terrain on every brush tile")
         self.eraser_target_actions["cliffs"].setToolTip(
-            "Off, no other target erases a cliff: erasing one piece breaks its chain"
+            "Off, no other target erases a cliff: erasing one piece breaks its chain. "
+            "On, a run left with one neighbour gets its end cap back."
         )
         self.eraser_targets_button.setMenu(targets_menu)
         self.eraser_targets_param_action = param_toolbar.addWidget(self.eraser_targets_button)
@@ -1202,12 +1205,13 @@ class _ViewerToolbarMixin:
         self.paste_units_param_action = param_toolbar.addWidget(self.paste_units_check)
 
         # GH #176: lifts placement_rules' terrain and object rules for Place Unit clicks and
-        # Move drags. Read at the click or drop, and by the ghosts (TASK-327).
+        # Move drags, and wall runs' terrain gaps (TASK-328). Read at the click, drop or commit, and by the ghosts.
         self.unrestricted_check = QCheckBox("Free placement")
         self.unrestricted_check.setChecked(tool_options.default("free_placement"))
         self.unrestricted_check.setToolTip(
             "Place or move a unit where the game would refuse it: on terrain it can't stand on, "
-            "or on top of another object. It still snaps to the grid; tick Off-grid to lift that too."
+            "or on top of another object. For walls it lifts the terrain rule only; Walls skip occupied "
+            "tiles decides objects. It still snaps to the grid; tick Off-grid, where shown, to lift that too."
         )
         self.unrestricted_check.setEnabled(False)  # re-gated by _update_tool_enabled()
         # The hover ghost turns refused or not with no mouse move; a drag ghost on its next move.
@@ -1226,6 +1230,18 @@ class _ViewerToolbarMixin:
         # The click reads the box directly; only the hover ghost needs telling.
         self.off_grid_check.toggled.connect(self._refresh_place_ghost)
         self.off_grid_param_action = param_toolbar.addWidget(self.off_grid_check)
+
+        # TASK-367: Place Unit only (ToolDef.supports_place_random), a fresh roll per click.
+        self.place_random_check = QCheckBox("Random facing/variant")
+        self.place_random_check.setChecked(tool_options.default("place_random"))
+        self.place_random_check.setToolTip(
+            "Give each click a random facing, or a random variant for trees and other scenery. "
+            "The preview shows the next one; turning it sets the next click's alone."
+        )
+        self.place_random_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        # A tick rolls the ghost with no mouse move; an untick keeps the value it shows.
+        self.place_random_check.toggled.connect(self._on_place_random_toggled)
+        self.place_random_param_action = param_toolbar.addWidget(self.place_random_check)
 
         # GH #124. Read at press (the preview) and at commit; nothing else needs telling.
         self.skip_occupied_check = QCheckBox("Walls skip occupied tiles")

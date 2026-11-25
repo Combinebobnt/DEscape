@@ -1546,8 +1546,9 @@ def tint_rgba(uint8_t[:, :, ::1] out, const uint8_t[:, :, ::1] playercolor, int 
 
 def box_shrink_rgba(const uint8_t[:, :, ::1] rgba, const int64_t[:, ::1] ys, const float[:, ::1] wy,
                     const int64_t[:, ::1] xs, const float[:, ::1] wx, uint8_t[:, :, ::1] out):
-    """unit_sprites._box_resize_rgba's shrink into out (h, w, 4), with ys/wy
-    _area_taps(H, h) and xs/wx _area_taps(W, w): premultiply, the row taps
+    """unit_sprites._box_resize_rgba's area resample, either way on each axis,
+    into out (h, w, 4), with ys/wy _area_taps(H, h) and xs/wx
+    _area_taps(W, w): premultiply, the row taps
     then the column taps summed in tap order, un-premultiply where alpha > 0,
     + 0.5, clip, truncate. One output row at a time, each source row
     premultiplied once into one of two slots (taps advance a row at a time,

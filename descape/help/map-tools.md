@@ -1,6 +1,6 @@
 # Map Tools
 
-These commands work on the whole map, or on many objects at once, from any mode. They live in the Map, Edit and Tools menus. Each one that changes the map is one undo step, except Resize Map, which cannot be undone.
+These commands work on the whole map, or on many objects at once, from any mode. They live in the Map, Edit and Tools menus. Each one that changes the map is one undo step, except Resize Map, which cannot be undone. For an edit none of them covers, **Tools > Scripts** runs your own Python against the open map, also as one undo step: see [Scripts](scripts-and-addons.md).
 
 ## Resize Map
 
@@ -20,7 +20,7 @@ In the in-game editor, this is the Map tab's Extend Map.
 
 **Map > Mirror Map…** copies one part of the map onto the rest by reflection or rotation, for a fair layout. Pick a Symmetry (two-way mirrors, a 180° turn, four-way and eight-way, and approximate three-way and six-way modes for three or six players) and the Source slice, which is shaded on the map. Tick what to copy: Terrain, Elevation and Units.
 
-With Units ticked, every other slice's units are rewritten from the source slice. Units with a real facing turn to match, a wall's run turns with the mirror, and a gate becomes the orientation it is mirrored into. Overlapping copies chooses what happens where a copy would land on an original: refuse the whole mirror, skip those copies, or place them anyway. Grass, plants, flowers and other objects units can walk through never count as overlapping: their copies land anywhere, and other copies may land on them. Rotate ownership by moves each slice's copies that many places further along the scenario's player list than the slice before; GAIA's units stay GAIA's.
+With Units ticked, every other slice's units are rewritten from the source slice. Units with a real facing turn to match, a wall's run turns with the mirror, and a gate becomes the orientation it is mirrored into. Bridges (except the wooden ones and the DE bridge pieces), chains, longhouses and blockers do the same, and a bridge's end pieces stay at its ends. Overlapping copies chooses what happens where a copy would land on an original: refuse the whole mirror, skip those copies, or place them anyway. Grass, plants, flowers and other objects units can walk through never count as overlapping: their copies land anywhere, and other copies may land on them. Rotate ownership by moves each slice's copies that many places further along the scenario's player list than the slice before; GAIA's units stay GAIA's.
 
 Preview applies the mirror and leaves the dialog open, so you can look at the result. Changing an option or pressing Cancel takes the preview back, and Apply keeps it. Until you quit DEscape, the dialog opens with the options you last applied; Cancel leaves them as they were. Mirror Map needs a square map. In the in-game editor, the closest thing is the Terrain tab's Map Copy.
 
@@ -44,7 +44,7 @@ Each finding is an Error, a Warning or Info, and a check that could not run says
 
 **Edit > Find and Replace…** searches every placed object, including ones hidden by the Filters menu, garrisoned or off the map. Its Objects tab searches by name (substring or regex, `#id` for an exact type, optionally captions too), owner, category, kind, specific types and area. The kinds match the Filters menu's: Trees, Eye candy (the passable kind, such as grass and flowers), Obstacles (rocks, ruins, statues and other eye candy that blocks units), Walls and gates, and Invisible.
 
-Tick the results to select them on the map, delete them, change their owner, replace them with another object type or export them as CSV. A replaced object keeps its id, so triggers and garrisons that name it still work. Replacing objects with a gate clears the walls under each new gate and reshapes those beside it, in the same undo step. Replacing objects with a wall, or a wall or gate with something else, reshapes the walls beside it too, and a new wall takes the shape its neighbours give it. Replace offers to retarget the trigger effects that select it by type, in the same undo step. Double-click a result to centre the map on it. Each operation is one undo step.
+Tick the results to select them on the map, delete them (deleting a cliff gives the run it leaves its end cap back), change their owner, replace them with another object type or export them as CSV. A replaced object keeps its id, so triggers and garrisons that name it still work. Replacing objects with a gate clears the walls under each new gate and reshapes those beside it, in the same undo step. Replacing objects with a wall, or a wall or gate with something else, reshapes the walls beside it too, and a new wall takes the shape its neighbours give it. Replace offers to retarget the trigger effects that select it by type, in the same undo step. Double-click a result to centre the map on it. Each operation is one undo step.
 
 The Triggers tab searches and edits trigger text and types; see [Triggers](triggers.md).
 

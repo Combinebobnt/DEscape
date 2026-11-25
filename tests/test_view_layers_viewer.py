@@ -27,7 +27,7 @@ import pytest
 
 from descape import asset_source, settings, unit_sprites, view_layers, viewer_unit_place
 from descape.settings_dialog import SettingsDialog
-from testkit.viewer_family import set_viewer_global
+from testkit.render_family import set_render_global
 
 import conftest
 from test_unit_sprites import CONST, FILE_NAME, build_sld
@@ -488,15 +488,16 @@ def test_a_farms_selection_and_hover_follow_a_drape_toggle(sprite_install, style
 def test_the_drag_ghost_takes_the_windows_own_layer_value(sprite_install, monkeypatch) -> None:
     """The ghost resolves its sprite outside every chunk cache, so it is the
     one path a default parameter would leave full-size -- a tree would drag
-    big and snap small on drop. Stubbed at viewer's own imported name, since
-    what is being pinned is which value the window hands over, not what the
-    resolver does with it (tests/test_view_layers.py covers that)."""
+    big and snap small on drop. Stubbed at the render name the ghost's
+    GhostSprite calls, since what is being pinned is which value the window
+    hands over, not what the resolver does with it (tests/test_view_layers.py
+    covers that)."""
     window = conftest.blank_window()
     try:
         window.terrain_style_combo.setCurrentText("Sloped")
         window.show_sprites_action.setChecked(True)
         seen: list[float] = []
-        set_viewer_global(
+        set_render_global(
             monkeypatch, "unit_sprite_draws_at",
             lambda *args, **kwargs: (seen.append(kwargs["tree_scale"]), [])[1],
         )
@@ -505,11 +506,11 @@ def test_the_drag_ghost_takes_the_windows_own_layer_value(sprite_install, monkey
         entry = SimpleNamespace(player_id=1)
 
         window.layer_actions[SMALL_TREES_LAYER].setChecked(True)
-        assert window._drag_ghost_sprite_draws(entry, ghost) == []
+        assert window._drag_ghost_sprite(entry, ghost) is None
         assert seen == [view_layers.SMALL_TREE_SCALE]
 
         window.layer_actions[SMALL_TREES_LAYER].setChecked(False)
-        window._drag_ghost_sprite_draws(entry, ghost)
+        window._drag_ghost_sprite(entry, ghost)
         assert seen[-1] == 1.0
     finally:
         conftest.close_window(window)
@@ -542,7 +543,7 @@ def test_the_drag_ghost_takes_the_windows_own_wall_alpha(sprite_install, monkeyp
         window.terrain_style_combo.setCurrentText("Sloped")
         window.show_sprites_action.setChecked(True)
         seen: list[float] = []
-        set_viewer_global(
+        set_render_global(
             monkeypatch, "unit_sprite_draws_at",
             lambda *args, **kwargs: (seen.append(kwargs["wall_alpha"]), [])[1],
         )
@@ -551,11 +552,11 @@ def test_the_drag_ghost_takes_the_windows_own_wall_alpha(sprite_install, monkeyp
         entry = SimpleNamespace(player_id=1)
 
         window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(True)
-        window._drag_ghost_sprite_draws(entry, ghost)
+        window._drag_ghost_sprite(entry, ghost)
         assert seen[-1] == window._layers.wall_opacity_pct / 100
 
         window.layer_actions[TRANSLUCENT_WALLS_LAYER].setChecked(False)
-        window._drag_ghost_sprite_draws(entry, ghost)
+        window._drag_ghost_sprite(entry, ghost)
         assert seen[-1] == 1.0
     finally:
         conftest.close_window(window)

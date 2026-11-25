@@ -11,8 +11,11 @@ mod ships none of them.
 derive() runs them lenient by default (GH #262, `--lenient`, tools/_game_root.py):
 a guard pinning an invariant measured on the stock .dat degrades only what it
 guards (a plain entry, dropped pieces, an omitted row) and returns a warning
-instead of failing the whole mod. regen_game_data.py runs them strict, so the
-shipped tables and their failures are unchanged; derive(lenient=False) does too.
+instead of failing the whole mod: a DeriveWarning record (GH #323), its text
+the generator's own (for a bug report), its kind and subject what
+descape/data_mod_menu.py words for the user. regen_game_data.py runs them
+strict, so the shipped tables and their failures are unchanged;
+derive(lenient=False) does too.
 A missing install file or an unreadable .dat still fails either way.
 
 genieutils-py is imported only inside derive(). The viewer never calls derive()
@@ -29,9 +32,11 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import importlib.util
 import runpy
 import sys
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 
 # The one registry: every tools/gen_*.py that parses the .dat, and the tables it writes.
@@ -84,6 +89,28 @@ def _source_digest(tools: str) -> str:
     return digest.hexdigest()
 
 
+@dataclass(frozen=True)
+class DeriveWarning:
+    """One lenient guard's warning: `text` is `<script>: message (fallback)`;
+    `kind` one of tools/_game_root.WARNING_KINDS (or "other", the cache's
+    fallback for an item it cannot read); `subject` the unit const or terrain
+    id it is about, a tuple of them, or None."""
+
+    text: str
+    kind: str
+    subject: int | tuple[int, ...] | None = None
+
+
+@functools.cache
+def warning_kinds() -> frozenset[str]:
+    """tools/_game_root.WARNING_KINDS, loaded from tools_dir() under a private
+    name so the generators' own cached copy is untouched."""
+    spec = importlib.util.spec_from_file_location("_descape_warning_kinds", tools_dir() / GAME_ROOT_HELPER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(module.WARNING_KINDS)
+
+
 class DeriveError(RuntimeError):
     """A generator failed or wrote nothing; the message names it."""
 
@@ -102,10 +129,10 @@ def derive(
     parsed: dict | None = None,
     lenient: bool = True,
     progress=None,
-) -> list[str]:
+) -> list[DeriveWarning]:
     """Runs every generator against `dat` (AoE2 dataset, install files from
     `install`), writing TABLE_NAMES into `out_dir`, and returns the lenient
-    guards' warnings, each prefixed with its generator's script name. Raises
+    guards' DeriveWarnings, each text prefixed with its generator's script name. Raises
     DeriveError, or whatever genieutils raises on a .dat it cannot read.
     `parsed` is the memo of DatFile.parse results by path, shared with the
     caller. `lenient=False` fails on the first guard, as regen_game_data.py does.
@@ -128,7 +155,7 @@ def derive(
     DatFile.parse = classmethod(parse_once)
     sys.path.insert(0, str(tools))
     helper = None
-    warnings: list[str] = []
+    warnings: list[DeriveWarning] = []
     try:
         helper = _tools_helper(tools)
         for i, (script, names) in enumerate(GENERATORS):
@@ -144,7 +171,10 @@ def derive(
             except SystemExit as exc:
                 if exc.code not in (0, None):
                     raise DeriveError(f"{script} exited with {exc.code}") from exc
-            warnings += [f"{script}: {warning}" for warning in helper.WARNINGS]
+            warnings += [
+                DeriveWarning(f"{script}: {warning['text']}", warning["kind"], warning["subject"])
+                for warning in helper.WARNINGS
+            ]
             missing = [name for name in names if not (out_dir / name).is_file()]
             if missing:
                 raise DeriveError(f"{script} wrote no {', '.join(missing)}")

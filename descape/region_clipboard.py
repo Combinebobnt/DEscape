@@ -32,6 +32,14 @@ back into a real id once the holder's own paste has minted one. A link
 whose holder wasn't captured in the same region, is ambiguous, or is
 self-referential resolves to -1 rather than guessing.
 
+The one exception to minting (TASK-341): a block a Unit Cut made carries
+each unit's own reference_id (RegionUnit.cut_reference_id) and the document
+it came from (RegionBlock.cut_doc_id). A paste into that same document hands
+each cut unit's id back to add() while no live unit holds it
+(reusable_cut_ids()), so a Cut then Paste moves the units and triggers that
+name them still find them. Both fields are session-only: nothing that saves
+a block may keep them.
+
 caption_string_id/caption_string are read defensively (a version before
 1.54/1.55 has no such field at all, and the library raises
 UnsupportedAttributeError reading one rather than returning an absent
@@ -75,6 +83,8 @@ class RegionUnit:
     caption_string: str
     garrison_slot: int  # index into RegionBlock.units, or -1 -- resolved at copy time
     capture_flag: int = -1  # 1.59's per-unit capture setting, -1 (Default) before it
+    # The unit's id in the file a Unit Cut took it from; -1 on a copy. Session-only, never saved.
+    cut_reference_id: int = -1
 
 
 @dataclass(frozen=True)
@@ -99,6 +109,8 @@ class RegionBlock:
     dataset: str = field(default_factory=game_dataset.active)
     # TASK-429: copied from a pre-DE .scn/.scx, whose ids differ from DE's; refused on a DE document.
     legacy: bool = False
+    # The document (ViewerWindow._doc_id) a Unit Cut took the block from, "" otherwise. Session-only.
+    cut_doc_id: str = ""
 
     @property
     def has_tiles(self) -> bool:
@@ -161,10 +173,11 @@ def copy_region(
     )
 
 
-def _region_units(captured, tx0: int, ty0: int) -> tuple[RegionUnit, ...]:
+def _region_units(captured, tx0: int, ty0: int, keep_ids: bool = False) -> tuple[RegionUnit, ...]:
     """The RegionUnit of every unit in `captured`, in that order, with dx/dy
     relative to (tx0, ty0) and garrison links resolved to slots in the
-    returned tuple: copy_region()'s and copy_units()' shared unit half."""
+    returned tuple: copy_region()'s and copy_units()' shared unit half.
+    `keep_ids` fills cut_reference_id, for a Unit Cut."""
     captions = []
     for u in captured:
         try:
@@ -205,14 +218,17 @@ def _region_units(captured, tx0: int, ty0: int) -> tuple[RegionUnit, ...]:
                 garrison_slot=garrison_slot,
                 # -1 on a pre-1.59 unit, whose poisoned link raises on read.
                 capture_flag=capture_flag_of(u),
+                cut_reference_id=u.reference_id if keep_ids else -1,
             )
         )
     return tuple(units)
 
 
-def copy_units(unit_manager: UnitManager, units) -> RegionBlock | None:
+def copy_units(unit_manager: UnitManager, units, cut_doc_id: str = "") -> RegionBlock | None:
     """A units-only block of `units` and everything garrisoned inside them,
     transitively (GH #192). None when no passed unit is in the document.
+    A Unit Cut passes its document's `cut_doc_id`, and the block then keeps
+    every unit's own reference_id (TASK-341, reusable_cut_ids()).
 
     Units are matched by identity, never by key: two units can share a
     reference_id, and a key match would pull in the unselected twin. Like
@@ -248,8 +264,27 @@ def copy_units(unit_manager: UnitManager, units) -> RegionBlock | None:
         terrain_ids=(),
         elevations=(),
         layers=(),
-        units=_region_units(captured, tx0, ty0),
+        units=_region_units(captured, tx0, ty0, keep_ids=bool(cut_doc_id)),
+        cut_doc_id=cut_doc_id,
     )
+
+
+def reusable_cut_ids(block: RegionBlock, doc_id: str, model) -> dict[int, int]:
+    """Slot -> the cut unit's own reference_id, for each unit of a Unit Cut
+    block whose id a paste into `doc_id` may hand back to `model.add()`: the
+    same document only, and an id add()'s guard accepts (0 <= id <
+    model.next_unit_id, no live unit holding it), each id taken once. Every
+    other slot mints, as a copy would."""
+    if not block.cut_doc_id or block.cut_doc_id != doc_id:
+        return {}
+    reuse: dict[int, int] = {}
+    taken: set[int] = set()
+    for slot, u in enumerate(block.units):
+        ref = u.cut_reference_id
+        if 0 <= ref < model.next_unit_id and ref not in taken and not model.reference_id_in_use(ref):
+            reuse[slot] = ref
+            taken.add(ref)
+    return reuse
 
 
 def centred_anchor(block: RegionBlock, hx: int, hy: int) -> tuple[int, int]:
@@ -316,36 +351,40 @@ class PasteTarget:
     x: float
     y: float
     holder_slot: int  # -1, or the slot of a holder that is itself in this list
+    z: float = 0.0  # the unit's own z, or its holder's when it lands on the holder (TASK-341)
 
 
 def unit_paste_targets(
     block: RegionBlock, tx0: int, ty0: int, map_width: int, map_height: int
 ) -> list[PasteTarget]:
-    """A PasteTarget for every RegionUnit whose translated position lands
-    on-map, in holder-before-occupant order (a stable Kahn topological sort
-    over garrison_slot, tiebroken by original slot order) so the caller can
-    add each unit in list order and look its holder's freshly minted id up
-    by slot.
+    """A PasteTarget for every RegionUnit the paste keeps, in
+    holder-before-occupant order (a stable Kahn topological sort over
+    garrison_slot, tiebroken by original slot order) so the caller can add
+    each unit in list order and look its holder's freshly minted id up by
+    slot.
 
-    garrison_slot links into slots dropped by the on-map clip, or into a
-    cycle (mutual or longer -- only reachable on a hand-built or foreign
-    file, since copy_region() never produces one), are both severed to -1
-    here rather than left to loop forever or point at nothing."""
-    survivors: dict[int, tuple[float, float]] = {}
-    for slot, u in enumerate(block.units):
-        x, y = tx0 + u.dx, ty0 + u.dy
-        # The sign is tested on the float: int() truncates toward zero, so -0.5 would pass as tile 0.
-        if x >= 0 and y >= 0 and int(x) < map_width and int(y) < map_height:
-            survivors[slot] = (x, y)
+    A top-level unit is kept when its own translated position lands on-map.
+    An occupant rides with its host (TASK-341): kept exactly when its holder
+    is, at its own translated x/y and z when that is on the map, else at its
+    holder's final x, y and z, so no off-map coordinate is ever pasted. A
+    chain resolves in order, holders first, and a dropped host drops what
+    it holds.
+
+    garrison_slot links into a cycle (mutual or longer -- only reachable on
+    a hand-built or foreign file, since copy_region() never produces one), or
+    outside the block, are severed to -1 here: those slots count as top
+    level rather than looping forever or pointing at nothing."""
+    count = len(block.units)
+
+    def linked(slot: int) -> bool:
+        return 0 <= block.units[slot].garrison_slot < count
 
     emitted: set[int] = set()
     broken: set[int] = set()
     ordered: list[int] = []
-    remaining = list(survivors)
+    remaining = list(range(count))
     while remaining:
-        ready = [s for s in remaining if block.units[s].garrison_slot == -1
-                 or block.units[s].garrison_slot not in survivors
-                 or block.units[s].garrison_slot in emitted]
+        ready = [s for s in remaining if not linked(s) or block.units[s].garrison_slot in emitted]
         still = [s for s in remaining if s not in ready]
         if not ready:
             ready, still = still, []
@@ -354,12 +393,23 @@ def unit_paste_targets(
         emitted.update(ready)
         remaining = still
 
+    placed: dict[int, tuple[float, float, float]] = {}
     targets = []
     for slot in ordered:
         u = block.units[slot]
-        x, y = survivors[slot]
-        holder_slot = -1 if slot in broken or u.garrison_slot not in survivors else u.garrison_slot
-        targets.append(PasteTarget(slot=slot, unit=u, x=x, y=y, holder_slot=holder_slot))
+        x, y, z = tx0 + u.dx, ty0 + u.dy, u.z
+        holder_slot = -1 if slot in broken or not linked(slot) else u.garrison_slot
+        # The sign is tested on the float: int() truncates toward zero, so -0.5 would pass as tile 0.
+        on_map = x >= 0 and y >= 0 and int(x) < map_width and int(y) < map_height
+        if holder_slot == -1:
+            if not on_map:
+                continue
+        elif holder_slot not in placed:
+            continue
+        elif not on_map:
+            x, y, z = placed[holder_slot]
+        placed[slot] = (x, y, z)
+        targets.append(PasteTarget(slot=slot, unit=u, x=x, y=y, holder_slot=holder_slot, z=z))
     return targets
 
 

@@ -872,6 +872,7 @@ def test_gaia_is_the_untinted_sprite(install):
     plain = unit_sprites._tinted(
         unit_sprites._native_frame(FILE_NAME, 0)[0], None, (255, 255, 255)
     )
+    # smooth_shrink() off (the module default): the nearest branch at every scale.
     assert np.array_equal(gaia.rgba[..., :3], unit_sprites._resize_rgba(plain, *gaia.rgba.shape[1::-1])[..., :3])
 
 
@@ -1321,7 +1322,7 @@ def test_wall_alpha_multiplies_alpha_exactly_and_leaves_rgb_alone(install):
     install.register(angle_count=1, frame_count=1)
     half_w = unit_sprites.NATIVE_TILE_W // 2
     opaque = _piece_draw(CONST, 0.0, 1, half_w)
-    faded = _piece_draw(CONST, 0.0, 1, half_w, wall_alpha=0.3)
+    faded = _piece_draw(CONST, 0.0, 1, half_w, alpha=0.3)
 
     assert faded.rgba.shape == opaque.rgba.shape
     assert (faded.hotspot_x, faded.hotspot_y) == (opaque.hotspot_x, opaque.hotspot_y)
@@ -1338,7 +1339,7 @@ def test_wall_alpha_of_one_is_byte_identical_to_omitting_it(install):
         {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 0, "dy": -40},
     ])
     omitted = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32)
-    passed = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_alpha=1.0)
+    passed = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, alpha=1.0)
     assert len(omitted) == len(passed) == 2
     for a, b in zip(omitted, passed, strict=True):
         assert (a.dx, a.dy, a.draw.hotspot_x, a.draw.hotspot_y) == (b.dx, b.dy, b.draw.hotspot_x, b.draw.hotspot_y)
@@ -1349,13 +1350,13 @@ def test_wall_alphas_do_not_collide_in_the_scaled_cache(install):
     install.write(build_sld(1, canvas=32))
     install.register(angle_count=1, frame_count=1)
     plain = _piece_draw(CONST, 0.0, 1, 32)
-    half = _piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.5)
-    third = _piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.3)
+    half = _piece_draw(CONST, 0.0, 1, 32, alpha=0.5)
+    third = _piece_draw(CONST, 0.0, 1, 32, alpha=0.3)
 
     assert int(plain.rgba[..., 3].max()) == 255
     assert int(half.rgba[..., 3].max()) == 128
     assert int(third.rgba[..., 3].max()) == 76
-    assert np.array_equal(_piece_draw(CONST, 0.0, 1, 32, wall_alpha=0.5).rgba, half.rgba)
+    assert np.array_equal(_piece_draw(CONST, 0.0, 1, 32, alpha=0.5).rgba, half.rgba)
 
 
 def test_a_composite_wall_flattens_to_one_piece_in_place(install):
@@ -1373,7 +1374,7 @@ def test_a_composite_wall_flattens_to_one_piece_in_place(install):
     base = body.draw.rgba.shape[0] - 1 - body.draw.hotspot_y
     top = flag.dy - flag.draw.hotspot_y
 
-    faded = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, wall_alpha=0.5)
+    faded = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, alpha=0.5)
     assert len(faded) == 1
     assert (faded[0].dx, faded[0].dy) == (0, 0)
     draw = faded[0].draw
@@ -1395,7 +1396,7 @@ def test_a_scaled_composite_wall_fades_without_moving_a_pixel(install, half_w):
         {"unit_id": CONST, "file_name": "t_annex_x1", "angle_count": 1, "frame_count": 1, "dx": 5, "dy": -41},
     ])
     plain = unit_sprites._assembled_with_origin(unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w))
-    faded = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, wall_alpha=0.5)
+    faded = unit_sprites.sprite_pieces_for(CONST, 0.0, 1, half_w, alpha=0.5)
     assert plain is not None and len(faded) == 1
     rgba, ox, oy = plain
     draw = faded[0].draw
@@ -1406,7 +1407,7 @@ def test_a_scaled_composite_wall_fades_without_moving_a_pixel(install, half_w):
 
 def test_a_wall_draw_with_no_parent_art_falls_back_to_the_mark(install):
     install.register(angle_count=1, frame_count=1)  # registered, but no .sld written
-    assert unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, wall_alpha=0.5) == []
+    assert unit_sprites.sprite_pieces_for(CONST, 0.0, 1, 32, alpha=0.5) == []
 
 
 # --- caching ----------------------------------------------------------
@@ -2026,6 +2027,7 @@ def test_a_single_piece_icon_tints_the_smaller_of_native_and_footprint(
     ink = unit_sprites._cropped_to_ink(real_tinted(main, pc, team), None, 0, 0)[0]
     ih, iw = icon.rgba.shape[:2]
     assert (iw * ih < ink.shape[0] * ink.shape[1]) == tints_small
+    # smooth_shrink() off: the nearest branch, shrinking and enlarging (the smooth one: test_area_upscale.py).
     assert np.array_equal(icon.rgba, unit_sprites._resize_rgba(ink, iw, ih))
     assert seen == [icon.rgba.shape if tints_small else ink.shape]
 
@@ -2051,6 +2053,7 @@ def test_a_composite_icon_still_tints_each_piece_at_native_before_the_blend(inst
     ])
     ink = unit_sprites._cropped_to_ink(old, None, 0, 0)[0]
     assert seen == [main.shape, main.shape]
+    # smooth_shrink() off: the nearest branch (the smooth one: test_a_smooth_composite_icon_is_the_box_of_its_assembly).
     assert np.array_equal(icon.rgba, unit_sprites._resize_rgba(ink, *icon.rgba.shape[1::-1]))
 
 
@@ -2311,8 +2314,8 @@ def test_a_smooth_tinted_sprite_is_the_box_of_the_native_tint(install, monkeypat
     assert seen == [main.shape]
 
 
-@pytest.mark.parametrize("half_w", [48, 64], ids=["1:1", "enlarged"])
-def test_smooth_shrink_leaves_one_to_one_and_enlargement_to_the_gather(install, monkeypatch, half_w):
+@pytest.mark.parametrize("half_w", [48, 96], ids=["1:1", "2x"])  # 4/3 enlarges by area: test_area_upscale.py
+def test_smooth_shrink_leaves_one_to_one_and_whole_enlargement_to_the_gather(install, monkeypatch, half_w):
     _random_native(install, monkeypatch)
     off = unit_sprites.sprite_for(CONST, 0.0, 3, half_w)
     unit_sprites.set_smooth_shrink(True)
@@ -2376,7 +2379,7 @@ def test_the_smooth_flag_keys_translucent_walls_apart(install, monkeypatch):
     walls = []
     for flag in (False, True, False):
         unit_sprites.set_smooth_shrink(flag)
-        walls.append(unit_sprites._wall_draw(CONST, entry, 0.0, 3, 32, None, 0.5).rgba)
+        walls.append(unit_sprites._faded_draw(CONST, entry, 0.0, 3, 32, 1.0, None, False, 0.5).rgba)
     assert not np.array_equal(walls[0], walls[1]) and np.array_equal(walls[0], walls[2])
 
 

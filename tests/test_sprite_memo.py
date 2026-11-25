@@ -168,6 +168,10 @@ def _tech_civ(s):
     s.player_art = tuple(art)
 
 
+def _status_to_remove(s):
+    _units(s)[1][0].status = 7  # Remove: the unit now draws faded
+
+
 def _delete(s):
     del _units(s)[2][0]
 
@@ -190,6 +194,7 @@ EDITS = {
     "team_index": (_team_index, 2, 2),
     "player_art": (_player_art, 2, 2),
     "tech_civ": (_tech_civ, 2, 2),
+    "status_to_remove": (_status_to_remove, 1, 1),
     "delete": (_delete, 0, 0),
     "add": (_add, 1, 1),
 }

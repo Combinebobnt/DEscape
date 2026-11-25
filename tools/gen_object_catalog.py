@@ -88,6 +88,10 @@ An object's `civ_icons` key (GH #372) maps a civ index (as a string) to the
 and differs from GAIA's, disabled copies included (scenarios place the monk,
 which every civ has disabled). object_catalog.icon_for() reads it for the
 player's architecture civ. Omitted when no civ differs.
+An object's `civ_string_ids` key does the same for `language_dll_name`: the
+civs whose own copy is named by another string than GAIA's (the antiquity civs
+call the Archer a Bowman). object_catalog.civ_name() reads it for the same
+civ as the portrait. Omitted when no civ differs.
 Real in-game display names are resolved at runtime from the user's own install
 (asset_source.resource_string(), keyed by the string_id committed here), not
 bundled as text in this repo.
@@ -113,15 +117,23 @@ def _blank_graphic_ids(graphics: list) -> frozenset[int]:
     return frozenset(i for i, g in enumerate(graphics) if g is not None and g.name.strip().upper() == "BLANK")
 
 
-def _civ_icons(unit_const: int, icon: int, civs) -> dict[str, int]:
-    """{civ index: icon} for each civ whose copy of the const has another icon
-    than GAIA's; a civ whose unit list stops short of the const is skipped."""
-    icons: dict[str, int] = {}
+def _civ_values(unit_const: int, base: int, civs, attr: str) -> dict[str, int]:
+    """{civ index: value} for each civ whose copy of the const has another `attr`
+    than GAIA's `base`; a civ whose unit list stops short of the const is skipped."""
+    values: dict[str, int] = {}
     for civ_index, civ in enumerate(civs[1:], start=1):
         unit = civ.units[unit_const] if unit_const < len(civ.units) else None
-        if unit is not None and unit.icon_id != icon:
-            icons[str(civ_index)] = unit.icon_id
-    return icons
+        if unit is not None and getattr(unit, attr) != base:
+            values[str(civ_index)] = getattr(unit, attr)
+    return values
+
+
+def _civ_icons(unit_const: int, icon: int, civs) -> dict[str, int]:
+    return _civ_values(unit_const, icon, civs, "icon_id")
+
+
+def _civ_string_ids(unit_const: int, string_id: int, civs) -> dict[str, int]:
+    return _civ_values(unit_const, string_id, civs, "language_dll_name")
 
 
 def _object_entries(units: list, blank_ids: frozenset[int], civs=()) -> dict[str, dict]:
@@ -144,6 +156,9 @@ def _object_entries(units: list, blank_ids: frozenset[int], civs=()) -> dict[str
         civ_icons = _civ_icons(unit_const, unit.icon_id, civs)
         if civ_icons:
             entries[str(unit_const)]["civ_icons"] = civ_icons
+        civ_string_ids = _civ_string_ids(unit_const, unit.language_dll_name, civs)
+        if civ_string_ids:
+            entries[str(unit_const)]["civ_string_ids"] = civ_string_ids
         resources = _resources(unit.resource_storages)
         if resources:
             entries[str(unit_const)]["resources"] = resources
@@ -210,6 +225,8 @@ def _terrain_restriction_entries(restrictions: list, objects: dict[str, dict], t
             _game_root.refuse(
                 f"Terrain restriction {restriction_id} has no .dat row; the placement rule needs re-checking",
                 "its objects are placed without a terrain check",
+                # Not an object id: a restriction row, which the user never sees.
+                kind="placement_unchecked",
             )
             continue
         row = restrictions[restriction_id].passable_buildable_dmg_multiplier
@@ -490,6 +507,7 @@ def main() -> None:
         _game_root.refuse(
             "No BLANK graphic in the .dat; the no_graphic rule needs re-checking",
             "only objects with no standing graphic are marked no_graphic",
+            kind="invisible_rule",
         )
     objects = _object_entries(data.civs[0].units, blank_ids, data.civs)
     techs = _tech_entries(data.techs)

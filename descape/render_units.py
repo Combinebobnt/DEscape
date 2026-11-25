@@ -12,9 +12,12 @@ from descape import (
     game_dataset,
     games,
     iso_geometry,
+    unit_kind,
     unit_rotation,
     unit_sprites,
+    unit_state,
 )
+from descape.own_tile_index import OwnTileIndex
 from descape.render_paint import _clipped_paint_rgba, _clipped_paint_solid, _record_ink
 from descape.scenario_io import LoadedScenario
 from descape.terrain_palette import (
@@ -387,6 +390,7 @@ def stored_rotation(player_id: int, unit) -> float:
 # memoized function below, so neither can be invalidated by the other's
 # writes. `scenario.unit_gen` is the sole invalidation key (see
 # LoadedScenario.unit_gen's own docstring for exactly what bumps it).
+# _OWN_TILE_INDEX_MEMO holds the OwnTileIndex itself, whose own `gen` is its key.
 _ANCHOR_TILES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _WALL_OVERRIDES_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _OWN_TILE_INDEX_MEMO: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -424,22 +428,33 @@ def anchor_tiles(scenario) -> set[tuple[int, int]]:
     return _unit_gen_cached(_ANCHOR_TILES_MEMO, scenario, _compute)
 
 
-def unit_own_tile_index(scenario) -> dict[tuple[int, int], list[tuple[int, int, object]]]:
+def unit_own_tile_index(scenario) -> OwnTileIndex:
     """Own tile `(int(u.x), int(u.y))` -> every unit there as `(player_id,
-    i, unit)`, i being its position in its player's list (the key
-    _resolve_unit_sprite() and the wall overrides need). Over ALL units,
-    ignoring any filter, like anchor_tiles() above and memoized the same way.
-    Lets an elevation edit find the units whose placement reads a changed
-    height without walking every unit."""
+    i, unit)` through `.get(tile, ())`, i being its position in its player's
+    list (the key _resolve_unit_sprite() and the wall overrides need). Over ALL
+    units, ignoring any filter, like anchor_tiles() above. Lets an elevation
+    edit find the units whose placement reads a changed height without walking
+    every unit. Memoized per scenario and spliced by UnitEditModel's mutators
+    (descape/own_tile_index.py); rebuilt on any unit_gen move no delta stamped."""
+    gen = getattr(scenario, "unit_gen", None)
+    if gen is None:
+        return OwnTileIndex.build(scenario, None)
+    index = live_own_tile_index(scenario)
+    if index is None:
+        index = _OWN_TILE_INDEX_MEMO[scenario] = OwnTileIndex.build(scenario, gen)
+    return index
 
-    def _compute() -> dict[tuple[int, int], list[tuple[int, int, object]]]:
-        out: dict[tuple[int, int], list[tuple[int, int, object]]] = {}
-        for player_id, units in enumerate(scenario.unit_manager.units):
-            for i, u in enumerate(units):
-                out.setdefault((int(u.x), int(u.y)), []).append((player_id, i, u))
-        return out
 
-    return _unit_gen_cached(_OWN_TILE_INDEX_MEMO, scenario, _compute)
+def live_own_tile_index(scenario) -> OwnTileIndex | None:
+    """The memoized index only while it is current, never building one: the
+    edit model's accessor, so a stale index never takes a delta."""
+    gen = getattr(scenario, "unit_gen", None)
+    if gen is None:
+        return None
+    index = _OWN_TILE_INDEX_MEMO.get(scenario)
+    if index is not None and index.gen == gen and index.is_live():
+        return index
+    return None
 
 
 def garrison_host_ids(scenario) -> frozenset[int]:
@@ -579,12 +594,23 @@ def _unit_color(unit, player_color: tuple[int, int, int]) -> tuple[int, int, int
     trees are always dark green, non-building resource/decoration objects
     get their real minimap color, everything else (including buildings) is
     colored by owning player -- all regardless of owner, matching AoE2's own
-    minimap for the first two categories."""
-    is_building = unit.unit_const in BUILDING_TILE_SPANS
-    if unit.unit_const in TREE_UNIT_IDS:
+    minimap for the first two categories.
+
+    A unit whose Unit State is not Alive takes unit_state.ghost_mark() of
+    that colour, opaque, so every mark painter fades it with no lerp of its
+    own. An invisible object's box is an editor marker and keeps its colour."""
+    color = kind_mark_color(unit.unit_const, player_color)
+    if unit_state.is_ghosted(unit) and unit.unit_const not in unit_kind.invisible_consts():
+        return unit_state.ghost_mark(color)
+    return color
+
+
+def kind_mark_color(unit_const: int, player_color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """_unit_color() before any Unit State fade: a function of the const and owner alone."""
+    if unit_const in TREE_UNIT_IDS:
         return TREE_COLOR
-    if not is_building and unit.unit_const in RESOURCE_COLORS:
-        return RESOURCE_COLORS[unit.unit_const]
+    if unit_const not in BUILDING_TILE_SPANS and unit_const in RESOURCE_COLORS:
+        return RESOURCE_COLORS[unit_const]
     return player_color
 
 

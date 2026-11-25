@@ -5,6 +5,7 @@ captures at 1:1 in all three terrain styles."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -1571,3 +1572,255 @@ def test_ring_items_carry_the_exact_union_and_paint_like_plain_items() -> None:
             view.scene().removeItem(twin)
     finally:
         conftest.close_window(window)
+
+
+# -- cached map labels (TASK-519) ------------------------------------------------
+
+# A cached label is the direct paint up to 8-bit compositing rounding: label to pixmap, pixmap to frame.
+_LABEL_MAX_LEVELS = 8
+
+
+def _grab_array(view):
+    """The viewport as grab() paints it, in device pixels: (h, w, 4) uint8."""
+    from PyQt5.QtGui import QImage
+
+    image = view.viewport().grab().toImage().convertToFormat(QImage.Format_ARGB32)
+    bits = image.constBits()
+    bits.setsize(image.byteCount())
+    rows = np.frombuffer(bits, np.uint8).reshape(image.height(), image.bytesPerLine())
+    return rows[:, : image.width() * 4].reshape(image.height(), image.width(), 4).copy()
+
+
+def _label_box(view, label, shape):
+    """The label's device rect in grab pixels, padded for the outline and clipped to the grab."""
+    rect = label.deviceTransform(view.viewportTransform()).mapRect(label.boundingRect())
+    dpr = view.viewport().devicePixelRatioF()
+    height, width = shape[:2]
+    x0, y0 = max(math.floor(rect.left() * dpr) - 3, 0), max(math.floor(rect.top() * dpr) - 3, 0)
+    x1, y1 = min(math.ceil(rect.right() * dpr) + 3, width), min(math.ceil(rect.bottom() * dpr) + 3, height)
+    assert x1 - x0 > 8 and y1 - y0 > 8, f"label off screen: {rect}"
+    return x0, y0, x1, y1
+
+
+def _zoom_anchor(view, label):
+    """A wheel point near `label` but off it: about its own point a notch would barely move it."""
+    from PyQt5.QtCore import QPoint
+
+    return view.mapFromScene(label.pos()) + QPoint(37, 23)
+
+
+def _cached_labels(view):
+    return [i for i in (*view.trigger_overlay_items(), *view._pinned_ruler_items) if i.data(1) is True]
+
+
+def _cached_vs_direct(view, step, mode, labels=None):
+    """Warms each label's cache in `mode`, applies `step` (a zoom factor about
+    the first label, as the wheel runs it, or a whole-pixel (dx, dy) pan), then
+    grabs once cached and once with every label NoCache. Per label: the largest
+    channel difference inside its box and how many pixels differ by over 32."""
+    from PyQt5.QtWidgets import QGraphicsItem
+
+    from descape import zoom_preframe
+
+    labels = _cached_labels(view) if labels is None else labels
+    assert labels, "no cacheable label to check"
+    for label in labels:
+        label.setCacheMode(mode)
+    _grab_array(view)
+    if isinstance(step, tuple):
+        bars = (view.horizontalScrollBar(), view.verticalScrollBar())
+        before = [bar.value() for bar in bars]
+        for bar, delta in zip(bars, step, strict=True):
+            bar.setValue(bar.value() + delta)
+        assert [bar.value() for bar in bars] == [v + d for v, d in zip(before, step, strict=True)], "the pan did not move"
+    else:
+        zoom_preframe.zoom_about(view, step, _zoom_anchor(view, labels[0]))
+    cached = _grab_array(view)
+    all_labels = _cached_labels(view)
+    for label in all_labels:
+        label.setCacheMode(QGraphicsItem.NoCache)
+    direct = _grab_array(view)
+    for label in all_labels:
+        label.setCacheMode(mode)
+    out = []
+    for label in labels:
+        x0, y0, x1, y1 = _label_box(view, label, cached.shape)
+        d = np.abs(cached[y0:y1, x0:x1].astype(int) - direct[y0:y1, x0:x1].astype(int))
+        out.append((int(d.max()), int((d > 32).any(axis=2).sum())))
+    return out
+
+
+def _pin_ruler(view, *ends):
+    """Pins one ruler per b end (default one), each from a few tiles up-left; returns their labels."""
+    from descape.ruler import Measurement
+
+    for x, y in ends or ((20, 14),):
+        view._pinned_rulers.add(Measurement((x - 5, y - 3), (x, y)))
+    view._pinned_rulers_changed()
+    return [i for i in view._pinned_ruler_items if hasattr(i, "text")]
+
+
+def _label_cluster(window):
+    """The PATROL run label plus twelve pinned ruler labels around it: varied
+    sub-pixel offsets, so a stale cache shows on some label at every notch."""
+    gen = _gen()
+    window.trigger_panel.select_entry(*PATROL)
+    lx, ly = gen.GEOMETRY_PATROL_LOCATION
+    pinned = _pin_ruler(window.map_view, *((lx - 6 + 4 * i, ly - 4 + 4 * j) for i in range(4) for j in range(3)))
+    assert len(pinned) == 12
+    return _cached_labels(window.map_view)
+
+
+def test_run_and_pinned_ruler_labels_cache_at_a_whole_dpr_and_the_live_ruler_does_not() -> None:
+    from PyQt5.QtWidgets import QGraphicsItem
+
+    from descape import map_view_triggers
+
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*PATROL)
+        (pinned,) = _pin_ruler(view)
+        view._create_ruler_items()
+        runs = [i for i in view.trigger_overlay_items() if i.data(0) == "label"]
+        assert runs and _cached_labels(view) == [*runs, pinned]
+        assert view.viewport().devicePixelRatioF() == 1.0
+        assert all(i.cacheMode() == QGraphicsItem.DeviceCoordinateCache for i in (*runs, pinned))
+        live = view._ruler_label_item
+        assert live.cacheMode() == QGraphicsItem.NoCache and live.data(1) is None
+        # The mode is re-chosen on the paint after a DPR change (here, the rule's answer changing).
+        real = map_view_triggers._label_cache_mode
+        for answer in (QGraphicsItem.NoCache, QGraphicsItem.DeviceCoordinateCache):
+            map_view_triggers._label_cache_mode = lambda _dpr, answer=answer: answer
+            try:
+                view._label_cache_key = None
+                view.viewport().repaint()
+            finally:
+                map_view_triggers._label_cache_mode = real
+            assert {i.cacheMode() for i in (*runs, pinned)} == {answer}
+            assert live.cacheMode() == QGraphicsItem.NoCache
+    finally:
+        conftest.close_window(window)
+
+
+def _notch_steps():
+    from descape import zoom_stops
+
+    return (zoom_stops.NOTCH_STEP, zoom_stops.NOTCH_STEP, 1 / zoom_stops.NOTCH_STEP)
+
+
+def test_cached_run_and_pinned_ruler_labels_paint_as_direct_ones_after_zoom_notches_and_a_pan() -> None:
+    from PyQt5.QtWidgets import QGraphicsItem
+
+    window = _window()
+    try:
+        view = window.map_view
+        labels = _label_cluster(window)
+        for step in (*_notch_steps(), (37, 11)):
+            results = _cached_vs_direct(view, step, QGraphicsItem.DeviceCoordinateCache, labels)
+            assert all(worst <= _LABEL_MAX_LEVELS and over == 0 for worst, over in results), (step, results)
+    finally:
+        conftest.close_window(window)
+
+
+def test_without_the_refresh_a_zoom_notch_serves_the_stale_pixmap() -> None:
+    """The positive control: the same notches fail every one once
+    _refresh_label_caches() does nothing. Qt re-renders a label on its own when
+    its rounded device rect changes size, hence the cluster of labels."""
+    from PyQt5.QtWidgets import QGraphicsItem
+
+    window = _window()
+    try:
+        view = window.map_view
+        labels = _label_cluster(window)
+        _grab_array(view)
+        view._refresh_label_caches = lambda: None
+        for step in _notch_steps():
+            results = _cached_vs_direct(view, step, QGraphicsItem.DeviceCoordinateCache, labels)
+            assert any(over > 0 for _worst, over in results), (step, results)
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_refresh_runs_once_per_view_change_and_its_repaint_does_not_loop() -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    from descape import zoom_preframe, zoom_stops
+
+    window = _window()
+    try:
+        view = window.map_view
+        window.trigger_panel.select_entry(*PATROL)
+        QApplication.processEvents()
+        view.viewport().repaint()
+        calls = []
+        real = view._refresh_label_caches
+
+        def counting():
+            calls.append(1)
+            real()
+
+        view._refresh_label_caches = counting
+        (label,) = _cached_labels(view)
+        zoom_preframe.zoom_about(view, zoom_stops.NOTCH_STEP, _zoom_anchor(view, label))
+        view.viewport().repaint()
+        key = view._label_cache_key
+        assert len(calls) == 1
+        for _ in range(2):
+            QApplication.processEvents()
+        assert view._label_cache_key == key and len(calls) == 1
+    finally:
+        conftest.close_window(window)
+
+
+_LABEL_DPR_SCRIPT = """
+import sys, tempfile
+from pathlib import Path
+sys.path[:0] = ["tests", "."]
+from testkit import qt_window, settings_isolation
+qt_window.ensure_qapp()
+settings_isolation.isolate_settings(Path(tempfile.mkdtemp(prefix="labels_dpr_")))
+import test_trigger_overlay_viewer as t
+window = t._window()
+try:
+    view = window.map_view
+    labels = t._label_cluster(window)
+    print("DPR", view.viewport().devicePixelRatioF())
+    print("MODES", sorted({int(label.cacheMode()) for label in labels}))
+    mode = labels[0].cacheMode()
+    for step in (*t._notch_steps(), (37, 11)):
+        print("RESULT", t._cached_vs_direct(view, step, mode, labels))
+finally:
+    t.conftest.close_window(window)
+"""
+
+
+@pytest.mark.parametrize("scale", ["2", "1.5"])
+def test_labels_cache_at_dpr_2_and_paint_direct_at_1_5(scale) -> None:
+    """QT_SCALE_FACTOR needs its own process (test_zoom_preframe.py's HiDPI
+    pattern). At 2 the label caches and keeps the bound; at 1.5 Qt would land
+    the pixmap between device pixels, so it stays NoCache and byte-equal."""
+    import ast
+    import os
+    import subprocess
+    import sys
+
+    from PyQt5.QtWidgets import QGraphicsItem
+
+    root = Path(__file__).resolve().parent.parent
+    child_env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_SCALE_FACTOR=scale)
+    child_env.pop("QT_AUTO_SCREEN_SCALE_FACTOR", None)
+    proc = subprocess.run(
+        [sys.executable, "-c", _LABEL_DPR_SCRIPT], cwd=root, env=child_env, capture_output=True, text=True, timeout=300, check=False
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    lines = proc.stdout.splitlines()
+    assert f"DPR {float(scale)}" in lines, proc.stdout
+    cached = scale == "2"
+    mode = QGraphicsItem.DeviceCoordinateCache if cached else QGraphicsItem.NoCache
+    assert f"MODES {[int(mode)]}" in lines, proc.stdout
+    results = [ast.literal_eval(ln.split(" ", 1)[1]) for ln in lines if ln.startswith("RESULT")]
+    assert len(results) == 4, proc.stdout
+    for per_label in results:
+        for worst, over in per_label:
+            assert (worst <= _LABEL_MAX_LEVELS and over == 0) if cached else worst == 0, proc.stdout

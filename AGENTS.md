@@ -61,18 +61,21 @@ scope.
   - *Region turn's unit images* (GH #197): `region_transform.transform_block()`,
     new units only, the eight D4 elements only; `tests/test_region_transform.py`.
   - *Selection transform's in-place unit images* (TASK-256):
-    `region_transform.plan_in_place()` plus the three setters' own guards;
-    `tests/test_region_transform.py`.
+    `region_transform.plan_in_place()` plus the three setters' own guards,
+    a gate's carried corner piece taking `corner_piece()` of its gate's
+    image; `tests/test_region_transform.py`.
   - *Map mirroring's unit images*: `mirror_tools.plan_mirror_units()`, new
     units only, no model guard; `tests/test_mirror_units.py`.
   - *Cycle Variant*: `UnitEditModel.set_variant()`, cyclable consts only
     (`descape/unit_variant.py`), never a wall, cliff or gate;
     `tests/test_unit_variant.py`, `tests/test_unit_model.py`. A script's
-    `editor.set_variant()` is a caller, under the same guard.
+    `editor.set_variant()` is a caller, under the same guard. The particle
+    waterfalls (896, 1635, 2598) are cyclable, their variants being their
+    effect's `ImageAngles` runs; their 4 corpus placements store literal indices.
   - *Wall shapes re-derived from neighbours*:
     `UnitEditModel.set_wall_variant()`, wall-family consts and an index in
     `0..4` only; `tests/test_wall_run.py`.
-  - *Cliff drag's join rewrites* (GH #44, GH #247):
+  - *Cliff drag's join rewrites* (GH #44, GH #247, GH #286):
     `UnitEditModel.set_cliff_frame()`, cliff consts only, a frame inside the
     const's count; frames chosen by `cliff_chain`; `tests/test_wall_run.py`,
     `tests/test_cliff_chain.py`.
@@ -106,11 +109,15 @@ scope.
   than merely documented.
   - `replace_type()`: Edit > Find and Replace only (GH #144), refusals in
     `replace_refusal()`; `tests/test_unit_replace_type.py`.
-  - `set_unit_const()`: a gate's four orientation siblings only
-    (`descape/gate_orientation.py`), re-anchored on the footprint's low
-    corner; `tests/test_unit_model.py`.
+  - `set_unit_const()`: a gate's four orientation siblings, or a
+    non-square object's (bridge, chain, longhouse, blocker) own siblings,
+    only (`descape/gate_orientation.py`, `descape/object_orientation.py`),
+    including a gate's 1x1 corner piece, which a turn carrying it gives its
+    gate's orientation (`placement_rules.companion_landing()`),
+    re-anchored on the footprint's low corner; `tests/test_unit_model.py`,
+    the corner piece's sibling guard `tests/test_placement_rules.py`.
   - Not exceptions: Map mirroring and a pasted region's turn, which `add()`
-    new gates.
+    new gates and objects.
 - Walls carry shapes, not facings: a wall graphic's five stored frames
   (`angle_count == 5`) are SHAPES, so `rotation` selects a variant
   (confirmed in-game) and a wall's correct value is a function of its
@@ -130,6 +137,12 @@ scope.
   `editor.garrison()`, so only a batch script stays unvalidated, as with
   `add()`. Clipboard paste (a region or copied units) and `add()` set the
   field at construction only.
+- **A new unit's `reference_id` is minted by `UnitEditModel.add()`**, except
+  a same-document paste of a Unit Cut, which hands `add(reference_id=)` each
+  cut unit's own id; `add()` raises for an id a live unit holds or one at or
+  past its mint counter, and the `editor` facade passes none;
+  `tests/test_unit_model.py`, `tests/test_region_clipboard.py`,
+  `tests/test_unit_clipboard_viewer.py`.
 - **Code run against the open scenario (a script or an addon command,
   `descape/scripting.py`) changes units only through the `editor` facade.**
   The facade hands out no edit model: each write calls the model methods

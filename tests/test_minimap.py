@@ -178,6 +178,24 @@ def test_the_vectorised_paths_match_a_per_unit_loop(no_install, show_garrisoned:
     assert np.array_equal(rgb, _reference_rgb(scenario, unit_filter))
 
 
+@pytest.mark.parametrize("show_inactive", [True, False])
+def test_unit_states_fade_and_hide_per_unit_not_per_const(no_install, show_inactive: bool) -> None:
+    """A const's units differ in Unit State, so one sample per const would colour or hide them all alike."""
+    rng = random.Random(275)
+    consts = [_tree_const(), _resource_const(), 4, 83, _const_with_span((2, 2))]
+    units = [[] for _ in range(9)]
+    for i in range(400):
+        unit = SyntheticUnit(rng.uniform(0, _W), rng.uniform(0, _H), rng.choice(consts), reference_id=i)
+        unit.status = rng.choice([2, 2, 7, 0, 42])
+        units[rng.randrange(9)].append(unit)
+    scenario = _scenario(units, terrain=lambda x, y: (x * 7 + y) % 5)
+    unit_filter = UnitFilter(show_inactive=show_inactive)
+    rgb, _ = minimap.minimap_rgb(scenario, unit_filter)
+    assert np.array_equal(rgb, _reference_rgb(scenario, unit_filter))
+    shown, _ = minimap.minimap_rgb(scenario, UnitFilter())
+    assert np.array_equal(rgb, shown) == show_inactive
+
+
 # -- the window ----------------------------------------------------------------
 
 

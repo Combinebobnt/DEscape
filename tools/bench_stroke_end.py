@@ -58,9 +58,20 @@ evicted once the rects cover more tiles than the ratio times the tiles of
 the visible-level chunks under their bbox that the viewport shows; inf
 never evicts by the ratio, 0 always does; past
 STEPPED_FULL_RERENDER_THRESHOLD dirty tiles it evicts whatever the ratio).
+The Draw stroke end's batch unit edit reads the same ratio in top-down Flat.
 With --resident canvas a fill case re-renders the mip-0 canvas and repaints
 before each timed call, so an eviction by the setup or the fill leaves the
 next call no less to do.
+
+--tool units replaces them with five single-unit edits in Units mode, each
+then undone: Place, Nudge and Delete of the splice-eligible unit nearest the
+map centre (Place: its const and owner, on a free tile near the centre),
+then Nudge and Delete of the nearest wall or connector whose Delete
+reshapes no neighbour (a reshape makes the record wholesale), which take the
+wholesale source path (path `scoped`). Every row is preceded by a
+`resident` line, taken once the warms are idle: the levels holding an icon
+layer (top-down Flat) and each level's chunk count. A `-memb` undo row (a
+non-GAIA Place or Delete) is a membership undo: whole canvas, `lazy`.
 
 --blend on|off sets View > Layers > Terrain Blending (on needs the game
 install's blendomatic and fails without it).
@@ -170,6 +181,8 @@ _WINDOW_TIMERS = (
     ("index", "_rebuild_unit_index"),
     ("refs", "_on_unit_references_moved"),
     ("stats", "_repopulate_stats_players"),
+    # Arming the level warm: more to arm once a patch has evicted the levels not in view (TASK-442).
+    ("warm_start", "_start_level_warm"),
     # The block-rect sizing behind Stepped's per-chunk rects; absent on a build without them.
     ("rect_bbox", "_unit_edit_chunk_rects"),
 )
@@ -178,7 +191,7 @@ _CACHE_TIMERS = (
     ("rect_patch", "patch_composite_rects"),
 )
 # Cache calls whose time inside _patch_unit_edit_cache() is also summed as unit_patch.
-_UNIT_PATCH_ATTRS = ("patch", "patch_composite_rects")
+_UNIT_PATCH_ATTRS = ("patch", "patch_rects", "patch_composite_rects")
 
 
 def _pump(seconds: float) -> None:
@@ -803,6 +816,122 @@ def _run_fill_case(
     return lines
 
 
+def _pump_until_warm_idle(window, cap_s: float = 30.0) -> None:
+    """Pumps until no level, load or margin warm is active or pending, so a row starts from a stated residency."""
+    from PyQt5.QtWidgets import QApplication
+
+    end = time.perf_counter() + cap_s
+    while time.perf_counter() < end:
+        QApplication.processEvents()
+        warmers = (window._level_warmer, window._load_warmer, window._margin_warmer)
+        if not any(w.is_active for w in warmers) and window._pending_level() is None:
+            return
+        time.sleep(0.01)
+
+
+def _residency(cache) -> str:
+    """Which levels hold an icon layer (top-down Flat) and how many chunks each level holds."""
+    icons = getattr(cache, "_level_icon_layers", None)
+    icon_part = "-" if icons is None else ",".join(str(m) for m in sorted(m for m, v in icons.items() if v is not None))
+    chunks = Counter(key[0] for key in cache._cache)
+    return f"icons [{icon_part}] chunks " + " ".join(f"{mip}:{n}" for mip, n in sorted(chunks.items()))
+
+
+def _nearest(units_by_player, centre, keep, check=None):
+    """(player, unit) nearest `centre` among the units `keep` accepts and,
+    tried nearest first, `check` (a costlier test) passes; or None."""
+    cx, cy = centre
+    found = sorted(
+        ((unit.x - cx) ** 2 + (unit.y - cy) ** 2, i, player, unit)
+        for player, units in enumerate(units_by_player) for i, unit in enumerate(units) if keep(unit)
+    )
+    return next(((player, unit) for _d, _i, player, unit in found if check is None or check(unit)), None)
+
+
+def _run_units_case(window, timers: _Timers, paints: list) -> list[str]:
+    """Five single-unit edits through the window's own handlers, each then
+    undone, every call timed: Place, Nudge and Delete of the splice-eligible
+    unit nearest the centre (Place: its const and owner, on a free tile near
+    the centre), and Nudge and Delete of the wall or connector nearest the
+    centre, which take the wholesale source path. Each row is preceded by the
+    residency it starts from, the warms idle. A non-GAIA Place or Delete undo
+    is a membership undo (whole canvas)."""
+    from PyQt5.QtCore import QPointF, Qt
+
+    from descape import unit_sprites
+    from descape.render_cache_splice import _const_splice_eligible
+
+    mm = window.scenario.map_manager
+    centre = (mm.map_width / 2, mm.map_height / 2)
+    units = window.scenario.unit_manager.units
+    view = window.map_view
+    window.mode_combo.setCurrentText("Units")
+    _pump(0.5)
+    lines = []
+
+    def timed(label: str, action) -> bool:
+        _pump_until_warm_idle(window)
+        lines.append(f"        resident {_residency(window._cache)}")
+        cursor = window.edit_history.cursor
+        before = _unit_count(window)
+        result = _timed(window, timers, paints, action)
+        lines.append(_row(label, result, before, _unit_count(window)))
+        return window.edit_history.cursor != cursor
+
+    def select(player: int, unit) -> None:
+        window._selection = [(player, unit.reference_id)]
+        window._refresh_selection_view()
+
+    def edit_and_undo(name: str, player: int, unit, action, membership: bool) -> None:
+        if unit is not None:
+            select(player, unit)
+        if timed(name, action):
+            # A non-GAIA Place or Delete undo is a membership undo: whole canvas, reported, not gated.
+            timed(f"u-{name}" + ("-memb" if membership and player != 0 else ""), window.undo)
+
+    walls = unit_sprites.wall_connector_consts()
+    plain = _nearest(units, centre, _const_splice_eligible)
+    # One whose Delete reshapes no neighbour: a reshape sends the record wholesale (GH #340), past the branch.
+    wall = _nearest(units, centre, lambda u: u.unit_const in walls, lambda u: not window._removal_rewrites([u]))
+    if plain is None:
+        return ["      no splice-eligible unit: skipped"]
+    player, unit = plain
+    lines.append(f"      unit P{player} const {unit.unit_const} at {unit.x:.1f},{unit.y:.1f}")
+    occupied = {(int(u.x), int(u.y)) for us in units for u in us}
+    free = sorted(
+        ((x, y) for y in range(mm.map_height) for x in range(mm.map_width) if (x, y) not in occupied),
+        key=lambda t: (t[0] + 0.5 - centre[0]) ** 2 + (t[1] + 0.5 - centre[1]) ** 2,
+    )
+    assert window.units_panel.pick_object(unit.unit_const) and window.units_panel.select_owner(player)
+    window.place_unit_action.setChecked(True)
+    to_scene = view.tile_to_scene()
+    spot = None
+    for x, y in free[:50]:
+        # Untimed, and undone: finds a tile the placement rules accept.
+        pos = to_scene.map(QPointF(x + 0.5, y + 0.5))
+        count = _unit_count(window)
+        window.on_unit_place(pos, Qt.NoModifier)
+        if _unit_count(window) != count:
+            window.undo()
+            spot = pos
+            break
+    if spot is None:
+        lines.append("      no free tile took the Place: skipped")
+    else:
+        edit_and_undo("place", player, None, lambda: window.on_unit_place(spot, Qt.NoModifier), True)
+    # Shift: a whole tile, so the edit touches two tiles as a drag does.
+    edit_and_undo("nudge", player, unit, lambda: window.on_unit_nudge(1, 0, Qt.ShiftModifier), False)
+    edit_and_undo("delete", player, unit, lambda: window.on_unit_delete(Qt.NoModifier), True)
+    if wall is None:
+        lines.append("      no wall or connector whose Delete reshapes nothing: wall rows skipped")
+        return lines
+    player, unit = wall
+    lines.append(f"      wall P{player} const {unit.unit_const} at {unit.x:.1f},{unit.y:.1f}")
+    edit_and_undo("w-nudge", player, unit, lambda: window.on_unit_nudge(1, 0, Qt.ShiftModifier), False)
+    edit_and_undo("w-delete", player, unit, lambda: window.on_unit_delete(Qt.NoModifier), True)
+    return lines
+
+
 def _set_sprites(window, on: bool) -> None:
     action = window.show_sprites_action
     if action.isChecked() != on:
@@ -925,6 +1054,10 @@ def _bench_file(
                             prime=prime if resident == "canvas" else None,
                         ):
                             emit(line)
+                    if tool == "units":
+                        emit("     units")
+                        for line in _run_units_case(window, timers, paints):
+                            emit(line)
                     for kind in kinds if tool == "draw" else ():
                         for brush in brushes:
                             emit(f"     {kind} brush={brush}" + (f" rows={rows}" if kind == "rows" else ""))
@@ -956,7 +1089,7 @@ def main() -> None:
     )
     parser.add_argument("--sprites", default="on,off", help="Comma-separated: on,off")
     parser.add_argument("--resident", choices=("viewport", "canvas"), default="viewport")
-    parser.add_argument("--tool", choices=("draw", "fill"), default="draw")
+    parser.add_argument("--tool", choices=("draw", "fill", "units"), default="draw")
     parser.add_argument("--force-wholesale", action="store_true")
     parser.add_argument("--cap", type=int, help="Override render_cache_splice.UNIT_SPLICE_MAX_UNITS")
     parser.add_argument(
@@ -976,9 +1109,9 @@ def main() -> None:
     parser.add_argument(
         "--flat-ratio", type=float,
         help=(
-            "Override viewer._FLAT_EVICT_RATIO (top-down Flat evicts a terrain edit's bbox once its rects cover more "
-            "tiles than this times the tiles of the visible-level chunks under the bbox on screen; 0: always evict, "
-            "inf: never by the ratio)"
+            "Override viewer._FLAT_EVICT_RATIO (top-down Flat evicts a terrain edit's or a batch unit edit's bbox "
+            "once its rects cover more tiles than this times the tiles of the visible-level chunks under the bbox on "
+            "screen; 0: always evict, inf: never by the ratio)"
         ),
     )
     parser.add_argument(

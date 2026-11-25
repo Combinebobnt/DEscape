@@ -15,13 +15,12 @@ from PyQt5.QtGui import (
     QPolygonF,
     QTransform,
 )
-from PyQt5.QtWidgets import (
-    QGraphicsItem,
-)
 
 from descape import (
+    edge_ticks,
     grid_overlay,
     perf_trace,
+    qt_points,
     region_clipboard,
     ruler,
     settings,
@@ -256,6 +255,36 @@ class _MapViewOverlaysMixin:
             return
         self._edge_tick_item.set_label_font_px(settings.get_distance_tick_font_px())
         self._repad_edge_ticks()
+
+    def apply_distance_ticks_behind_terrain(self) -> None:
+        """Settings > Appearance's re-entry point for "Draw distance ticks
+        behind elevated terrain", apply_distance_tick_font()'s shape."""
+        self._edge_ticks_behind_terrain = settings.get_distance_ticks_behind_terrain()
+        self._sync_edge_tick_overhang()
+
+    def _sync_edge_tick_overhang(self) -> None:
+        """Pushes the option to the ruler, and the overhang with it only while
+        the ruler is shown and the option on: either turning on recomputes it."""
+        item = self._edge_tick_item
+        if item is None:
+            return
+        item.set_behind_terrain(self._edge_ticks_behind_terrain)
+        if self._edge_ticks_behind_terrain and self._edge_ticks_enabled:
+            item.set_overhang(self._edge_tick_overhang())
+
+    def _edge_tick_overhang(self) -> tuple[QPolygonF, ...]:
+        """The terrain past the ruler's elevation-0 border, from the rise the
+        pixels were painted from: Sloped's cache.corner_rise, Stepped's flat
+        tops. () in Flat, which has no elevation."""
+        proj = self._iso_proj
+        if self._terrain_style == "flat" or proj is None or self._iso_elevations is None:
+            return ()
+        cache = self._sloped_cache()
+        if cache is not None:
+            polys = edge_ticks.terrain_overhang(cache.corner_rise, proj, sloped=True)
+        else:
+            polys = edge_ticks.terrain_overhang(edge_ticks.stepped_corner_rise(self._iso_elevations, proj), proj)
+        return tuple(qt_points.polygon_from_points(poly) for poly in polys)
 
     def set_region(self, region: tuple[int, int, int, int] | None) -> None:
         """The one mutator for the committed region -- called from MapView's
@@ -551,17 +580,8 @@ class _MapViewOverlaysMixin:
             item = scene.addPolygon(QPolygonF(), self._ruler_pen)
             item.setZValue(self.RULER_Z)
             self._ruler_end_items.append(item)
-        label = scene.addSimpleText("")
-        # map_overlay_font, not label.font(): the latter is the app chrome
-        # font, so the family silently followed apply_ui_font()'s setting.
-        font = map_overlay_font(settings.get_ruler_label_font_px())
-        font.setBold(True)
-        label.setFont(font)
-        label.setBrush(QBrush(self._ruler_label_color))
-        label.setPen(QPen(self._ruler_label_outline, 0))
-        label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-        label.setZValue(self.RULER_LABEL_Z)
-        self._ruler_label_item = label
+        # Uncached: its text changes on every mouse move (TASK-519).
+        self._ruler_label_item = self._outlined_label("", self._ruler_label_color, self.RULER_LABEL_Z, cacheable=False)
 
     def _update_ruler(self) -> None:
         """Rebuilds the overlay from the session's two tiles. Items are
@@ -719,15 +739,8 @@ class _MapViewOverlaysMixin:
             item = scene.addPath(path, self._ruler_pen)
             item.setZValue(self.PINNED_RULER_Z)
             self._pinned_ruler_items.append(item)
-        font = map_overlay_font(settings.get_ruler_label_font_px())
-        font.setBold(True)
         for anchor, text in labels:
-            label = scene.addSimpleText(text)
-            label.setFont(font)
-            label.setBrush(QBrush(self._ruler_label_color))
-            label.setPen(QPen(self._ruler_label_outline, 0))
-            label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-            label.setZValue(self.PINNED_RULER_LABEL_Z)
+            label = self._outlined_label(text, self._ruler_label_color, self.PINNED_RULER_LABEL_Z, cacheable=True)
             label.setPos(anchor)
             box = label.boundingRect()
             label.setTransform(QTransform.fromTranslate(-box.width() / 2.0, -box.height() - self.RULER_LABEL_GAP_PX))
@@ -829,6 +842,8 @@ class _MapViewOverlaysMixin:
         self._edge_ticks_enabled = enabled
         if self._edge_tick_item is not None:
             self._edge_tick_item.setVisible(enabled)
+        if enabled:
+            self._sync_edge_tick_overhang()
 
     def grid_bake_live(self) -> bool:
         """Whether View > Grid is drawn inside the chunk composite (under the

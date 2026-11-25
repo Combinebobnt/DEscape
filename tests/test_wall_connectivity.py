@@ -368,7 +368,7 @@ def rotation_spy(monkeypatch):
     calls: dict[str, list[tuple[int, float]]] = {"sprite_pieces_for": [], "icon_for": []}
 
     def fake_sprite_pieces_for(unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None,
-                               hero_glow=False, art=None, wall_alpha=1.0):
+                               hero_glow=False, art=None, alpha=1.0):
         calls["sprite_pieces_for"].append((unit_const, rotation))
         return []
 

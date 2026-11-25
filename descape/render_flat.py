@@ -8,7 +8,9 @@ import numpy as np
 
 from descape import (
     terrain_blend,
+    unit_kind,
     unit_sprites,
+    unit_state,
 )
 from descape.grid_overlay import DEFAULT_GRID, GridBake
 from descape.render_paint import (
@@ -350,7 +352,18 @@ def _flat_unit_icon(
     )
     if icon is None and with_farms and _terrain_overlay_for(unit.unit_const) is not None:
         return FLAT_DRAPED
-    return icon
+    return ghosted_icon(unit, icon)
+
+
+def ghosted_icon(unit, icon: unit_sprites.SpriteDraw | None) -> unit_sprites.SpriteDraw | None:
+    """`icon` at unit_state.GHOST_ALPHA when the unit's Unit State is not Alive
+    (Stepped's fade, in Flat), as round(a * alpha); a new draw, never the
+    cached one. An invisible object's marker, and None, come back as given."""
+    if icon is None or not unit_state.is_ghosted(unit) or unit.unit_const in unit_kind.invisible_consts():
+        return icon
+    rgba = icon.rgba.copy()
+    rgba[..., 3] = np.rint(rgba[..., 3] * unit_state.GHOST_ALPHA).astype(np.uint8)
+    return unit_sprites.SpriteDraw(rgba=rgba, hotspot_x=icon.hotspot_x, hotspot_y=icon.hotspot_y)
 
 
 def composite_rect_flat(
@@ -607,7 +620,7 @@ def _flat_icon_for_unit(
     rotation = stored_rotation(player_id, unit)
     if rotation_override is not None:
         rotation = rotation_override
-    return unit_sprites.icon_for(
+    return ghosted_icon(unit, unit_sprites.icon_for(
         unit.unit_const,
         rotation,
         team_index,
@@ -615,7 +628,7 @@ def _flat_icon_for_unit(
         (tile_y1 - tile_y0) * tile_px,
         getattr(unit, "reference_id", None),
         player_art_for(scenario, player_id),
-    )
+    ))
 
 
 def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, tile_px: int) -> None:

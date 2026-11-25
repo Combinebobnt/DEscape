@@ -346,10 +346,12 @@ class _MapViewViewportMixin:
     def viewport_reach_target(self, mip: int) -> tuple[int, int, int, int] | None:
         """(cx0, cy0, cx1, cy1), the zoom-out reach of level `mip` (TASK-031.11
         D1): the chunks a paint reads (MapCanvasItem.view_chunks()) at the
-        widest view `mip` shows, a zoom about zoom_anchor_scene() down to the
-        device scale where the next coarser level takes over. The current
-        view for a level finer than the view's. None for the coarsest level
-        (the fit paint composites all of it), with no item or an empty rect."""
+        widest view the wheel shows at `mip`, a zoom about zoom_anchor_scene()
+        out to the last notch before the next coarser level's stop
+        (zoom_stops.widest_landing(), TASK-611), or the floor. The current
+        view when no notch lands on `mip` below it. None for the coarsest
+        level (the fit paint composites all of it), with no item or an empty
+        rect."""
         item = self._canvas_item
         if item is None:
             return None
@@ -361,6 +363,15 @@ class _MapViewViewportMixin:
         if scale <= 0:
             return None
         widest = 1.0 / cache.mip_scale(mip - 1)
+        lattice = self._wheel_lattice()
+        if lattice is not None:
+            points, per = lattice
+            floor = None if self._min_linear_scale is None else per * self._min_linear_scale
+            landing = zoom_stops.widest_landing(points, widest, floor)
+            # Off the lattice the first step skips points nearer than MIN_OFF_LATTICE_STEP, as the wheel does.
+            first = max(zoom_stops.notch_target(scale, -1, points) or 0.0, floor or 0.0)
+            leaves = first <= widest * (1.0 + zoom_stops.ON_POINT_TOL)
+            widest = scale if landing is None or leaves else landing
         rect = self.zoomed_scene_rect(min(1.0, widest / scale), self.zoom_anchor_scene())
         rect = rect.intersected(item.boundingRect())
         if rect.isEmpty():

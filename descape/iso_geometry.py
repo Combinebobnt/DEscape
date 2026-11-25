@@ -563,7 +563,9 @@ def _inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int):
 
     Side effect, accepted: one screen pixel right steps (+1, +1) texels and
     one pixel down steps (-2, +2), so screen-vertical minifies ~2.8:1 with
-    nearest-neighbour sampling, like the in-game squash."""
+    nearest-neighbour sampling, like the in-game squash. The texture is
+    prefiltered along that axis (asset_source.ANGLED_PREFILTER), so the
+    texels it skips do not alias into speckle."""
     u = (dst_x + 0.5 - half_w) / half_w
     v = (dst_y + 0.5 - half_h) / half_h
     s = (u - v + 1.0) / 2.0

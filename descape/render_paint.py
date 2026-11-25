@@ -159,7 +159,7 @@ def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, 
 
 
 def _top_block(
-    tile, tile_px: int, textures: bool = True, blend=None, terrain_override: int | None = None
+    tile, tile_px: int, textures: bool = True, blend=None, terrain_override: int | None = None, angled: bool = False
 ) -> np.ndarray:
     """The square tile_px x tile_px top block every terrain style builds
     first and only then places (Flat blits it, Stepped scatters it into the
@@ -177,15 +177,18 @@ def _top_block(
     adds no new rendering: it takes the exact path an unconfigured install
     already takes, which is what makes "textures off" provably equal to a
     no-install render rather than a second, drifting code path. The
-    returned array may be a read-only view of a cached texture or block."""
+    returned array may be a read-only view of a cached texture or block.
+
+    angled: Stepped and Sloped crop the prefiltered texture
+    (asset_source.angled_prefilter()); top-down Flat the sharp one."""
     terrain_id = tile.terrain_id if terrain_override is None else terrain_override
     size = asset_source.terrain_texture_size(tile_px)
-    texture = asset_source.terrain_texture_at(terrain_id, size) if textures else None
+    texture = asset_source.terrain_texture_at(terrain_id, size, angled=angled) if textures else None
     if texture is not None:
         ox, oy = _crop_offset(tile.x, tile.y, texture.shape[0], tile_px)
         # key[0] is the mirror's tid: a stale mirror keeps the live tile's plain crop.
         if blend is not None and terrain_override is None and blend[0] == terrain_id:
-            block = terrain_blend.blended_block(blend, ox, oy, tile_px)
+            block = terrain_blend.blended_block(blend, ox, oy, tile_px, angled=angled)
             if block is not None:
                 return block
         return asset_source.crop_source(texture, tile_px)[oy : oy + tile_px, ox : ox + tile_px]

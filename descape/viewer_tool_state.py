@@ -10,6 +10,7 @@ from descape import (
     brush,
     debug_log,
     perf_trace,
+    scenario_convert,
     settings,
     terrain_target,
     tool_options,
@@ -25,6 +26,7 @@ from descape.viewer_common import (
     _WALL_TOOLS,
     GATE_WALLS_TOOLS,
     OFF_GRID_TOOLS,
+    PLACE_RANDOM_TOOLS,
     SKIP_OCCUPIED_TOOLS,
     UNRESTRICTED_TOOLS,
     brush_applicable,
@@ -116,6 +118,17 @@ class _ViewerToolStateMixin:
         self._update_zoom_native_action()
         if not self.map_view.zoom_to_native():
             self.statusBar().showMessage(self.zoom_native_action.toolTip(), 5000)
+
+    def _convert_version_refusal(self) -> str | None:
+        """Why File > Convert to Version is off for the open document, None when it is on (GH #307).
+        Save As's gate plus the step table, so a paste refusal's hint never names a greyed-out action."""
+        if self.scenario is None:
+            return f"Open a {' or '.join(scenario_convert.STEPS)} scenario to convert it"
+        if lock := self.game_data_lock_reason():
+            return lock
+        if not self.scenario.terrain_write_supported:
+            return "This file failed its load-time checks, so it cannot be saved or converted."
+        return scenario_convert.source_refusal(self.scenario.scenario_version)
 
     def _update_tool_enabled(self) -> None:
         # Tools (and Close/Save As) have nothing to act on before a map is
@@ -257,6 +270,11 @@ class _ViewerToolStateMixin:
         self.close_action.setEnabled(has_map)
         self.save_action.setEnabled(write_ok)
         self.save_as_action.setEnabled(write_ok)
+        convert_refusal = self._convert_version_refusal()
+        self.convert_version_action.setEnabled(convert_refusal is None)
+        self.convert_version_action.setToolTip(
+            convert_refusal or f"Upgrade this scenario to version {scenario_convert.TARGET_VERSION}, the format the current game saves"
+        )
         self.resize_action.setEnabled(elevation_ok)  # square-only, see scenario_resize
         self.terrain_style_combo.setEnabled(has_map)
         for action in self.elevation_actions.values():
@@ -298,8 +316,8 @@ class _ViewerToolStateMixin:
             sprite_tip = "Needs a configured AoE2DE install path (Settings) to read unit sprites from"
         else:
             sprite_tip = (
-                "Draw units as their real game sprites instead of coloured marks -- "
-                "turning this on decodes them once and can take a few seconds"
+                "Draw units as their real game sprites instead of coloured marks. "
+                "Turning this on decodes them once and can take a few seconds"
             )
         self.show_sprites_action.setToolTip(sprite_tip)
         self._update_zoom_native_action()
@@ -558,6 +576,10 @@ class _ViewerToolStateMixin:
         off_grid_ok = self._current_tool in OFF_GRID_TOOLS and tool_action_ok
         self.off_grid_param_action.setVisible(off_grid_ok)
         self.off_grid_check.setEnabled(off_grid_ok)
+        # TASK-367: Place Unit's own Random facing/variant, in the roll-up below too.
+        place_random_ok = self._current_tool in PLACE_RANDOM_TOOLS and tool_action_ok
+        self.place_random_param_action.setVisible(place_random_ok)
+        self.place_random_check.setEnabled(place_random_ok)
         # GH #124's toggle, the same convention, and in the roll-up below too.
         skip_occupied_ok = (
             self._current_tool in SKIP_OCCUPIED_TOOLS
@@ -593,7 +615,7 @@ class _ViewerToolStateMixin:
             terrain_param_ok or level_param_ok or convert_param_ok or unit_brush_param_ok or eraser_param_ok
             or unit_shape_param_ok or cliff_param_ok or brush_ok or select_param_ok or rect_param_ok
             or beach_param_ok or unrestricted_ok or off_grid_ok or ruler_param_ok or skip_occupied_ok
-            or wall_pick_ok or gate_walls_ok or area_param_ok or eyedropper_return_ok
+            or wall_pick_ok or gate_walls_ok or area_param_ok or eyedropper_return_ok or place_random_ok
         )
 
         # Stage 3: mode may have just changed which tools are applicable,

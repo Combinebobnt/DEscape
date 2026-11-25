@@ -20,6 +20,7 @@ import pytest
 from test_region_paste import _TERRAIN_A, _make_region
 from test_sprite_edit_bbox import CONST as SPRITE_CONST
 from test_sprite_edit_bbox import sprite_install  # noqa: F401 -- pytest fixture, imported for its name
+from test_tool_edit_rollback import arm, assert_next_edit_works, assert_rolled_back, snapshot
 
 from descape import render_iso
 from testkit.render_family import set_render_cache_global
@@ -471,6 +472,58 @@ def test_the_elevation_predictor_counts_the_seed_set_each_cache_starts_from(styl
         set_render_cache_global(monkeypatch, cap_name, 0)
         window.player_actions[1].setChecked(False)
         assert not window._elevation_bumps_anyway({(30, 30)}), "a hidden unit seeds nothing"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# --- TASK-503: a paste, move or turn that raises partway rolls back ---
+
+
+def test_a_paste_whose_second_unit_raises_rolls_back_tiles_and_units(monkeypatch) -> None:
+    """No unit edit is left open (it wedged every later edit), and the tiles
+    written before the unit half go back too."""
+    window = _seeded_window(MARK_CONST)
+    try:
+        calls = arm(monkeypatch, window.unit_edits, "add", on_call=2)
+        then = snapshot(window)
+        _canvas(window)
+        with pytest.raises(RuntimeError, match="armed"):
+            _paste(window)
+        assert calls == [2]
+        assert_rolled_back(window, then)
+        assert_next_edit_works(window)
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("gesture", ["move", "turn"])
+def test_a_paste_move_or_turn_that_raises_puts_the_paste_back_armed(gesture, monkeypatch) -> None:
+    """The move or turn undid the paste before re-pasting it: after the raise
+    the paste is back at its anchor, the cursor on its record, still armed,
+    and the committed region is the paste's own."""
+    from descape import region_transform
+
+    window = _seeded_window(MARK_CONST)
+    try:
+        _paste(window)
+        state = window._paste_move
+        assert state is not None and window.edit_history.peek_undo() is state.record
+        calls = arm(monkeypatch, window.unit_edits, "add", on_call=2)
+        then = snapshot(window)
+        _canvas(window)
+        with pytest.raises(RuntimeError, match="armed"):
+            if gesture == "move":
+                window.on_region_move(3, 0)
+            else:
+                window.on_region_transform(region_transform.ROTATE_CW)
+        assert calls == [2]
+        assert_rolled_back(window, then)
+        assert window._paste_move is state
+        region = window._pasted_region(state.block, *state.anchor)
+        assert window._region == region and window.map_view._region == region
+        assert_next_edit_works(window)
     finally:
         window.edit_history.mark_saved()
         window.close()

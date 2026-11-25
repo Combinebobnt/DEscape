@@ -26,6 +26,33 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **File > Convert to Version 1.59…** (GH #307): upgrades an open 1.58
+  scenario to the format the September 2026 game update saves, giving every
+  unit a Capture Flag and every condition its new field at their defaults.
+  The result needs that game update to open. Save then overwrites the file
+  as 1.59; Save As keeps the 1.58 original.
+- **Settings > General > Double-click a trigger to rename it** (GH #279):
+  untick it to keep double-click from opening the inline rename; the
+  right-click Rename stays.
+- **Tools > Scripts** (GH #320): run a Python script from your scripts
+  folder against the open map. It edits terrain and units through an
+  `editor` object that keeps the editor's own rules, the whole run is one
+  undo step, and an error or Cancel puts everything back. DEscape asks
+  before running a new or changed script; `--no-addons` turns scripts off.
+  Help > DEscape Guide > Scripts has the details.
+- **Settings > General > Trigger section headers** (GH #322): choose which
+  name shapes head a section in the Triggers panel, and add header prefixes
+  of your own such as `>>`. Only DEscape's view changes, not the file.
+  Copying a trigger named `--` now keeps the name `--`; it used to become
+  `-- (copy)`, which read as a section header.
+- **File > Browse Game Scenarios…**: one filterable list of the scenarios in
+  the game's profile and mod folders, disabled mods included, newest first,
+  each row naming the profile or mod it comes from.
+
+- **Inactive units draw faded** (GH #332): units whose Unit State is not
+  Alive (Remove, Dead, Foundation and the rest) draw faded on the map and
+  minimap, with no garrison flag, and Filters > Show Inactive Units hides
+  them.
 - **Objectives panel** (GH #391): lists every trigger objective, header and
   on-screen line in game order, with drag reordering, inline flags and text,
   and a preview of the game's objectives box in the panel or on the map.
@@ -92,13 +119,66 @@ content, link the doc instead of summarizing it.
   random variant for trees and other scenery. Walls, gates, cliffs and
   objects with one look keep rotation 0, and the same seed keeps its layout
   either way.
+- **Set Objects drag box** (GH #292): with Set Objects, or any trigger
+  object list's Pick, armed, drag a box on the map to add every unit it
+  covers, or Ctrl+drag to add or remove each of them, as one undo step.
+- **Random facing or variant for Place Unit** (GH #303): a Random
+  facing/variant box gives each click a random facing, or a random variant
+  for trees and other scenery, as the in-game editor does, and the preview
+  shows it before the click.
+- **Distance ticks behind elevated terrain** (GH #293): a Settings >
+  Appearance option, off by default. In Stepped and Sloped the View >
+  Distance Ticks ruler is hidden where raised terrain covers the map border,
+  so it reads as sitting behind the hills.
+- **Turn a waterfall** (GH #330): Rotate and Cycle Variant turn WFALL and
+  SWFALL through their facings.
 
 ### Changed
 
+- **1.58 triggers paste into a 1.59 scenario** (GH #307): triggers,
+  conditions and effects copied from a 1.58 scenario now paste into a 1.59
+  one, such as a map from File > New Map. The other way round is still
+  refused, and the refusal names File > Convert to Version 1.59.
+- **Faster Colour Mood preview**: with View > Layers > Colour Mood on, a
+  Desert, Jungle, Winter or Autumn map repaints at about the cost of the row
+  off.
+- **Faster trigger run labels**: trigger run labels and pinned ruler labels
+  repaint faster when many are on screen, as at fit-to-view.
+- **Faster shared-tile unit edits**: nudging or moving a unit that shares a
+  tile with another is faster on unit-heavy maps.
+- **Faster top-down Flat unit edits**: unit edits, walls most of all, no
+  longer repaint every cached zoom level; moving or deleting a wall on a large
+  map is about twice as fast.
+- **Open and Save As start in the game's scenario folder**: Open with no
+  scenario open, Save As on a new map, and Save or Save As on a scenario from
+  a subscribed mod, where Save now asks for a new name instead of refusing.
+  Open with a scenario open starts in that file's folder.
+
+- **Create Objects steps by footprint** (GH #59): an object bigger than one
+  tile (a House, a Farm) is stamped once per footprint, starting on the
+  clicked tile, and a copy that would overlap one already there is skipped.
+  The hover highlight shows only the tiles that will be written.
+- **Bridges, chains, longhouses and blockers turn with the map** (GH #341):
+  Mirror Map, a pasted region's turn and Flip or Rotate Group on a
+  selection now give each its turned form, and a bridge's end pieces stay
+  at its ends.
+- **Walls follow the terrain rule** (GH #302): walls placed with Place
+  Unit, Unit Line and Unit Shape leave a gap where the wall can't stand
+  (water, or land for a Sea Wall), and the status log says how many tiles
+  were skipped and why. Free placement lifts it.
+- **Even enlargement past the native zoom stop**: zoomed in at Graphics
+  quality Default, unit and building art and top-down Flat icons are
+  enlarged evenly instead of doubling every third pixel row and column.
+- **Data mod warnings in plain words** (GH #323): after picking a data mod,
+  the status log says which of its objects and terrains DEscape shows
+  differently and what you can do about it, grouped with counts and example
+  names. The technical list for a bug report is in the cache's `meta.json`.
 - **Terrain textures match the game's scale** (GH #326): a ground texture
   repeats every 10 tiles at every zoom, as in-game (it was 8 at the default
   zoom and changed at every zoom step), and the closer zoom levels are
   sharper, read from the full-size game texture. Return of Rome too.
+  Stepped and Sloped prefilter it along the squashed axis, so close zoom
+  does not speckle.
 - **Zooming**: zooming through a level for the first time no longer waits
   behind a slow background chunk.
 - **Map Options Victory condition**: a file with no Secondary game mode row
@@ -128,9 +208,22 @@ content, link the doc instead of summarizing it.
   saturated, with the same purple buttons and selection highlights.
 - **Dark Wood (green)**: push buttons are darker green, with the same wood
   tones and selection highlights.
+- **Cut Units then Paste Units keeps the units' IDs** (GH #342) in the same
+  file, so triggers that name them still work.
+- **Edit > Cut, Copy and Paste act on the Garrison list** (GH #342) while it
+  has focus.
+- **A paste whose host lands off the map** (GH #342) drops what it
+  garrisons too, instead of pasting it loose.
 
 ### Fixed
 
+- **Antiquity names**: the antiquity civilizations' units, buildings and
+  technologies show the game's own names, such as Immortal (Melee) and
+  Taxiarchs, instead of placeholder or internal names.
+- **Antiquity players' own unit names** (GH #148): a player of an antiquity
+  civilization sees its own names for shared units, such as Bowman for
+  Archer, in the Units catalog, on the placing and Inspector cards and in the
+  command button preview.
 - **Typing in a text box survives the menu bar**: closing a menu with
   Escape, or opening one with Alt, no longer applies the text still being
   typed in a Messages or trigger text box; it applies when you leave the box
@@ -234,6 +327,38 @@ content, link the doc instead of summarizing it.
 - **Units sharing a tile draw nearer-in-front** (GH #324): a sheep just
   inside a pasture's corner is no longer covered by the corner post and
   fences behind it, and two units on one tile no longer stack by list order.
+- **Thin cliff runs lie along the grid in top-down Flat** (Isometric View
+  unticked, GH #151): a thin run now draws as one band of rock instead of a
+  row of small diagonal dashes.
+- **Waterfalls draw their falling water** (GH #330): WFALL and SWFALL draw
+  from their particle effects instead of a coloured mark.
+- **Erasing or deleting a cliff caps the run it leaves** (GH #286): the
+  Eraser's Cliffs target, Delete, Cut and Find's Delete give a run's new end
+  its end cap, as the Cliff tool's right-click does.
+- **The Place Unit and move ghosts sit on the sprite a click or drop
+  places, at every zoom** (GH #334): zoomed in or out away from the base
+  level they drew 1-2 px off and, zoomed in, blurrier than the placed
+  sprite. Between zoom levels a ghost edge can still sit up to 1 px inside.
+- **Cut Units reports what it cut** (GH #342): the status line says how many
+  units went to the clipboard instead of repeating the undo label.
+- **The Edit menu follows text selected in an Inspector field** (GH #342):
+  Cut, Copy and Paste act on the selected text, not the units.
+- **A pasted garrisoned unit stored past the map edge** (GH #342) lands with
+  its host instead of being dropped.
+- **A unit stored just past the low map edge** (GH #342) no longer stops a
+  group move or nudge there.
+- **A gate takes its corner pieces with it** (GH #351, GH #352): moving a
+  gate (drag, nudge, typed coordinates, Scatter) moves its corner pieces
+  instead of leaving them behind where they could block the wall fill, and
+  turning, flipping, deleting or cutting it (Rotate, the Rotation field, a
+  turn during a drag, Flip, Rotate Group, Delete, Cut and Find's Delete)
+  takes them too, turned onto the gate's new ends.
+- **The Move preview shows the shape a dragged wall lands as** (GH #347),
+  and the walls it reshapes, while you drag.
+- **A unit edit that fails partway is undone whole** (GH #346): if a tool's
+  unit edit hits an error midway, its terrain and unit changes are put back
+  and the map redraws, instead of leaving half the edit in place with no
+  undo step. A moved or turned paste that fails stays where it was.
 
 ## [0.11] - 2026-11-11
 

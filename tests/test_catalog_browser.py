@@ -1233,3 +1233,63 @@ def test_a_right_click_opens_the_menu_by_default(monkeypatch) -> None:
         assert opened == [["Add to Favorites"]] and store.ids == []
     finally:
         view.close()
+
+
+# -- an antiquity owner's own names (an Athenian Archer reads Bowman) ------------------
+
+
+def _texts(view) -> list[str]:
+    return [view.list.item(i).text() for i in range(view.list.count())]
+
+
+def test_an_antiquity_owner_renames_sorts_and_still_finds_by_the_standard_name(athenian_bowman) -> None:
+    view = _view()
+    base = view._items[_ARCHER].text()
+    view.set_civ(athenian_bowman)
+    item = view._items[_ARCHER]
+    assert item.text() == "Bowman"
+    assert item.toolTip() == "Bowman (4)"
+    assert view.entry(_ARCHER).name == base, "entry() keeps the standard name"
+    texts = _texts(view)
+    assert texts == sorted(texts), "rows sort by the shown name"
+    for needle in ("archer", "bowman"):
+        view.filter_edit.setText(needle)
+        assert _ARCHER in _shown(view), needle
+    view.filter_edit.clear()
+    view.set_civ(1)
+    assert view._items[_ARCHER].text() == base
+
+
+def test_a_switch_between_owners_with_the_same_own_names_repopulates_nothing(athenian_bowman, monkeypatch) -> None:
+    view = _view()
+    calls = []
+    real = view._populate
+    monkeypatch.setattr(view, "_populate", lambda: (calls.append(1), real())[1])
+    view.set_civ(1)
+    view.set_civ(2)
+    assert calls == [], "two owners without own names"
+    view.set_civ(athenian_bowman)
+    assert calls == [1]
+    view.set_civ(48)  # the Spartans name every one of the same consts
+    assert calls == [1]
+    assert view._items[_ARCHER].text() == "Bowman"
+
+
+def test_a_switch_between_two_antiquity_owners_with_different_names_renames(athenian_bowman, monkeypatch) -> None:
+    view = _view()
+    view.set_civ(athenian_bowman)
+    real = object_catalog.civ_name
+    spartan = lambda oid, civ, lang=None: "Spartan Bowman" if (oid, civ) == (_ARCHER, 48) else real(oid, civ, lang)  # noqa: E731
+    monkeypatch.setattr(object_catalog, "civ_name", spartan)
+    view.set_civ(48)  # the same named ids, another name
+    assert view._items[_ARCHER].text() == "Spartan Bowman"
+
+
+def test_the_favorites_view_shows_the_owners_name(athenian_bowman) -> None:
+    store = [_ARCHER]
+    conftest.ensure_qapp()
+    view = CatalogBrowserView(favorites=(lambda: list(store), lambda ids: store.__setitem__(slice(None), ids)))
+    view.set_civ(athenian_bowman)
+    view.set_favorites_view(True)
+    assert view._items[_ARCHER].text() == "Bowman"
+    assert view._items[_ARCHER].toolTip() == "Bowman (4) (favorite)"

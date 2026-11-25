@@ -234,7 +234,7 @@ def _render_tile_sloped(
         if base_y + y_hi < 0 or base_y + y_lo >= h or base_x + x_hi < 0 or base_x + x_lo >= w:
             return
 
-    top_block = _top_block(tile, tile_px, textures, blend, terrain_override)
+    top_block = _top_block(tile, tile_px, textures, blend, terrain_override, angled=True)
 
     shade = _slope_shade(tile_px, d_nw - d_min, d_ne - d_min, d_sw - d_min, d_se - d_min, proj.elev_step)
     native = composite_backend.native

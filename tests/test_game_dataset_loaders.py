@@ -124,12 +124,13 @@ def test_sprites_stats_and_rotation_follow_the_dataset():
 
 def test_ror_particle_units_match_aoe2s():
     """GH #67, GH #311: RoR's Butterflies, Seagulls, Smoke and Flames use the same graphics and
-    effects as AoE2's (measured on the RoR .dat 2026-11-02), so both tables carry the same entries."""
+    effects as AoE2's (measured on the RoR .dat 2026-11-02), so both tables carry the same entries
+    for those nine. AoE2's later ones (GH #330) are unmeasured on the RoR .dat."""
     aoe2 = {k: e for k, e in unit_sprites.graphic_map().items() if e.get("particle")}
     _ror()
     ror = {k: e for k, e in unit_sprites.graphic_map().items() if e.get("particle")}
     assert sorted(ror) == [303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610]
-    assert ror == aoe2
+    assert ror == {k: aoe2[k] for k in ror}
 
 
 def test_blend_priorities_follow_the_dataset_both_ways():

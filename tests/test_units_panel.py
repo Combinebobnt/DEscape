@@ -3198,3 +3198,28 @@ def test_portraits_follow_each_owners_civ(archer_civ_portrait) -> None:
     panel.refresh_portrait_civs()
     _settle(panel)
     assert _centre(panel.placing_card.portrait.pixmap()) == conftest._UNIT_RED[:3]
+
+
+def test_names_follow_each_owners_civ(athenian_bowman) -> None:
+    """An Athenian Archer reads Bowman on the placing card, its tooltip, the
+    pick's label and the inspector card; a Players edit renames the pick back."""
+    from descape import object_catalog
+
+    base = object_catalog.name_for(object_catalog.objects(), _ARCHER_CONST)
+    civs = {2: athenian_bowman, 3: athenian_bowman}
+    panel = _panel(portrait_civ_for=civs.get)
+    panel.select_object(_ARCHER_CONST)
+    assert panel.placing_label.text() == f"Placing: {base}", "P1 has no civ of its own"
+    panel.select_owner(2)
+    assert panel.placing_label.text() == "Placing: Bowman"
+    assert panel.placing_label.toolTip() == panel.selected_object_label() == "Bowman"
+    assert panel.catalog_view._items[_ARCHER_CONST].text() == "Bowman"
+    panel.show_unit(_entry(player_id=3, unit_const=_ARCHER_CONST))
+    assert panel.selection_card.name_label.text() == "Bowman"
+    panel.select_object(24)
+    panel.select_object(_ARCHER_CONST)
+    assert panel.placing_label.text() == "Placing: Bowman", "a pick made under the owner"
+    civs[2] = None
+    panel.refresh_portrait_civs()
+    assert panel.placing_label.text() == f"Placing: {base}"
+    assert panel.placing_label.toolTip() == panel.selected_object_label() == base

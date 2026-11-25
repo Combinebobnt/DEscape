@@ -57,6 +57,7 @@ class _SettingsDialogApplyMixin:
     _APPLIERS: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
         ("_apply_game_data", ("game_data",)),
         ("_apply_zoom_anchor", ("zoom_centered_on_cursor",)),
+        ("_apply_trigger_section_headers", ("trigger_section_headers",)),
         ("_apply_mod_art", ("mod_art_excluded", "mod_art_included")),
         ("_apply_owner_filter", ("data_mod_hide_unchanged", "gaia_only_catalog_mode")),
         ("_apply_data_mod_label", ("data_mod_label_shown",)),
@@ -70,6 +71,7 @@ class _SettingsDialogApplyMixin:
         ("_apply_overlay_colors", ("overlay_colors",)),
         ("_apply_overlay_opacity", ("overlay_opacity",)),
         ("_apply_map_label_fonts", ("ruler_label_font_px", "distance_tick_font_px")),
+        ("_apply_distance_ticks_behind_terrain", ("distance_ticks_behind_terrain",)),
         ("_apply_stack_badge_position", ("stack_badge_position",)),
         ("_apply_favorite_star", ("favorite_star_style",)),
         ("_apply_terrain_grid_swatch", ("terrain_grid_swatch_px",)),
@@ -99,6 +101,7 @@ class _SettingsDialogApplyMixin:
         "autosave_dir",
         "backups_enabled",
         "units_catalog_right_click",
+        "trigger_rename_double_click",
     )
     # What a tab's Reset leaves alone, for its tooltip.
     _RESET_KEEPS: ClassVar[dict[str, str]] = {
@@ -305,6 +308,8 @@ class _SettingsDialogApplyMixin:
         index = self._tabs.currentIndex()
         title = self._tabs.tabText(index)
         row = tool_options.defaults() if title == "Tools" else self._window.tool_option_values()
+        if title == "General":
+            self.trigger_header_settings.detach()  # its page is rebuilt; a focus-loss apply would undo the reset
         self._flush_pending()
         before = settings_snapshot.snapshot_settings(settings_snapshot.ALL_DIALOG_KEYS)
         settings_snapshot.reset_settings(settings_snapshot.reset_keys(title))
@@ -404,6 +409,9 @@ class _SettingsDialogApplyMixin:
         self._window.map_view.apply_ruler_label_font()
         self._window.map_view.apply_distance_tick_font()
 
+    def _apply_distance_ticks_behind_terrain(self) -> None:
+        self._window.map_view.apply_distance_ticks_behind_terrain()
+
     def _apply_stack_badge_position(self) -> None:
         self._window.map_view.set_stack_badge_position(settings.get_stack_badge_position())
 
@@ -420,6 +428,9 @@ class _SettingsDialogApplyMixin:
         view = self._window.map_view
         blend, thickness = settings.get_grid_blend(), settings.get_grid_thickness()
         self._window._apply_grid_change(lambda: view.set_grid_appearance(blend, thickness))
+
+    def _apply_trigger_section_headers(self) -> None:
+        self._window.apply_divider_rule(quiet=self._quiet_appliers)
 
     def _apply_trigger_status(self) -> None:
         self._window.trigger_panel.apply_status_style()

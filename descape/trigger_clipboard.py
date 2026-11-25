@@ -37,9 +37,12 @@ caller captures it first and repairs it through the setter afterwards (see
 trigger_model.display_order_with_block_inserted()).
 
 Pasting into another document (GH #3): copy in A, open B, paste. The caller
-gates this on an equal scenario_version. A block remembers the document it came
-from, and a paste whose doc_id differs applies a policy per field class, keyed
-on the version vocabulary's presentation rather than on attribute names:
+gates this on an equal scenario_version, or one pair scenario_convert's step
+table covers (GH #307): a 1.58 block into a 1.59 scenario, each pasted
+condition taking the destination's default for the field 1.59 added. A block
+remembers the document it came from, and a paste whose doc_id differs, or that
+crosses versions, applies a policy per field class, keyed on the version
+vocabulary's presentation rather than on attribute names:
 
 - trigger links (TriggerId): relinked inside the block, -1 outside it, as above;
 - placed units (Unit, Unit[]): cleared to the type's default, as the in-game
@@ -69,7 +72,7 @@ from typing import Any
 
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
-from . import game_dataset, library_compat, trigger_fields, trigger_organize
+from . import game_dataset, library_compat, scenario_convert, trigger_fields, trigger_organize
 from .trigger_model import entry_display_order, entry_order_after_insert, set_entry_order
 
 COPY_SUFFIX = trigger_organize.COPY_SUFFIX
@@ -286,15 +289,36 @@ def _relink_inbound(manager: Any, block: TriggerBlock, before_len: int) -> tuple
     return relinked, skipped
 
 
-def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "") -> PasteResult:
+def _upgrade_fields(block: TriggerBlock | EntryBlock, scenario_version: str) -> dict[str, Any]:
+    """The condition fields, with the destination's defaults, a block of another version needs
+    in a `scenario_version` document. Raises, before anything is pasted, for a pair no step covers."""
+    if not scenario_version or scenario_version == block.scenario_version:
+        return {}
+    fields = scenario_convert.paste_upgrade_fields(block.scenario_version, scenario_version)
+    if fields is None:
+        raise ValueError(f"A block copied from a {block.scenario_version} scenario does not paste into a {scenario_version} one.")
+    defaults = library_compat.load_vocabulary(scenario_version).conditions[0].default_attributes
+    return {name: defaults[name] for name in fields}
+
+
+def _upgrade(conditions: Sequence, fields: dict[str, Any]) -> None:
+    # Overwritten, never filled when missing: a 1.58 condition can carry None for a field 1.58 lacks.
+    for condition in conditions:
+        for name, value in fields.items():
+            setattr(condition, name, value)
+
+
+def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "", scenario_version: str = "") -> PasteResult:
     """Append a copy of `block` to `manager`. The new triggers, in block order,
     occupy list indices len-before .. len-after - 1: the append renumbers
     nothing.
 
     One import_triggers(index=-1) call. Any other index routes through
     move_triggers() and renumbers every id. A `doc_id` other than the block's
-    source applies the cross-document policy in the module docstring.
+    source applies the cross-document policy in the module docstring, as does a
+    destination `scenario_version` other than the block's.
     """
+    fields = _upgrade_fields(block, scenario_version)
     before_len = len(manager.triggers)
     with warnings.catch_warnings():
         # Fires once per outside reference, exactly the case the relink below
@@ -323,7 +347,8 @@ def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "") -> PasteR
     for trigger in pasted if not block.from_cut else ():
         trigger.name = trigger_organize.copied_name(trigger.name or "")
 
-    if block.source_doc_id == doc_id:
+    _upgrade([c for t in pasted for c in t.conditions], fields)
+    if block.source_doc_id == doc_id and not fields:
         relinked, skipped = _relink_inbound(manager, block, before_len)
         return PasteResult(
             pasted, cleared_trigger_links=cleared_links, relinked_inbound=relinked, skipped_inbound=skipped
@@ -404,7 +429,7 @@ def copy_entries(
 
 
 def paste_entries(
-    manager: Any, trigger_index: int, block: EntryBlock, anchor: tuple | None = None, *, doc_id: str = ""
+    manager: Any, trigger_index: int, block: EntryBlock, anchor: tuple | None = None, *, doc_id: str = "", scenario_version: str = ""
 ) -> EntryPasteResult:
     """Insert a copy of `block` into trigger `trigger_index`: conditions after
     `anchor` when it is a ("condition", index) ref, else at the end of the
@@ -415,10 +440,12 @@ def paste_entries(
     "After" holds in both orders (GH #213): the list insert is at the
     anchor's index + 1, and the display order puts the block below the
     anchor's display slot, so the paste shows below the clicked row. The
-    library's own heal would list a mid-list insert last and reorder the rest."""
+    library's own heal would list a mid-list insert last and reorder the rest.
+    A destination `scenario_version` is handled as paste_into()'s."""
+    fields = _upgrade_fields(block, scenario_version)
     trigger = manager.triggers[trigger_index]
     position = {id(t): index for index, t in enumerate(manager.triggers)}
-    cross = block.source_doc_id != doc_id
+    cross = block.source_doc_id != doc_id or bool(fields)
     pasted: dict = {"condition": [], "effect": []}
     refs = []
     for kind, source, entries in (
@@ -442,6 +469,7 @@ def paste_entries(
         index = None if cross else position.get(id(target))
         pasted[kind][pos].trigger_id = -1 if index is None else index
         cleared_links += index is None
+    _upgrade(pasted["condition"], fields)
     if not cross:
         return EntryPasteResult(refs, cleared_trigger_links=cleared_links)
     cleared_units, named, conflicts = _cross_document_fixups(

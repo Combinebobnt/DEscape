@@ -33,7 +33,7 @@ from PyQt5.QtWidgets import (
 from descape import autosave
 
 
-def _size_text(size: int) -> str:
+def size_text(size: int) -> str:
     return f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f} MB"
 
 
@@ -82,7 +82,7 @@ class RecoverAutosaveDialog(QDialog):
             item = QTreeWidgetItem([
                 label,
                 datetime.fromtimestamp(entry.saved_at).strftime("%Y-%m-%d %H:%M:%S"),
-                _size_text(entry.size),
+                size_text(entry.size),
             ])
             item.setData(0, Qt.UserRole, entry)
             self.tree.addTopLevelItem(item)

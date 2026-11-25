@@ -537,3 +537,171 @@ def test_a_garrisoned_unit_is_unpickable_until_the_toggle_is_on() -> None:
         assert any(e.unit is occupant for e in mv._unit_index.entries)
     finally:
         conftest.close_window(window)
+
+
+# --- Show Inactive Units (Unit State) -----------------------------------
+
+_REMOVE = 7  # Unit State "Remove"
+
+
+def test_show_inactive_ships_checked_and_reaches_the_cache_and_summary() -> None:
+    window = conftest.blank_window()
+    try:
+        action = window.show_inactive_action
+        assert action.isChecked()
+        assert action.text() == "Show Inactive Units"
+        assert "Unit State" in action.toolTip() and "faded" in action.toolTip()
+        action.setChecked(False)
+        assert window._unit_filter == app_default(show_inactive=False)
+        assert window._cache.unit_filter == app_default(show_inactive=False)
+        assert "inactive units hidden" in window._filter_summary()
+        action.setChecked(True)
+        assert "inactive units hidden" not in window._filter_summary()
+    finally:
+        conftest.close_window(window)
+
+
+def test_show_all_and_hide_all_cover_show_inactive() -> None:
+    window = conftest.blank_window()
+    try:
+        window.filter_hide_all_action.trigger()
+        assert not window.show_inactive_action.isChecked()
+        window.filter_show_all_action.trigger()
+        assert window.show_inactive_action.isChecked()
+        assert window._unit_filter.is_default
+        for action in (window.filter_show_all_action, window.filter_hide_all_action):
+            assert "Inactive Units" in action.toolTip()
+    finally:
+        conftest.close_window(window)
+
+
+def test_show_inactive_is_bound_as_a_rebindable_action() -> None:
+    window = conftest.blank_window()
+    try:
+        assert window._keybind_actions["filter_show_inactive"] is window.show_inactive_action
+    finally:
+        conftest.close_window(window)
+
+
+def _set_state(window, unit, value: int) -> None:
+    """The inspector's own Unit State pick on `unit`, selected alone."""
+    from descape import unit_fields, unit_pick
+
+    window._selection = [unit_pick.unit_key(1, unit)]
+    window._refresh_selection_view()
+    window._on_unit_field_changed(unit_fields.FIELDS_BY_ID["status"], value)
+
+
+def _around(window, pos, reach: int = 48):
+    x, y = int(pos.x()), int(pos.y())
+    return window._cache.render_rect(x - reach, y - reach, x + reach, y + reach)
+
+
+def _colour_px(img, colour) -> int:
+    import numpy as np
+
+    return int(np.count_nonzero(np.all(img == np.array(colour, dtype=np.uint8), axis=2)))
+
+
+@pytest.mark.parametrize("style", ["Flat", "Stepped"])
+def test_a_state_edit_in_the_inspector_repaints_the_mark_and_undo_restores_it(style: str) -> None:
+    from descape import unit_state
+
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        window.show_sprites_action.setChecked(False)  # the coloured marks, with or without an install
+        window.mode_combo.setCurrentText("Units")
+        house, pos = _place_wall(window, _HOUSE_CONST)
+        own = window.scenario.player_colors[1]
+        before = _around(window, pos).copy()
+        assert _colour_px(before, own) > 0, "the house mark is not in the crop"
+
+        _set_state(window, house, _REMOVE)
+        assert house.status == _REMOVE
+        after = _around(window, pos)
+        assert _colour_px(after, own) == 0
+        assert _colour_px(after, unit_state.ghost_mark(own)) == _colour_px(before, own)
+        assert window.map_view.pick_unit_at(pos) is not None, "a faded unit stays pickable"
+
+        window.undo()
+        assert house.status == unit_state.ALIVE
+        assert (_around(window, pos) == before).all()
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_hidden_inactive_unit_is_unpickable_and_the_toggle_brings_it_back() -> None:
+    window = conftest.blank_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        house, pos = _place_wall(window, _HOUSE_CONST)
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Set Unit State", [1]):
+            model.set_status(house, _REMOVE)
+        mv = window.map_view
+        assert mv.pick_unit_at(pos) is not None, "the faded house was unpickable to begin with"
+
+        window.show_inactive_action.setChecked(False)
+        assert mv.pick_unit_at(pos) is None
+        assert all(e.unit is not house for e in mv._unit_index.entries)
+        window.show_inactive_action.setChecked(True)
+        assert mv.pick_unit_at(pos) is not None
+    finally:
+        conftest.close_window(window)
+
+
+def test_setting_a_selected_unit_inactive_with_the_filter_off_drops_it_from_the_selection() -> None:
+    """The garrison case's twin: the edit hides the unit, so it leaves the
+    pick index and the selection rather than staying selectable while unseen."""
+    window = conftest.blank_window()
+    try:
+        window.mode_combo.setCurrentText("Units")
+        window.show_sprites_action.setChecked(False)
+        house, pos = _place_wall(window, _HOUSE_CONST)
+        own = window.scenario.player_colors[1]
+        assert _colour_px(_around(window, pos), own) > 0, "the house mark is not in the crop"
+        window.show_inactive_action.setChecked(False)
+        mv = window.map_view
+        assert mv.pick_unit_at(pos) is not None
+
+        _set_state(window, house, _REMOVE)
+        assert house.status == _REMOVE
+        assert window._selection == []
+        assert mv.pick_unit_at(pos) is None
+        assert all(e.unit is not house for e in mv._unit_index.entries)
+        assert _colour_px(_around(window, pos), own) == 0, "the hidden house still paints"
+
+        window.undo()
+        assert mv.pick_unit_at(pos) is not None, "undo brings it back into the index"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("sprites", [False, True], ids=["marks", "sprites"])
+@pytest.mark.parametrize("style", ["Flat", "Stepped"])
+def test_a_state_edit_that_hides_a_unit_repaints_as_a_rebuild_would(style: str, sprites: bool) -> None:
+    """The splice of an edit that flips only the filter verdict: the hidden
+    unit's pixels must go, exactly as a wholesale rebuild draws the map, and
+    come back on undo."""
+    window = conftest.blank_window()
+    try:
+        window.terrain_style_combo.setCurrentText(style)
+        if sprites and not window.show_sprites_action.isEnabled():
+            pytest.skip("sprites need an AoE2:DE install (AOE2DE_INSTALL_PATH)")
+        window.show_sprites_action.setChecked(sprites)
+        window.mode_combo.setCurrentText("Units")
+        window.show_inactive_action.setChecked(False)
+        house, pos = _place_wall(window, _HOUSE_CONST)
+        before = _around(window, pos, 96).copy()
+
+        _set_state(window, house, _REMOVE)
+        spliced = _around(window, pos, 96).copy()
+        assert not (spliced == before).all(), "the edit repainted nothing"
+        window._render_current(reset_view=False)
+        assert (_around(window, pos, 96) == spliced).all(), "the splice left pixels a rebuild does not draw"
+
+        window.undo()
+        assert (_around(window, pos, 96) == before).all()
+    finally:
+        conftest.close_window(window)

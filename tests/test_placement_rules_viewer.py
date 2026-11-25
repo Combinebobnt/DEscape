@@ -4,8 +4,8 @@ GH #174), through a real offscreen ViewerWindow.
 The rules themselves are tested headless in test_placement_rules.py. This is
 the wiring: which paths ask (a Place Unit click, a single drag, a group
 drag), what a refusal changes (nothing, and no undo record), what Free
-placement and Off-grid each lift, and which paths never ask (a wall run, an
-arrow nudge).
+placement and Off-grid each lift, which path asks the terrain rule alone (a
+wall run, TASK-328) and which never asks (an arrow nudge).
 
 Flat throughout, on the units_120x120 fixture. Its terrain is all Grass, so
 a test that needs water writes the terrain id straight onto the tile: the
@@ -359,21 +359,25 @@ def test_a_gate_is_still_blocked_by_what_is_not_a_wall_under_it() -> None:
         _close(window)
 
 
-def test_a_wall_run_never_asks_the_rules() -> None:
-    """Out of scope by decision: a run crosses water and a standing unit as it did before."""
+def test_a_wall_run_asks_the_terrain_rule_only() -> None:
+    """TASK-328: a run gaps where the wall can't stand, and the object rule
+    stays "Walls skip occupied tiles"'s, so with it off the run still lands on
+    a standing villager's tile."""
     window = _window()
     try:
         run = [(x, 70) for x in range(60, 66)]
-        _set_terrain(window, run, WATER_DEEP)
-        _add_units(window, [(VILLAGER, 63.5, 70.5)])
-        assert placement_rules.refusal(window.scenario, STONE_WALL, 63.5, 70.5) is not None
+        _set_terrain(window, [(62, 70), (63, 70)], WATER_DEEP)
+        _add_units(window, [(VILLAGER, 64.5, 70.5)])
+        assert placement_rules.refusal(window.scenario, STONE_WALL, 64.5, 70.5) is not None
+        assert not window.skip_occupied_check.isChecked()
         _arm(window, STONE_WALL)
         before = _unit_count(window)
 
         window.on_shape_commit(run)
 
-        assert _unit_count(window) == before + len(run)
-        assert _last(window).startswith("Placed 6 x Stone Wall")
+        assert _unit_count(window) == before + 4
+        assert sorted(int(u.x) for u in _walls_on(window, set(run))) == [60, 61, 64, 65]
+        assert _last(window) == "Placed 4 x Stone Wall for Player 1 (2 tiles skipped: Stone Wall can't stand on Water Deep)"
     finally:
         _close(window)
 
@@ -683,5 +687,196 @@ def test_a_group_dropped_onto_bad_terrain_builds_one_message(monkeypatch) -> Non
             f"Move: 4 of 4 units can't go there (first: Villager Male can't stand on Water Deep). {_GROUP_HINT}"
         )
         assert one_message >= 1 and len(names) == one_message
+    finally:
+        _close(window)
+
+
+# --- wall runs and the terrain rule (TASK-328) ------------------------------------
+
+SEA_WALL = 788  # its row refuses land
+_WALL_HINT = "Tick Free placement to place it anyway."
+
+
+def test_free_placement_lets_a_wall_run_onto_water() -> None:
+    window = _window()
+    try:
+        run = [(x, 70) for x in range(60, 66)]
+        _set_terrain(window, run[1:3], WATER_DEEP)
+        _arm(window, STONE_WALL)
+        window.unrestricted_check.setChecked(True)
+        before = _unit_count(window)
+
+        window.on_shape_commit(run)
+
+        assert _unit_count(window) == before + 6
+        assert _last(window) == "Placed 6 x Stone Wall for Player 1"
+    finally:
+        _close(window)
+
+
+def test_an_all_water_run_adds_nothing_and_names_the_terrain() -> None:
+    window = _window()
+    try:
+        run = [(x, 70) for x in range(60, 66)]
+        _set_terrain(window, run, WATER_DEEP)
+        _arm(window, STONE_WALL)
+        before = _unit_count(window)
+
+        window.on_shape_commit(run)
+
+        assert _unit_count(window) == before
+        assert _records(window) == 0 and not window.undo_action.isEnabled()
+        assert _last(window) == f"Place Unit: Stone Wall can't stand on Water Deep (6 tiles). {_WALL_HINT}"
+    finally:
+        _close(window)
+
+
+def test_a_run_refused_and_occupied_everywhere_names_both_and_hints() -> None:
+    window = _window()
+    try:
+        run = [(x, 70) for x in range(60, 63)]
+        _set_terrain(window, [(60, 70)], WATER_DEEP)
+        _add_units(window, [(ARCHER, 61.5, 70.5), (ARCHER, 62.5, 70.5)])
+        window.skip_occupied_check.setChecked(True)
+        _arm(window, STONE_WALL)
+        before, records = _unit_count(window), _records(window)
+
+        window.on_shape_commit(run)
+
+        assert (_unit_count(window), _records(window)) == (before, records)
+        assert _last(window) == (
+            f"Place Unit: those 2 tiles are occupied; Stone Wall can't stand on Water Deep (1 tiles). {_WALL_HINT}"
+        )
+    finally:
+        _close(window)
+
+
+def test_a_sea_wall_run_places_on_water_and_gaps_on_land() -> None:
+    window = _window()
+    try:
+        run = [(x, 70) for x in range(60, 66)]
+        _set_terrain(window, run[2:4], WATER_DEEP)
+        _arm(window, SEA_WALL)
+        before = _unit_count(window)
+
+        window.on_shape_commit(run)
+
+        assert _unit_count(window) == before + 2
+        sea_walls = [u for u in window.scenario.unit_manager.units[PLAYER] if u.unit_const == SEA_WALL]
+        assert sorted((int(u.x), int(u.y)) for u in sea_walls) == run[2:4]
+        name = _name(SEA_WALL)
+        assert _last(window).startswith(f"Placed 2 x {name} for Player 1 (4 tiles skipped: {name} can't stand on ")
+    finally:
+        _close(window)
+
+
+def _shown_shape_window(monkeypatch, const: int, tool: str, kind: str | None = None):
+    """A shown window with `tool` armed and `const` picked. mouseButtons is held
+    for the synthetic press, so a stray Leave cannot cancel it (TASK-406)."""
+    from PyQt5.QtWidgets import QApplication
+
+    from descape.tool_option_bindings import find_data
+
+    monkeypatch.setattr(QApplication, "mouseButtons", staticmethod(lambda: Qt.LeftButton))
+    window = _window()
+    _arm(window, const)
+    getattr(window, f"{tool}_action").setChecked(True)
+    assert window._current_tool == tool
+    if kind is not None:
+        window.unit_shape_kind_combo.setCurrentIndex(find_data(window.unit_shape_kind_combo, kind))
+    window.show()
+    QApplication.processEvents()
+    return window
+
+
+def _press_to(window, a, b) -> None:
+    """A press at tile `a` and a move to `b`, no release: the drag stays live."""
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtGui import QMouseEvent
+
+    view = window.map_view
+    for kind, tile, button in ((QEvent.MouseButtonPress, a, Qt.LeftButton), (QEvent.MouseMove, b, Qt.NoButton)):
+        pos = conftest.polygon_viewport_pos(view, *tile)
+        event = QMouseEvent(kind, pos, button, Qt.LeftButton, Qt.NoModifier)
+        (view.mousePressEvent if kind == QEvent.MouseButtonPress else view.mouseMoveEvent)(event)
+    assert view._shape_anchor == a, "the press started no drag"
+
+
+def _committed_shape(window, a, b):
+    """The tiles and latch a Unit Line / Unit Shape drag from `a` to `b` would
+    commit, committed through on_shape_commit() directly (TASK-444)."""
+    view = window.map_view
+    _press_to(window, a, b)
+    tiles, latch = view._shape_tiles(preview=False), view._shape_latch
+    view._cancel_shape()
+    assert latch is not None and tiles
+    return tiles, latch
+
+
+@pytest.mark.parametrize("kind", ["rectangle", "ellipse"])
+def test_a_unit_shape_wall_outline_gaps_on_water(monkeypatch, kind) -> None:
+    window = _shown_shape_window(monkeypatch, STONE_WALL, "unit_shape", kind)
+    try:
+        water = {(x, y) for x in range(40, 44) for y in range(40, 47)}
+        _set_terrain(window, water, WATER_DEEP)
+        tiles, latch = _committed_shape(window, (40, 40), (48, 46))
+        on_water = [tile for tile in tiles if tile in water]
+        assert on_water and len(on_water) < len(tiles)
+        before = _unit_count(window)
+
+        window.on_shape_commit(tiles, latch)
+
+        placed = {(int(u.x), int(u.y)) for u in _walls_on(window, set(tiles))}
+        assert placed == set(tiles) - water
+        assert _unit_count(window) == before + len(placed)
+        assert _last(window).endswith(f"({len(on_water)} tiles skipped: Stone Wall can't stand on Water Deep)")
+    finally:
+        _close(window)
+
+
+def test_a_unit_shape_wall_follows_its_latched_rules_not_the_box_at_release(monkeypatch) -> None:
+    window = _shown_shape_window(monkeypatch, STONE_WALL, "unit_shape", "rectangle")
+    try:
+        water = {(x, y) for x in range(40, 44) for y in range(40, 47)}
+        _set_terrain(window, water, WATER_DEEP)
+        window.unrestricted_check.setChecked(True)
+        tiles, latch = _committed_shape(window, (40, 40), (48, 46))
+        assert latch.rules is False
+        window.unrestricted_check.setChecked(False)
+
+        window.on_shape_commit(tiles, latch)
+        assert {(int(u.x), int(u.y)) for u in _walls_on(window, set(tiles))} == set(tiles)
+
+        window.unrestricted_check.setChecked(False)
+        strict, strict_latch = _committed_shape(window, (60, 40), (68, 46))
+        _set_terrain(window, strict, WATER_DEEP)
+        window.unrestricted_check.setChecked(True)
+        before = _unit_count(window)
+        window.on_shape_commit(strict, strict_latch)
+        assert _unit_count(window) == before
+        assert _last(window).startswith("Unit Shape: Stone Wall can't stand on Water Deep")
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("tool, kind", [("place_unit", None), ("unit_shape", "rectangle")])
+def test_the_wall_drag_preview_leaves_water_out_unless_free_placement_is_ticked(monkeypatch, tool, kind) -> None:
+    window = _shown_shape_window(monkeypatch, STONE_WALL, tool, kind)
+    try:
+        view = window.map_view
+        water = {(44, 50), (45, 50)}
+        _set_terrain(window, water, WATER_DEEP)
+        b = (49, 50) if tool == "place_unit" else (49, 54)
+
+        _press_to(window, (40, 50), b)
+        full = view._shape_tiles(preview=False)
+        assert water <= set(full)
+        assert view._shape_tiles(preview=True) == [tile for tile in full if tile not in water]
+        view._cancel_shape()
+
+        window.unrestricted_check.setChecked(True)
+        _press_to(window, (40, 50), b)
+        assert view._shape_tiles(preview=True) == full
+        view._cancel_shape()
     finally:
         _close(window)

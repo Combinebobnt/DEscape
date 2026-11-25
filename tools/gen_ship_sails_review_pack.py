@@ -12,7 +12,8 @@ The PACK_ID and every frame/check name are neutral on purpose: frame paths
 appear in REVIEW.md, and nothing a reviewer reads may name the subject.
 
 Frames a-e are Galleon, War Galley, Galley, Transport Ship and Fire Ship, four
-facings each, one owner colour per frame. Frame f is the control, the Fishing
+facings each, a different owner per frame; q3 judges only that coloured
+markings are present, never which colour. Frame f is the control, the Fishing
 Ship, a single graphic no inject may touch. Frame g is the three butterflies
 on neighbouring sand tiles. Frame h is three consecutive frames of one
 butterfly loop read through descape.particle_art, the middle one stored
@@ -69,15 +70,14 @@ WATER, SAND = 22, 14
 # A 2x2 block of boats, 256 px apart across and down at TILE_PX.
 _BOAT_TILES = [(58, 58), (61, 61), (54, 62), (57, 65)]
 _FACINGS = (0.0, math.pi / 2, math.pi, 3 * math.pi / 2)
-# frame id -> (ship const, owning player, that player's colour as the caption states it).
-# No blue or cyan owner: the water is blue.
+# frame id -> (ship const, owning player). No blue or cyan owner: the water is blue.
 _BOATS = {
-    "a": (GALLEON, 2, "red"),
-    "b": (WAR_GALLEY, 4, "yellow"),
-    "c": (GALLEY, 3, "green"),
-    "d": (TRANSPORT, 8, "orange"),
-    "e": (FIRE_SHIP, 6, "purple"),
-    "f": (FISHING_SHIP, 2, "red"),
+    "a": (GALLEON, 2),
+    "b": (WAR_GALLEY, 4),
+    "c": (GALLEY, 3),
+    "d": (TRANSPORT, 8),
+    "e": (FIRE_SHIP, 6),
+    "f": (FISHING_SHIP, 2),
 }
 SAIL_FRAMES = ("a", "b", "c", "d", "e")
 CONTROL_FRAME = "f"
@@ -115,7 +115,7 @@ def _scenario(units: list[tuple[int, int, float, float, float]], ground: int):
 
 
 def _boat_scene(frame_id: str):
-    const, player, _colour = _BOATS[frame_id]
+    const, player = _BOATS[frame_id]
     return _scenario(
         [(player, const, tx + 0.5, ty + 0.5, facing)
          for (tx, ty), facing in zip(_BOAT_TILES, _FACINGS, strict=True)],
@@ -311,12 +311,9 @@ def _sail_report(images: dict[str, np.ndarray], bare: dict[str, np.ndarray]) -> 
 
 
 def _spec() -> rp.PackSpec:
-    boats = "Four boats of one kind on open water, each facing a different way. They belong to the {} player."
+    boats = "Four boats of one kind on open water, each facing a different way."
     frames = (
-        *(
-            rp.Frame(fid, f"{fid}.png", "raw", caption=boats.format(colour))
-            for fid, (_const, _player, colour) in _BOATS.items()
-        ),
+        *(rp.Frame(fid, f"{fid}.png", "raw", caption=boats) for fid in _BOATS),
         rp.Frame("g", "g.png", "raw", caption="A patch of sandy ground, angled view."),
         rp.Frame("h", "h.png", "raw", caption="Three panels: three consecutive moments of one small animation."),
         rp.Frame("i", "i.png", "raw", caption="Open water, same framing and zoom as the boat frames."),
@@ -355,15 +352,13 @@ def _spec() -> rp.PackSpec:
         rp.Check(
             id="q3",
             question=(
-                "Each frame's caption names the colour of the player who owns its boats. First, for each "
-                "frame, name any strongly coloured marking painted on the boats (an emblem on a sail, a "
-                "flag, coloured trim), ignoring the water, bare wood and plain cream cloth. Then: MATCH if "
-                "in every frame the boats carry markings in that frame's stated colour, ABSENT if in at "
-                "least one frame the boats show no coloured marking at all, OTHER if some frame's markings "
-                "are clearly a different colour from the one its caption states."
+                "First, for each frame, name any strongly coloured marking painted on the boats (an emblem "
+                "on a sail, a flag, coloured trim), ignoring the water, bare wood and plain cream cloth. "
+                "Then: MARKED if in every frame the boats carry such a marking, ABSENT if in at least one "
+                "frame the boats show no coloured marking at all."
             ),
             frames=(*SAIL_FRAMES, CONTROL_FRAME),
-            answers=("MATCH", "ABSENT", "OTHER", "CANNOT-TELL"),
+            answers=("MARKED", "ABSENT", "CANNOT-TELL"),
         ),
         rp.Check(
             id="q4",

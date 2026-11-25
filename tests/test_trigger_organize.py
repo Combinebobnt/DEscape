@@ -15,17 +15,21 @@ import pytest
 
 from descape.trigger_organize import (
     DEFAULT_DIVIDER_FORMAT,
+    DEFAULT_DIVIDER_RULE,
     UNNAMED_SECTION,
     DividerFormat,
+    DividerRule,
     Section,
     chain_segments,
     copied_name,
     divider_format,
+    divider_rule,
     divider_title_error,
     format_divider,
     is_divider,
     leading_divider_run,
     parse_tag,
+    prefix_error,
     retag_in_chain,
     retag_name,
     retitle_divider,
@@ -34,6 +38,7 @@ from descape.trigger_organize import (
     section_key,
     section_label,
     sections,
+    set_divider_rule,
     split_divider,
     split_tag,
     strip_tag,
@@ -563,3 +568,121 @@ def test_split_tag_agrees_with_parse_tag_across_the_corpus(scenario_path) -> Non
             continue
         assert parts[1] == parse_tag(name), name
         assert "".join(parts) == name
+
+
+# -- the user's section-header rule (TASK-486) ----------------------------------
+
+_RULE_SHAPES = {"bare_rule": "------", "leading_rule": "----- ambush-setup", "tilde_wrap": "~P2~"}
+
+
+def _rule(prefixes=(), **toggles) -> None:
+    set_divider_rule(DividerRule.with_prefixes(prefixes, **toggles))
+
+
+def test_each_toggle_rejects_only_its_own_shape():
+    failures = []
+    for off in _RULE_SHAPES:
+        _rule(**{off: False})
+        for field, name in _RULE_SHAPES.items():
+            if is_divider(name) != (field != off):
+                failures.append((off, name))
+        if not is_divider("--- Setup ---"):
+            failures.append((off, "--- Setup ---"))
+    assert not failures
+
+
+def test_two_sided_stays_a_divider_with_every_toggle_off():
+    _rule(bare_rule=False, leading_rule=False, tilde_wrap=False)
+    assert is_divider("--- Setup ---")
+    assert split_divider("--- Setup ---") == ("--- ", "Setup", " ---")
+    assert not any(is_divider(name) for name in _RULE_SHAPES.values())
+
+
+def test_prefix_headers_match_and_cut():
+    _rule((">>", "//", "-->", ">>>"))
+    assert split_divider(">> Setup") == (">> ", "Setup", "")
+    assert split_divider("// Setup") == ("// ", "Setup", "")
+    assert split_divider("--> Attack") == ("--> ", "Attack", "")
+    assert split_divider(">>> x") == (">>> ", "x", "")
+    assert split_divider("  >> Setup  ") == ("  >> ", "Setup", "  ")
+    for name in (">>", ">> ---", "Setup >>", ">>   "):
+        assert not is_divider(name), name
+
+
+def test_prefixes_are_case_sensitive():
+    _rule(("section:",))
+    assert not is_divider("Section: x")
+    assert is_divider("section: x")
+
+
+def test_builtin_shapes_keep_their_cut_before_a_prefix():
+    _rule(("##region",))
+    assert split_divider("##region Setup") == ("##", "region Setup", "")
+    _rule(("##region",), leading_rule=False)
+    assert split_divider("##region Setup") == ("##region ", "Setup", "")
+
+
+@pytest.mark.parametrize("token", ["", " ", "a b", "x" * 17, "[", "(", "<", "--", "##", "~"])
+def test_prefix_error_refuses(token):
+    assert prefix_error(token)
+
+
+@pytest.mark.parametrize("token", ["<<", "[[", "#region", "-->", "x" * 16])
+def test_prefix_error_accepts(token):
+    assert prefix_error(token) == ""
+
+
+def test_prefix_header_keeps_its_prefix_through_rewriters():
+    _rule((">>",))
+    assert retitle_divider(">> Setup", "Combat") == ">> Combat"
+    assert copied_name(">> Setup") == ">> Setup (copy)"
+    assert divider_title_error(">> Setup", "Setup") == ""
+    assert divider_format([">> Setup", ">> Other"]) == DEFAULT_DIVIDER_FORMAT
+
+
+def test_a_copy_keeps_its_sources_header_status_under_every_rule():
+    names = ["------", "----- B", "~P2~", "--- A ---", ">>", ">> Setup", "Plain", "--"]
+    failures = []
+    for toggles in ({}, {"bare_rule": False}, {"leading_rule": False}, {"tilde_wrap": False}):
+        for prefixes in ((), (">>",)):
+            _rule(prefixes, **toggles)
+            failures += [(toggles, prefixes, n) for n in names if is_divider(copied_name(n)) != is_divider(n)]
+    assert not failures
+
+
+def test_sections_partition_at_prefix_headers():
+    _rule((">>",))
+    parts = sections([">> A", "a1", ">> B", "b1"], [0, 1, 2, 3])
+    assert [(s.header_index, s.member_indices) for s in parts] == [(0, (1,)), (2, (3,))]
+
+
+def test_set_divider_rule_refuses_a_bad_rule_and_keeps_the_old_one():
+    for prefixes in (("[",), tuple(f"p{i}" for i in range(9)), (">>", ">>")):
+        with pytest.raises(ValueError):
+            _rule(prefixes)
+    assert divider_rule() == DEFAULT_DIVIDER_RULE
+
+
+def test_equal_rules_compare_equal_whatever_the_prefix_order():
+    assert DividerRule.with_prefixes((">>", ">>>")) == DividerRule.with_prefixes((">>>", ">>"))
+    assert DividerRule.with_prefixes((">>", ">>>")).prefixes == (">>>", ">>")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, DEFAULT_DIVIDER_RULE),
+        ([1, 2], DEFAULT_DIVIDER_RULE),
+        ({"bare_rule": "no", "leading_rule": False}, DividerRule(leading_rule=False)),
+        ({"prefixes": [">>", 7, "[", ">>", "//"]}, DividerRule.with_prefixes((">>", "//"))),
+        ({"prefixes": [f"p{i}" for i in range(10)]}, DividerRule.with_prefixes([f"p{i}" for i in range(8)])),
+        ({"prefixes": ">>"}, DEFAULT_DIVIDER_RULE),
+    ],
+)
+def test_from_config_never_raises_and_drops_what_it_cannot_use(value, expected):
+    assert DividerRule.from_config(value) == expected
+
+
+def test_to_config_round_trips():
+    rule = DividerRule.with_prefixes((">>", "//"), bare_rule=False, tilde_wrap=False)
+    assert DividerRule.from_config(rule.to_config()) == rule

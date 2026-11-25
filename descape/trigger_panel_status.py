@@ -114,6 +114,10 @@ class _TriggerPanelStatusMixin:
         self._status_memo_vocabulary = None
         self._status_memo_count = -1
 
+    def invalidate_statuses(self) -> None:
+        # A section-header rule change re-reads unedited triggers' statuses, which the memo assumes cannot change.
+        self._reset_statuses()
+
     def _status_context(self, manager) -> trigger_status.StatusContext:
         return self.status_context(self._vocabulary, frozenset(range(len(manager.triggers))))
 

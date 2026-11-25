@@ -3,14 +3,11 @@ gate and an archer together and press '.' once -- both must turn the same
 screen direction").
 
 **This pins the LINK, not ANGLE_DIRECTION itself.** unit_sprites.
-ANGLE_DIRECTION == 1 still rests on the live-window observation recorded at
-unit_sprites.py:117-126 ("AoE2's rotation field grows CLOCKWISE on screen"),
-reproducible by nothing in this suite -- re-deriving it from real sprite
-pixels needs a skew/mirror-pair statistic a principal-axis measurement
-(tools/verify_flat_facing.py's own PCA) cannot provide, and is scoped out as
-its own `[NEEDS DECISION]` TODO item rather than folded in here. A green run
-of this file is evidence that the archer and gate paths AGREE with each
-other, never independent evidence that either is correct in absolute terms.
+ANGLE_DIRECTION == 1 is pinned against the game by
+tests/test_ingame_angle_mapping.py, whose table is AoE2:DE's own reading of
+which stored frame each control rotation draws. A green run of this file is
+evidence that the archer and gate paths AGREE with each other, never
+independent evidence that either is correct in absolute terms.
 
 What IS pinned, from committed constants only: composing angle_index()'s own
 step direction and gate_orientation's own cycle order with iso_geometry's

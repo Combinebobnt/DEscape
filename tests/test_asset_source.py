@@ -90,6 +90,44 @@ def test_resource_string_uses_get_language_by_default(tmp_path) -> None:
         asset_source.set_install_path_override(None)
 
 
+def _write_paphos(install: Path, text: str, lang: str = "en") -> None:
+    (install / "resources" / lang / "strings" / "key-value" / "key-value-paphos-strings-utf8.txt").write_text(text, encoding="utf-8")
+
+
+def test_a_key_only_the_paphos_strings_file_holds_resolves(installed) -> None:
+    """The antiquity civs' names live in their own file beside the main one."""
+    _write_paphos(installed, '405052 "Bowman"\n')
+    asset_source.clear_install_caches()
+    assert asset_source.resource_string(405052) == "Bowman"
+    assert asset_source.resource_string(5164) == "Town Center"
+
+
+def test_a_language_folder_without_the_paphos_file_still_resolves_its_main_keys(installed) -> None:
+    _write_paphos(installed, '405052 "Bowman"\n')
+    de = installed / "resources" / "de" / "strings" / "key-value"
+    de.mkdir(parents=True)
+    (de / "key-value-strings-utf8.txt").write_text('5164 "Stadtzentrum"\n', encoding="utf-8")
+    asset_source.clear_install_caches()
+    assert asset_source.resource_string(5164, lang="de") == "Stadtzentrum"
+    assert asset_source.resource_string(405052, lang="de") is None
+
+
+def test_a_mod_copying_a_paphos_key_unchanged_renames_nothing(installed, tmp_path) -> None:
+    """GH #271's rule over every file of the game's own chain: an unchanged copy is no rename."""
+    from descape import game_dataset
+
+    _write_paphos(installed, '405052 "Bowman"\n405053 "Hoplite"\n')
+    mod_strings = tmp_path / "mod" / "resources" / "en" / "strings" / "key-value"
+    mod_strings.mkdir(parents=True)
+    (mod_strings / "key-value-strings-utf8.txt").write_text('405052 "Bowman"\n405053 "Phalanx"\n5164 "Town Center"\n', encoding="utf-8")
+    game_dataset.set_data_mod(game_dataset.DataModTables("paphos-copy", game_dataset.TABLES_DIR, tmp_path / "mod", "A mod"))
+    try:
+        assert asset_source.data_mod_string_ids() == {405052, 405053, 5164}
+        assert asset_source.data_mod_changed_string_ids() == {405053}
+    finally:
+        game_dataset.set_data_mod(None)
+
+
 @pytest.mark.usefixtures("_no_install_env")
 def test_set_install_path_override_invalidates_the_string_table_cache(tmp_path) -> None:
     """A key resolved under one install must not survive switching to a
@@ -704,3 +742,89 @@ def test_a_sized_blend_mask_equals_the_red_band_of_its_rgb_resize(tmp_path) -> N
                 assert np.array_equal(got, want), (name, size)
     finally:
         asset_source.set_install_path_override(None)
+
+
+# --- TASK-691: the angled (Stepped and Sloped) variant ---
+
+
+def _noisy_file(tid: int) -> Path:
+    """Overwrites tid's fixture file with noise, so a prefilter changes it."""
+    import numpy as np
+    from PIL import Image
+
+    path = asset_source.get_terrain_texture_path(tid)
+    noise = np.random.default_rng(691).integers(0, 256, (16, 16, 3), dtype=np.uint8)
+    Image.fromarray(noise).save(path, format="PNG")
+    return path
+
+
+def _prefiltered(sharp):
+    """ANGLED_PREFILTER by np.roll, independently of asset_source's padded slices."""
+    import numpy as np
+
+    (dr, dc), weights = asset_source.ANGLED_PREFILTER
+    half, total = len(weights) // 2, sum(weights)
+    acc = np.full(sharp.shape, total // 2, dtype=np.int64)
+    for i, weight in enumerate(weights):
+        k = i - half
+        acc += weight * np.roll(sharp, (-k * dr, -k * dc), axis=(0, 1)).astype(np.int64)
+    return (acc // total).astype(np.uint8)
+
+
+def test_the_angled_variant_is_the_sharp_texture_prefiltered_with_wrapped_edges(texture_install) -> None:
+    import numpy as np
+
+    _a, _b, other = texture_install
+    _noisy_file(other)
+    size = asset_source.terrain_texture_size(16)
+    sharp = asset_source.terrain_texture_at(other, size)
+    angled = asset_source.terrain_texture_at(other, size, angled=True)
+    assert np.array_equal(angled, _prefiltered(sharp)) and not np.array_equal(angled, sharp)
+    assert not angled.flags.writeable and angled.dtype == np.uint8
+    assert asset_source.terrain_texture_at(other, size, angled=True) is angled
+    assert asset_source.terrain_texture_at(other, size) is sharp, "the sharp get is its own entry"
+    assert asset_source.texture_cache_stats() == (2, sharp.nbytes + angled.nbytes)
+
+
+def test_a_stand_in_texture_is_never_prefiltered(_no_install_env, monkeypatch) -> None:
+    import numpy as np
+
+    arr = np.random.default_rng(0).integers(0, 256, (40, 40, 3), dtype=np.uint8)
+    monkeypatch.setattr(asset_source, "get_terrain_texture_path", lambda _tid: None)
+    monkeypatch.setattr(asset_source, "get_terrain_texture_array", lambda _tid: arr)
+    assert asset_source.terrain_texture_at(3, 40, angled=True) is arr
+
+
+def test_an_angled_prefetch_serves_the_angled_get_and_not_the_sharp_one(texture_install, pool, traced) -> None:
+    import numpy as np
+
+    _a, _b, other = texture_install
+    path = _noisy_file(other)
+    serial = asset_source._load_texture(path, REFERENCE_SIZE, True)[0]
+    assert asset_source.prefetch_terrain_textures([other], [REFERENCE_PX], angled=True) == 1
+    assert np.array_equal(asset_source.terrain_texture_at(other, REFERENCE_SIZE, angled=True), serial)
+    traced._drain_textures()
+    assert traced._textures_pending.files == 0, "the angled get loaded instead of taking the prefetch"
+    sharp = asset_source.get_terrain_texture_array(other)
+    traced._drain_textures()
+    assert traced._textures_pending.files == 1 and not np.array_equal(sharp, serial)
+
+
+def test_a_prefetch_drops_the_other_variants_untaken_loads_of_its_files(texture_install, one_thread, monkeypatch) -> None:
+    """A style switch must not strand the old variant's finished loads outside the cache budget."""
+    import threading
+
+    a, _b, other = texture_install
+    path = asset_source.get_terrain_texture_path(other)
+    release, started = threading.Event(), threading.Event()
+    _blocking_loader(monkeypatch, release, started)
+    assert asset_source.prefetch_terrain_textures([a], [REFERENCE_PX], angled=True) == 1
+    assert started.wait(10), "the pool never started the held load"
+    assert asset_source.prefetch_terrain_textures([other], [REFERENCE_PX, 16]) == 2
+    sharp = [f for key, (_gen, f) in asset_source._pending.items() if key[0] == path]
+    assert asset_source.prefetch_terrain_textures([other], [REFERENCE_PX], angled=True) == 1
+    release.set()
+    assert all(f.cancelled() for f in sharp)
+    assert [key for key in asset_source._pending if key[0] == path] == [(path, REFERENCE_SIZE, True)]
+    for _gen, future in list(asset_source._pending.values()):
+        future.result(timeout=10)

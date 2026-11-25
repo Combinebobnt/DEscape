@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from descape import trigger_clipboard
+import pytest
+
+from descape import library_compat, trigger_clipboard
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.trigger_model import set_entry_order
 from descape.trigger_organize import is_divider
@@ -557,3 +559,108 @@ def test_an_entry_paste_into_another_document_clears_units_and_names_variables(t
     task = [e for e in trigger.effects if e.effect_type == 12][-1]
     assert (list(task.selected_object_ids), task.location_object_reference) == ([], -1)
     assert [(v.variable_id, v.name) for v in reloaded.variables] == [(0, "fixture_var")]
+
+
+# -- GH #307: a 1.58 block into a 1.59 scenario --------------------------------
+
+
+def _v158_blocks(copy):
+    """Two blocks off the 1.58 fixture, both taken before any 1.59 load: one
+    from a fresh parse, whose conditions lack allow_in_fog, and one after a
+    Timer condition is added past depoison(), which carries None there (the
+    1.59 save rejects None, so the paste must overwrite, not fill)."""
+    source = _cross_source()
+    fresh = copy(source)
+    library_compat.depoison()
+    source.triggers[3].new_condition.timer(timer=5)
+    assert vars(source.triggers[3].conditions[-1])["allow_in_fog"] is None
+    return fresh, copy(source)
+
+
+def _v159_destination():
+    from descape.scenario_new import load_blank_scenario
+
+    blank = load_blank_scenario(120)
+    assert blank.scenario_version == "1.59"
+    return blank
+
+
+def _saved_conditions(blank, model, tmp_path: Path):
+    """Writes the 1.59 document and reloads it: (field count, allow_in_fog)
+    per condition, and the reloaded manager."""
+    from descape.scenario_write import write_scenario
+
+    out = tmp_path / "upgraded.aoe2scenario"
+    write_scenario(blank, out, triggers=model)
+    reloaded = load_map_and_units(out)
+    _KEEP_ALIVE.append(reloaded)
+    manager = parse_triggers(reloaded)
+    assert (reloaded.scenario_version, reloaded.trigger_version) == ("1.59", 5.0)
+    tails = [
+        (c.retriever_map["static_value_33"].data, c.retriever_map["allow_in_fog"].data)
+        for t in reloaded._scenario.sections["Triggers"].retriever_map["trigger_data"].data
+        for c in t.retriever_map["condition_data"].data
+    ]
+    return tails, manager
+
+
+def test_a_158_trigger_block_pastes_into_a_159_map_and_saves(tmp_path: Path) -> None:
+    from descape.trigger_model import TriggerEditModel
+
+    fresh, added = _v158_blocks(lambda m: _cross_block(m, (3,)))
+    blank = _v159_destination()
+    model = TriggerEditModel(blank)
+    results = []
+    for block in (fresh, added):
+        model.structural_edit(
+            lambda m, b=block: results.append(trigger_clipboard.paste_into(m, b, doc_id="A", scenario_version="1.59"))
+        )
+    assert all(r.cross_document for r in results), "a version change is cross-document whatever the doc ids say"
+    tails, manager = _saved_conditions(blank, model, tmp_path)
+    assert len(tails) == len(fresh.triggers[0].conditions) + len(added.triggers[0].conditions)
+    assert set(tails) == {(34, -1)}
+    for trigger in manager.triggers:
+        assert next(c for c in trigger.conditions if c.condition_type == 1).unit_object == -1
+
+
+def test_158_entries_paste_into_a_159_trigger_and_save(tmp_path: Path) -> None:
+    from descape.trigger_model import TriggerEditModel
+
+    def copy(manager):
+        trigger = manager.triggers[3]
+        refs = [("condition", i) for i in range(len(trigger.conditions))] + [("effect", 0)]
+        return trigger_clipboard.copy_entries(manager, 3, refs, doc_id="A", scenario_version=VERSION)
+
+    fresh, added = _v158_blocks(copy)
+    blank = _v159_destination()
+    model = TriggerEditModel(blank)
+    model.structural_edit(lambda m: m.add_trigger("Destination"))
+    results = []
+    model.structural_edit(
+        lambda m: results.extend(
+            trigger_clipboard.paste_entries(m, 0, b, doc_id="A", scenario_version="1.59") for b in (fresh, added)
+        ),
+        content_touched=[0],
+    )
+    assert all(r.cross_document for r in results)
+    tails, manager = _saved_conditions(blank, model, tmp_path)
+    assert len(tails) == len(fresh.conditions) + len(added.conditions)
+    assert set(tails) == {(34, -1)}
+    assert all(c.unit_object == -1 for c in manager.triggers[0].conditions if c.condition_type == 1)
+
+
+@pytest.mark.parametrize(("block_version", "here"), [("1.57", "1.59"), ("1.59", "1.58")])
+def test_an_uncovered_version_pair_raises_before_anything_is_pasted(block_version, here) -> None:
+    """Only 1.58 into 1.59 has a step: anything else raises before the import,
+    so a structural_edit() never stores a half-done paste."""
+    manager = _manager()
+    names = [t.name for t in manager.triggers]
+    block = trigger_clipboard.copy_block(manager, [3], doc_id="A", scenario_version=block_version)
+    entries = trigger_clipboard.copy_entries(manager, 3, [("condition", 0)], doc_id="A", scenario_version=block_version)
+    conditions = len(manager.triggers[0].conditions)
+    with pytest.raises(ValueError, match=f"from a {block_version} scenario"):
+        trigger_clipboard.paste_into(manager, block, doc_id="B", scenario_version=here)
+    with pytest.raises(ValueError, match=f"from a {block_version} scenario"):
+        trigger_clipboard.paste_entries(manager, 0, entries, doc_id="B", scenario_version=here)
+    assert [t.name for t in manager.triggers] == names
+    assert len(manager.triggers[0].conditions) == conditions

@@ -102,7 +102,7 @@ def ink_sprite(monkeypatch):
 
     def pieces(
         unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
-        wall_alpha=1.0,
+        alpha=1.0,
     ):
         if unit_const != CONST:
             return []
@@ -304,7 +304,7 @@ def doodad_sprite(monkeypatch):
 
     def pieces(
         unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
-        wall_alpha=1.0,
+        alpha=1.0,
     ):
         if unit_const != DOODAD:
             return []
@@ -356,7 +356,7 @@ FLARE4 = 697  # invisible, 2x2: its marker is the footprint itself
 def _one_sprite(monkeypatch, wanted):
     def pieces(
         unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
-        wall_alpha=1.0,
+        alpha=1.0,
     ):
         if unit_const != wanted:
             return []

@@ -756,21 +756,33 @@ class _MapViewUnitsMixin:
             self._unit_ghost_item = item
         return item
 
-    def set_unit_ghosts(self, draws=(), marks=(), refused_draws=(), refused_marks=()) -> None:
+    def _ghost_level_cache(self):
+        """The canvas cache a sprite ghost draws the painted level from (TASK-291), or None."""
+        cache = None if self._canvas_item is None else self._canvas_item._cache
+        return cache if hasattr(cache, "level_sprite_inputs") else None
+
+    def set_unit_ghosts(
+        self, draws=(), marks=(), refused_draws=(), refused_marks=(), sprites=(), refused_sprites=()
+    ) -> None:
         """A group ghost (GH #75): every member's sprite draws, plus a
         (polygons, color) mark per member whose sprite did not resolve. The
-        refused_ pair holds the members placement refuses (TASK-327)."""
+        refused_ pair holds the members placement refuses (TASK-327).
+        `sprites` and `refused_sprites` are the ghost_sprite.GhostSprite
+        members behind `draws` and `refused_draws` (TASK-291)."""
         item = self._ensure_unit_ghost_item()
+        members = [(m, None) for m in sprites] + [(m, UnitGhostItem.REFUSED) for m in refused_sprites]
         if not item.set_content(
             draws,
             [(p, c) for p, c in marks if p and c is not None],
             refused_draws,
             [(p, c) for p, c in refused_marks if p and c is not None],
+            sprites=members,
+            cache=self._ghost_level_cache() if members else None,
         ):
             self._clear_unit_ghost()
 
     def set_unit_ghost(
-        self, draws=None, polygons=None, color=None, refused: bool = False, garrison: bool = False
+        self, draws=None, polygons=None, color=None, refused: bool = False, garrison: bool = False, sprites=()
     ) -> None:
         """The mid-drag move preview's content, resolved by ViewerWindow and
         pushed here -- `set_unit_selection`'s shape, for the same reason (see
@@ -785,9 +797,12 @@ class _MapViewUnitsMixin:
         ghost this frame" -- never a crash, never a partial draw.
 
         `refused` draws it in the refused look (TASK-327), `garrison` in the
-        garrison look (TASK-549, Place Unit over a host that takes it)."""
+        garrison look (TASK-549, Place Unit over a host that takes it).
+        `sprites` are the ghost_sprite.GhostSprite members behind `draws`,
+        drawn at the canvas's level (TASK-291)."""
         item = self._ensure_unit_ghost_item()
-        if draws and item.set_sprites(draws, refused=refused, garrison=garrison):
+        cache = self._ghost_level_cache() if sprites else None
+        if draws and item.set_sprites(draws, refused=refused, garrison=garrison, sprites=sprites, cache=cache):
             return
         if polygons and color is not None and item.set_mark(polygons, color, refused=refused, garrison=garrison):
             return

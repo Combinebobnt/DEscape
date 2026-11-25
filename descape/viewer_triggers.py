@@ -20,9 +20,12 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
+    brush,
     debug_log,
     library_compat,
     perf_trace,
+    scenario_convert,
+    settings,
     trigger_clipboard,
     trigger_fields,
     trigger_organize,
@@ -30,9 +33,12 @@ from descape import (
 from descape.edit_history import (
     CompositeDiffRecord,
 )
+from descape.render_units import NON_BUILDING_SPAN
 from descape.scenario_io import (
     parse_triggers,
 )
+from descape.terrain_palette import tile_span
+from descape.trigger_geometry import coordinate
 from descape.trigger_model import (
     EXEC_MODE_DISPLAY,
     EXEC_MODE_LEGACY,
@@ -90,6 +96,36 @@ UNKNOWN_ID_MOVE_MESSAGE = UNKNOWN_RENUMBER_MESSAGE
 
 class _ViewerTriggersMixin:
     """ViewerWindow's trigger editing (viewer.py's docstring has the split's rules)."""
+
+    def set_divider_rule(self, rule: trigger_organize.DividerRule) -> None:
+        """Settings > General > Trigger section headers (TASK-486): saves `rule`,
+        makes it active and re-groups the open scenario when Triggers is on screen.
+        Writes no file data, so no undo entry."""
+        if rule == trigger_organize.divider_rule():
+            return  # editingFinished fires on Enter, focus loss and dialog close
+        settings.set_trigger_section_headers(rule)
+        self.apply_divider_rule()
+
+    def apply_divider_rule(self, quiet: bool = False) -> None:
+        """Makes the saved section-header rule active (also Settings' Cancel and Reset).
+        A no-op when it already is."""
+        rule = settings.get_trigger_section_headers()
+        if rule == trigger_organize.divider_rule():
+            return
+        trigger_organize.set_divider_rule(rule)
+        self.trigger_panel.invalidate_statuses()
+        # A header that stops being one would fold its rows, hidden, into a collapsed section above.
+        self.trigger_panel.forget_collapse_state()
+        if self.mode != "triggers" or self.scenario is None:
+            if not quiet:
+                self._log_status("Trigger section headers updated")
+            return
+        self._show_triggers()
+        self.trigger_panel.expand_all_sections()
+        if not quiet:
+            live = self.trigger_panel._live_sections()
+            count = sum(1 for s in live[1] if s.header_index is not None) if live else 0
+            self._log_status(f"Trigger section headers: {count} in this scenario")
 
     # -- trigger editing ----------------------------------------------------
     #
@@ -175,7 +211,7 @@ class _ViewerTriggersMixin:
                 self._log_status(f"{label} failed: {type(error).__name__}: {error}", level=debug_log.ERROR)
                 self._warn(
                     f"{label} failed",
-                    f"{error}\n\nWhat was changed before the failure is one undo step; Ctrl+Z reverts it.",
+                    f"{error}\n\nWhat was changed before the failure is one undo step; Edit > Undo reverts it.",
                 )
 
     @contextmanager
@@ -604,6 +640,9 @@ class _ViewerTriggersMixin:
             # GH #192: in Units mode a unit selection takes Cut and Copy from the region.
             units_selected = has_map and self.mode == "units" and bool(self._selection)
             focus = self._units_clipboard_focus() if units_selected else "units"
+            if focus == "garrison":
+                self._mirror_garrison_buttons()
+                return
             if self.mode == "units":
                 self.cut_action.setText("Cu&t Units")
                 self.cut_action.setToolTip("Cut the selected units and what they garrison, as one undo step")
@@ -619,8 +658,7 @@ class _ViewerTriggersMixin:
             elif units_selected:
                 self.copy_action.setText("&Copy Units")
                 self.copy_action.setToolTip("Copy the selected units and what they garrison")
-                # The Garrison list has its own Copy button and clipboard.
-                self.copy_action.setEnabled(focus != "garrison")
+                self.copy_action.setEnabled(True)
             else:
                 self.copy_action.setText("&Copy Region")
                 self.copy_action.setToolTip("Copy the selected region's terrain, elevation and units")
@@ -670,6 +708,26 @@ class _ViewerTriggersMixin:
         self.cut_action.setToolTip("Cut the selected triggers (a collapsed section cuts whole), to paste elsewhere with their links kept")
         self.copy_action.setToolTip("Copy the selected triggers (a collapsed section copies whole), to paste here or into another scenario")
 
+    def _mirror_garrison_buttons(self) -> None:
+        """With the Garrison list focused (TASK-341), each of Cut, Copy and
+        Paste mirrors the list's own button: its tooltip and enabled state."""
+        panel = self.units_panel
+        for action, verb, button in (
+            (self.cut_action, "Cu&t", panel.garrison_cut_button),
+            (self.copy_action, "&Copy", panel.garrison_copy_button),
+            (self.paste_action, "&Paste", panel.garrison_paste_button),
+        ):
+            action.setText(f"{verb} Garrisoned Units")
+            action.setToolTip(button.toolTip())
+            action.setEnabled(button.isEnabled())
+
+    def _click_garrison_button(self, button) -> None:
+        """The dispatch's Garrison branch: click() does nothing on a disabled
+        button, so the button's own gate applies. Focus stays on the list
+        while its clipboard changes, so the actions re-read it here."""
+        button.click()
+        self._update_clipboard_actions()
+
     def _entry_tree_focused(self) -> bool:
         """GH #137: the condition/effect tree focused means entry verbs for
         Edit > Cut/Copy/Paste; anything else in Triggers mode, trigger verbs."""
@@ -693,8 +751,8 @@ class _ViewerTriggersMixin:
 
     def _units_clipboard_focus(self) -> str:
         """Who answers Cut and Copy while units are selected in Units mode
-        (GH #192): "garrison" with the Inspector's Garrison list focused (it
-        has its own Copy and Paste buttons and clipboard), "label" with a
+        (GH #192): "garrison" with the Inspector's Garrison list focused (all
+        three go to its own buttons and clipboard, TASK-341), "label" with a
         selectable label holding selected text focused (Copy copies that
         text), else "units", the map selection. A spin box never gets here:
         it keeps the keys through Qt's own shortcut override."""
@@ -707,8 +765,11 @@ class _ViewerTriggersMixin:
 
     def _dispatch_cut(self, _checked=False) -> None:
         if self.mode == "units":
-            if self._selection and self._units_clipboard_focus() == "units":
+            focus = self._units_clipboard_focus() if self._selection else None
+            if focus == "units":
                 self.cut_units()
+            elif focus == "garrison":
+                self._click_garrison_button(self.units_panel.garrison_cut_button)
             return
         if self.mode != "triggers":
             return
@@ -730,6 +791,8 @@ class _ViewerTriggersMixin:
                 QApplication.clipboard().setText(QApplication.focusWidget().selectedText())
             elif focus == "units":
                 self.copy_units()
+            else:
+                self._click_garrison_button(self.units_panel.garrison_copy_button)
         elif self.mode != "triggers":
             self.copy_region()
         elif (editor := self._focused_editor()) is not None:
@@ -742,7 +805,10 @@ class _ViewerTriggersMixin:
             self.copy_triggers()
 
     def _dispatch_paste(self, _checked=False) -> None:
-        if self.mode != "triggers":
+        if self.mode == "units" and self._selection and self._units_clipboard_focus() == "garrison":
+            # Never falls through to the map's paste (TASK-341).
+            self._click_garrison_button(self.units_panel.garrison_paste_button)
+        elif self.mode != "triggers":
             self.paste_region()
         elif (editor := self._focused_editor()) is not None:
             editor.paste()
@@ -800,8 +866,9 @@ class _ViewerTriggersMixin:
         if refusal := self._cross_game_refusal(block):
             return refusal
         here = self.scenario.scenario_version
-        if block.scenario_version != here:
-            return f"Copied from a {block.scenario_version} scenario; this one is {here}."
+        convertible = self._convert_version_refusal() is None  # GH #307: the hint never names a greyed-out action
+        if reason := scenario_convert.paste_version_refusal(block.scenario_version, here, convertible=convertible):
+            return reason
         if block.source_doc_id != self._doc_id and not library_compat.vocabulary_is_available(here):
             return f"No trigger vocabulary for scenario {here}, so unit references cannot be cleared."
         return ""
@@ -1073,7 +1140,7 @@ class _ViewerTriggersMixin:
                 # pushed back through the setter (restore()'s Trap 7).
                 before_order = list(m.trigger_display_order)
                 before_names = [t.name or "" for t in m.triggers]
-                result = trigger_clipboard.paste_into(m, block, doc_id=self._doc_id)
+                result = trigger_clipboard.paste_into(m, block, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version)
                 paste_results.append(result)
                 new_indices = list(range(before_len, before_len + len(result.triggers)))
                 has_divider = any(trigger_organize.is_divider(t.name or "") for t in result.triggers)
@@ -1568,9 +1635,10 @@ class _ViewerTriggersMixin:
             self._log_status(f"Cannot paste these conditions/effects: {reason}", level=debug_log.WARNING)
             return
         results: list = []
+        version = self.scenario.scenario_version
 
         def mutate(m):
-            results.append(trigger_clipboard.paste_entries(m, index, block, anchor, doc_id=self._doc_id))
+            results.append(trigger_clipboard.paste_entries(m, index, block, anchor, doc_id=self._doc_id, scenario_version=version))
 
         with self._trigger_edit(model, f"Paste {block.label}", content_touched=[index], refresh="entries") as m:
             m.structural_edit(mutate, content_touched=[index])
@@ -1595,7 +1663,8 @@ class _ViewerTriggersMixin:
         that signature has no room for a tile list. Every refusal runs before
         _trigger_edit() opens, so a refused click records nothing. Tiles that
         already hold the same object for the same player are skipped, so a
-        second click on the same spot stacks nothing.
+        second click on the same spot stacks nothing. A multi-tile object gets
+        one copy per footprint, skipping any that would overlap (TASK-086).
         """
         panel = self.trigger_panel
         if self.scenario is None or self.mode != "triggers" or not panel._editable:
@@ -1630,18 +1699,29 @@ class _ViewerTriggersMixin:
             self._log_status("Create Objects: select a Create Object effect to stamp")
             return
 
-        footprint = self._brush_footprint(x, y)
-        occupied = {
-            (effect.location_x, effect.location_y)
+        # TASK-086: a multi-tile object steps by its footprint, the lattice through (x, y).
+        step = self._stamp_step(template.object_list_unit_id)
+        anchors = brush.lattice_tiles(self._brush_footprint(x, y), (x, y), step)
+        existing = [
+            point
             for effect in effects
             if effect.effect_type == self._CREATE_OBJECT_EFFECT
             and effect.object_list_unit_id == template.object_list_unit_id
             and effect.source_player == template.source_player
-        }
-        tiles = [tile for tile in footprint if tile not in occupied]
-        skipped = len(footprint) - len(tiles)
+            for point in [(coordinate(effect, "location_x"), coordinate(effect, "location_y"))]
+            if point[0] >= 0 and point[1] >= 0
+        ]
+        tiles = [
+            (ax, ay) for ax, ay in anchors
+            if not any(abs(ax - ex) < step[0] and abs(ay - ey) < step[1] for ex, ey in existing)
+        ]
+        skipped = len(anchors) - len(tiles)
+        spot = "" if step == (1, 1) else f"{step[0]}x{step[1]}"
         if not tiles:
-            self._log_status(f"Create Objects: all {skipped} tiles already have this object")
+            self._log_status(
+                f"Create Objects: every {spot} spot here would overlap this object already there"
+                if spot else f"Create Objects: all {skipped} tiles already have this object"
+            )
             return
 
         # Pre-set, because _trigger_edit() reports a raised body rather than
@@ -1664,8 +1744,31 @@ class _ViewerTriggersMixin:
             return
         if self.mode == "triggers":
             panel.select_entry("effect", select)
-        suffix = f" ({skipped} tiles already had one)" if skipped else ""
+        if spot:
+            suffix = f", one per {spot} footprint" + (f" ({skipped} would overlap one already there)" if skipped else "")
+        else:
+            suffix = f" ({skipped} tiles already had one)" if skipped else ""
         self._log_status(f"Created {len(tiles)} Create Object effects{suffix}")
+
+    @staticmethod
+    def _stamp_step(unit_const) -> tuple[int, int]:
+        """TASK-086: the Create Objects stamp's step, the object's collision span ((1, 1) if unset)."""
+        return tile_span(unit_const, NON_BUILDING_SPAN) if isinstance(unit_const, int) else NON_BUILDING_SPAN
+
+    def _create_objects_step(self) -> tuple[int, int]:
+        """The hover highlight's step for the current Create Object template, read with no side
+        effects: never _ensure_trigger_edits(), which builds the model and warns from a hover."""
+        panel = self.trigger_panel
+        if self.scenario is None or self.mode != "triggers" or self._first_parse_running:
+            return NON_BUILDING_SPAN
+        index, ref = panel.current_trigger_index(), panel.current_entry_ref()
+        manager = parse_triggers(self.scenario) if index is not None and ref is not None else None
+        if manager is None or ref[0] != "effect" or not 0 <= index < len(manager.triggers):
+            return NON_BUILDING_SPAN
+        effects = manager.triggers[index].effects
+        if not 0 <= ref[1] < len(effects) or effects[ref[1]].effect_type != self._CREATE_OBJECT_EFFECT:
+            return NON_BUILDING_SPAN
+        return self._stamp_step(effects[ref[1]].object_list_unit_id)
 
     def _trigger_vocabulary(self, kind: str):
         """(type id -> definition, type attribute) for the loaded scenario's

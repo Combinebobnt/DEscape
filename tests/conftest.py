@@ -218,6 +218,20 @@ def archer_civ_portrait(fake_install, monkeypatch):
     return CIV_PORTRAIT_CIV
 
 
+# The committed table names the Archer (4) for each antiquity civ by one string id, the Bowman.
+ATHENIANS, BOWMAN_STRING = 47, 405052
+
+
+@pytest.fixture()
+def athenian_bowman(monkeypatch):
+    """The install string the committed Athenian Archer id names, with no install: "Bowman"."""
+    from descape import asset_source
+
+    real = asset_source.resource_string
+    monkeypatch.setattr(asset_source, "resource_string", lambda key, lang=None: "Bowman" if key == BOWMAN_STRING else real(key, lang))
+    return ATHENIANS
+
+
 # Re-exported so the many existing `conftest.scene_rect_to_array(...)` call
 # sites keep working; the implementation now lives in testkit/ so tools/
 # scripts, which can't import conftest, can share it. See that module for
@@ -779,14 +793,17 @@ def refuse_unapplied_settings_prompt(node, monkeypatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _aoe2_dataset():
-    """GH #67: every test starts and ends with the AoE2 game data active, and no data mod (GH #58)."""
-    from descape import game_dataset
+    """GH #67: every test starts and ends with the AoE2 game data active, and no data mod (GH #58).
+    TASK-486: likewise the built-in trigger section-header rule."""
+    from descape import game_dataset, trigger_organize
 
     game_dataset.set_active(game_dataset.AOE2)
     game_dataset.set_data_mod(None)
+    trigger_organize.set_divider_rule(trigger_organize.DEFAULT_DIVIDER_RULE)
     yield
     game_dataset.set_active(game_dataset.AOE2)
     game_dataset.set_data_mod(None)
+    trigger_organize.set_divider_rule(trigger_organize.DEFAULT_DIVIDER_RULE)
     if "descape.player_fields" in sys.modules:
         # GH #263: grows for the process by design, so one test's mod tokens must not reach the next.
         sys.modules["descape.player_fields"]._SESSION_MOD_TOKENS.clear()

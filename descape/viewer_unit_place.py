@@ -39,7 +39,7 @@ from descape import (
 from descape.constant_picker import preview_pixmap
 from descape.favorites_dialog import UnitFavoritesDialog
 from descape.render_cache_splice import UnitSplice
-from descape.render_units import NON_BUILDING_SPAN, _unit_gen_cached, occupied_tiles_for, snapped_anchor
+from descape.render_units import NON_BUILDING_SPAN, _unit_gen_cached, occupied_tiles_for, snapped_anchor, span_anchor
 from descape.scatter_dialog import ScatterDialog, units_region
 from descape.terrain_palette import tile_span
 from descape.unit_filter import GAIA_PLAYER_ID
@@ -123,7 +123,8 @@ class _ViewerUnitPlaceMixin:
 
     def _restrictions_lifted(self) -> bool:
         """The Free placement checkbox (GH #176): Place Unit and Move skip
-        placement_rules' terrain and object rules. It has no modifier."""
+        placement_rules' terrain and object rules, and wall runs their terrain
+        gaps (TASK-328). It has no modifier."""
         return self.unrestricted_check.isChecked()
 
     def _resolve_placement_point(
@@ -175,7 +176,7 @@ class _ViewerUnitPlaceMixin:
         chosen = self.units_panel.owner_id()
         player = unit_kind.placement_owner(object_id, chosen)
         # GH #172: the same value on_place_preview's ghost was built with.
-        rotation = place_rotation.rotation_for(self._place_rotation, object_id, player)
+        rotation = place_rotation.rotation_for(self._pending_place_rotation(object_id), object_id, player)
         # TASK-549: pointed at a host that can hold anything, the object goes inside or nowhere.
         host = self._place_garrison_host(pos, object_id)
         if host is not None:
@@ -236,8 +237,33 @@ class _ViewerUnitPlaceMixin:
         if not self._unit_filter.matches(player, unit):
             status += " (a Filters toggle is hiding it, so it won't be visible)"
         self._log_status(status)
-        # GH #164: a random pick rolls the next const, and the ghost shows it before the next click.
+        self._after_place_click()
+
+    def _after_place_click(self) -> None:
+        """Both of a Place Unit click's success ends: the click spent the
+        pending roll (TASK-367), and GH #164's random pick rolls the next
+        const; either way the ghost shows the next click before the click."""
+        self._place_roll_const = None
         self.units_panel.reroll_pending()
+        if self.place_random_check.isChecked():
+            # A GH #164 re-roll already refreshed through its own signal; the memo makes this one free then.
+            self.map_view.refresh_place_ghost()
+
+    def _pending_place_rotation(self, const: int) -> place_rotation.PlaceRotation:
+        """Place Unit's pending state for `const` (GH #172). With Random
+        facing/variant ticked (TASK-367) it is first rolled for any const it
+        was not last rolled or set for, so a new pick, a GH #164 re-roll and a
+        spent click each get a fresh draw, and a turn or an Eyedropper pick
+        holds for the next click alone."""
+        if self.place_random_check.isChecked() and const != self._place_roll_const:
+            self._place_rotation = place_rotation.roll(self._place_rng, const)
+            self._place_roll_const = const
+        return self._place_rotation
+
+    def _on_place_random_toggled(self, _checked: bool) -> None:
+        """A tick rolls the ghost with no mouse move; an untick keeps the value it shows as the fixed one."""
+        self._place_roll_const = None
+        self._refresh_place_ghost()
 
     def _place_into_garrison(self, host_entry, object_id: int, player: int, chosen: int, rotation: float) -> None:
         """Place Unit's click on a host (TASK-549): a new `object_id` at the
@@ -285,7 +311,7 @@ class _ViewerUnitPlaceMixin:
             status += _GAIA_ONLY_PLACED_SUFFIX
         # No Filters note: Show Garrisoned off hides every occupant, and the host's list shows it.
         self._log_status(status)
-        self.units_panel.reroll_pending()
+        self._after_place_click()
 
     def _gate_plan(self, model, object_id: int, x: float, y: float) -> tuple[wall_run.GatePlan | None, list]:
         """(plan, walls) for a gate click at (x, y): the walls it replaces or
@@ -477,7 +503,9 @@ class _ViewerUnitPlaceMixin:
         view.set_unit_drop_target(host if host is not None and host_refusal is None else None)
         owner = unit_kind.placement_owner(const, self.units_panel.owner_id())
         # GH #172: through new_unit(), not rotation_override, so stored_rotation's GAIA rule applies as on the click.
-        rotation = place_rotation.rotation_for(self._place_rotation, const, owner)
+        # TASK-367: only Place Unit's hover spends a roll; the Unit Brush's reads the state raw.
+        pending = self._pending_place_rotation(const) if self._current_tool == "place_unit" else self._place_rotation
+        rotation = place_rotation.rotation_for(pending, const, owner)
         lifted = self._restrictions_lifted()
         key = (
             point,
@@ -514,9 +542,9 @@ class _ViewerUnitPlaceMixin:
         inside = host is not None and not refused
         ghost = new_unit(self.scenario._scenario.uuid, owner, const, *point, reference_id=-1, rotation=rotation)
         ghost_entry = _ghost_entry(owner, ghost)
-        draws = self._ghost_sprite_draws(owner, ghost)
-        if draws:
-            view.set_unit_ghost(draws=draws, refused=refused, garrison=inside)
+        member = self._ghost_sprite(owner, ghost)
+        if member is not None:
+            view.set_unit_ghost(draws=member.level0(), refused=refused, garrison=inside, sprites=[member])
         else:
             polygons, color = self._ghost_mark(owner, ghost, ghost_entry)
             view.set_unit_ghost(polygons=polygons, color=color, refused=refused, garrison=inside)
@@ -588,7 +616,9 @@ class _ViewerUnitPlaceMixin:
         if steps is None:
             steps = place_rotation.steps_for_coarse(const, coarse_direction or 1)
         owner = unit_kind.placement_owner(const, self.units_panel.owner_id())
-        state, new_const, outcome = place_rotation.step(self._place_rotation, const, owner, steps)
+        # TASK-367: Place Unit turns the rolled state it shows, and the turn holds for the next click.
+        pending = self._pending_place_rotation(const) if self._current_tool == "place_unit" else self._place_rotation
+        state, new_const, outcome = place_rotation.step(pending, const, owner, steps)
         self._place_rotation = state
         name = _unit_name(const)
         if outcome == place_rotation.GATE:
@@ -739,7 +769,8 @@ class _ViewerUnitPlaceMixin:
         with no gate part).
 
         A host's garrison rides to the host's new point (GH #42), and a
-        selected occupant rides with its host rather than scattering alone."""
+        selected occupant rides with its host rather than scattering alone.
+        A gate's corner pieces ride the same way, keeping their offset (TASK-531)."""
         if not entries:
             self._log_status("Scatter: select the units to move in Units mode first")
             return
@@ -747,7 +778,9 @@ class _ViewerUnitPlaceMixin:
         if model is None:
             return
         riders = {id(e.unit): self._garrison_occupant_entries(model, [e]) for e in entries}
-        rider_ids = {id(r.unit) for rows in riders.values() for r in rows}
+        # TASK-531: a gate's corner pieces ride too, at its new point plus their offset.
+        pieces = self._gate_companion_entries(entries)
+        rider_ids = {id(r.unit) for rows in (*riders.values(), *pieces.values()) for r in rows}
         movers = [e for e in entries if id(e.unit) not in rider_ids]
         plan = scatter.scatter_existing_units(
             self.scenario, [e.unit for e in movers], params.tiles, seed=params.seed, jitter=params.jitter
@@ -758,15 +791,18 @@ class _ViewerUnitPlaceMixin:
             # Nothing changes, so no _unit_edit: entering one would record a phantom undo step.
             self._log_status(f"Scatter: none of the {len(movers)} selected units fits in the area; nothing moved")
             return
-        touched = [e for e, _ in moves] + [r for e, _ in moves for r in riders[id(e.unit)]]
+        touched = [e for e, _ in moves] + [r for e, _ in moves for r in (*riders[id(e.unit)], *pieces.get(id(e.unit), ()))]
         writes = []
         moved_ids: set[int] = set()
         for entry, (x, y) in moves:
-            for row in [entry, *riders[id(entry.unit)]]:
+            unit = entry.unit
+            rows = [(row, x, y) for row in [entry, *riders[id(unit)]]]
+            rows += [(p, p.unit.x + x - unit.x, p.unit.y + y - unit.y) for p in pieces.get(id(unit), ())]
+            for row, row_x, row_y in rows:
                 if id(row.unit) in moved_ids:
                     continue
                 moved_ids.add(id(row.unit))
-                writes.append((row, x, y))
+                writes.append((row, row_x, row_y))
         wall_plan = self._move_plan(model, writes, gate_walls=False)
         players = sorted({e.player_id for e in touched} | (wall_run.move_plan_players(wall_plan) if wall_plan else set()))
         wholesale = wall_plan is not None and wall_plan.wholesale
@@ -1028,14 +1064,15 @@ class _ViewerUnitPlaceMixin:
         if self._cliff_stroke is not None:
             self._cliff_stroke.add_cursor_tile(x, y)
 
-    def _cliff_ghost(self, unit_const: int, rotation: int, x: float, y: float) -> tuple[list, tuple | None]:
-        """(sprite draws, mark) of one cliff a release would place, on GAIA."""
+    def _cliff_ghost(self, unit_const: int, rotation: int, x: float, y: float) -> tuple:
+        """(GhostSprite or None, mark) of one cliff a release would place, on GAIA.
+        The member keeps its per-level draws, so a memoized part resolves no level twice."""
         ghost = new_unit(
             self.scenario._scenario.uuid, GAIA_PLAYER_ID, unit_const, x, y, reference_id=-1,
             rotation=float(rotation), initial_animation_frame=rotation,
         )
-        draws = self._ghost_sprite_draws(GAIA_PLAYER_ID, ghost)
-        return draws, (None if draws else self._ghost_mark(GAIA_PLAYER_ID, ghost))
+        member = self._ghost_sprite(GAIA_PLAYER_ID, ghost)
+        return member, (None if member is not None else self._ghost_mark(GAIA_PLAYER_ID, ghost))
 
     def _show_cliff_run(self, stroke: cliff_chain.ChainStroke, existing: list, parts: dict) -> None:
         """Ghosts what a release would do right now: every node of the run,
@@ -1049,15 +1086,17 @@ class _ViewerUnitPlaceMixin:
                 keys.append((cliff.unit_const, rewrite.rotation, cliff.unit.x, cliff.unit.y))
         draws: list = []
         marks: list = []
+        sprites: list = []
         for key in keys:
             found = parts.get(key)
             if found is None:
                 found = parts[key] = self._cliff_ghost(*key)
-            if found[0]:
-                draws.extend(found[0])
+            if found[0] is not None:
+                draws.extend(found[0].level0())
+                sprites.append(found[0])
             elif found[1] is not None:
                 marks.append(found[1])
-        self.map_view.set_unit_ghosts(draws=draws, marks=marks)
+        self.map_view.set_unit_ghosts(draws=draws, marks=marks, sprites=sprites)
         head = stroke.head_bounds()
         self.map_view.set_cliff_footprint(
             None if head is None else [(x, y) for x in range(head[0], head[1]) for y in range(head[2], head[3])]
@@ -1229,6 +1268,22 @@ class _ViewerUnitPlaceMixin:
         mm = self.scenario.map_manager
         return frozenset(wall_run.blocked_tiles(self.scenario, mm.map_width, mm.map_height))
 
+    def _terrain_gaps_for_walls(self, unit_const, rules: bool | None = None):
+        """TASK-328: the tiles a wall run of `unit_const` leaves as gaps for its
+        terrain (placement_rules.TerrainGaps), or none: no scenario, not a wall,
+        or the rules lifted (`rules` False, or with None, Free placement ticked)."""
+        lifted = self._restrictions_lifted() if rules is None else not rules
+        if self.scenario is None or lifted or unit_const not in _wall_consts():
+            return frozenset()
+        return placement_rules.TerrainGaps(self.scenario, unit_const)
+
+    def _wall_drag_gaps(self) -> wall_run.RunGaps:
+        """MapView's blocked query (GH #124, TASK-328): the occupied and the
+        refused-terrain tiles, for the catalog pick. A Unit Line or Unit Shape
+        press asks it right after _shape_press() latched that same pick."""
+        const = self.units_panel.selected_object_const()
+        return wall_run.RunGaps(self._blocked_for_walls(), self._terrain_gaps_for_walls(const))
+
     def _shape_press(self) -> unit_shape.ShapeLatch | None:
         """MapView's press query under Unit Line and Unit Shape (GH #365): the
         pick and the options read once, as the latch MapView holds for the
@@ -1255,11 +1310,13 @@ class _ViewerUnitPlaceMixin:
         )
         return dataclasses.replace(latch, label=self.units_panel.selected_object_label() or "")
 
-    def _commit_wall_run(self, tiles, unit_const, owner: int | None = None) -> None:
+    def _commit_wall_run(self, tiles, unit_const, owner: int | None = None, rules: bool | None = None) -> None:
         """Places a whole wall run (any tile list: a Place Unit drag or a
         Unit Shape outline) as one undo record, with `unit_const` from the
         Units catalog and `owner` the chosen owner (read now when None; a
         Unit Line or Unit Shape drag passes the one latched at its press).
+        `rules` likewise: a tile the wall can't stand on is a gap (TASK-328)
+        unless Free placement is ticked now (None) or `rules` is False.
 
         Follows _end_cliff_stroke()'s shape, with one structural difference
         forced by the junction rewrites: the touched-player set has to be
@@ -1290,15 +1347,25 @@ class _ViewerUnitPlaceMixin:
             existing_tiles=existing_tiles,
             existing_walls=existing_walls,
             blocked_tiles=self._blocked_for_walls(),
+            terrain_gaps=self._terrain_gaps_for_walls(unit_const, rules),
         )
+        # One message at most: a terrain name re-parses the language file.
+        terrain = None
+        if plan.first_refused is not None:
+            terrain = placement_rules.terrain_refusal(self.scenario, unit_const, *span_anchor(*plan.first_refused, 1, 1))
         if not plan.nodes and not plan.rewrites:
-            if not plan.blocked:
+            if not plan.blocked and not plan.skipped:
+                reason = f"{terrain} ({plan.refused} tiles)"
+            elif not plan.blocked:
                 reason = f"those {plan.skipped} tiles already hold a wall"
             elif not plan.skipped:
                 reason = f"those {plan.blocked} tiles are occupied"
             else:
                 reason = f"those tiles already hold a wall ({plan.skipped}) or are occupied ({plan.blocked})"
-            self._log_status(f"{tool_name}: {reason}")
+            if plan.refused and (plan.blocked or plan.skipped):
+                reason += f"; {terrain} ({plan.refused} tiles)"
+            hint = ". Tick Free placement to place it anyway." if plan.refused else ""
+            self._log_status(f"{tool_name}: {reason}{hint}")
             return
         name = _unit_name(unit_const)
         label = "Place wall" if len(plan.nodes) == 1 else f"Place {len(plan.nodes)} walls"
@@ -1315,6 +1382,8 @@ class _ViewerUnitPlaceMixin:
             status += f" ({plan.skipped} tiles already held a wall)"
         if plan.blocked:
             status += f" ({plan.blocked} occupied tiles skipped)"
+        if plan.refused:
+            status += f" ({plan.refused} tiles skipped: {terrain})"
         # on_unit_place()'s clause: a run the live filter hides (Show Walls
         # off) looks exactly like the tool doing nothing.
         if units and not self._unit_filter.matches(player, units[0]):

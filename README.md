@@ -8,6 +8,8 @@ Older scenarios from before the Definitive Edition (Age of Kings and The
 Conquerors `.scn`/`.scx`, and some HD Edition `.scx`) open view-only. Other
 HD Edition and UserPatch `.scx`/`.scx2` files aren't supported yet.
 
+![DEscape showing a campaign scenario in the Stepped elevation view](docs/images/editor.png)
+
 ## Download
 
 Prebuilt builds that need no Python install are attached to every
@@ -266,7 +268,19 @@ edit, on purpose. See `descape/batch_api.py`'s module docstring for the full
 detail. The model's `set_status(unit, value)` and `set_capture_flag(unit,
 value)` set a unit's Unit State and Capture Flag by raw value (a bare
 `unit.status = ...` is not saved); `set_capture_flag` raises on a scenario saved
-before version 1.59, which has no such field.
+before version 1.59, which has no such field. File > Convert to Version 1.59…
+in the window upgrades an open 1.58 scenario first.
+
+To run the same kind of code against the map open in the window instead,
+put a `.py` file in your scripts folder and pick it from **Tools > Scripts**
+(**Open Scripts Folder** there creates and opens the folder). The script gets
+one global, `editor`, with reads of the map and its units plus terrain,
+elevation and unit writes that keep the editor's own rules. The whole run is
+one undo step, and an error or Cancel rolls all of it back; nothing is saved
+until you save. A unit changed without `editor` fails the run. DEscape asks
+before running a new or changed script, since scripts are not sandboxed. The
+in-app guide's Scripts page (Help > DEscape Guide) has the full API and an
+example.
 
 `descape/scatter.py` places units at random, reproducible positions across a
 tile set you build yourself (e.g. every water tile, or one connected pond):
@@ -423,7 +437,11 @@ result in DEscape's own cache folder, so later picks are instant. An older
 mod whose `.dat` genieutils-py cannot read logs why when picked, and stays
 greyed out with the reason until DEscape restarts. A mod that differs from
 what DEscape measured on the game's own data still loads: those objects are
-drawn simplified or left out, and the status log lists them once. Data mods
+drawn simplified or left out. The status log says once, in plain words, what
+is drawn differently (grouped, with counts and example names) and what you can
+do about it where there is anything; the technical list for a bug report to
+the mod's author stays in the cache entry's `meta.json`, whose path the status
+log names. Data mods
 apply to Age of Empires II data only, not Return of Rome. Settings > Mods can
 hide from the Units catalog every object the mod did not change (new,
 repurposed, renamed, or with other art or stats than AoE2's own stay listed),

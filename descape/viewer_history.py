@@ -8,6 +8,8 @@ from descape import (
     debug_log,
     perf_trace,
     render_cache_splice,
+    script_menu,
+    scripting,
 )
 from descape.edit_history import (
     CompositeDiffRecord,
@@ -15,11 +17,14 @@ from descape.edit_history import (
     UnitDiffRecord,
 )
 from descape.render_cache_splice import UnitSplice
+from descape.scatter_dialog import region_tiles
 from descape.text_edits import _MultiLineEdit
 from descape.unit_filter import GAIA_PLAYER_ID
+from descape.unit_model import UnitEditModel
 
 # Flat only. Batch splice ~0.3-0.4ms per spliced unit (eager patch), wholesale ~20us per map
-# unit: splice only below 1/16 of the map's units. Measured by tools/bench_stroke_end.py.
+# unit: splice only below 1/16 of the map's units. Measured by tools/bench_stroke_end.py when the
+# patch still covered every resident level; it covers the visible one since TASK-442.
 _SPLICE_COST_RATIO = 16
 
 
@@ -247,6 +252,85 @@ class _ViewerHistoryMixin:
         # user's own undo. Suppresses only this line, nothing else.
         if not quiet:
             self._log_status(f"{action}: {record.label}")
+
+    def run_code(self, title: str, label: str, fn):
+        """Runs `fn(run)`, a script or an addon command, inside one
+        scripting.ScriptRun on the open document, then refreshes the window as
+        an undo would (_move_history()) and reports. `fn` returns the
+        ScriptOutcome; the run itself pushes its one record or rolls back.
+
+        The caller has checked script_menu.refusal(). Busy for the span, with
+        the trigger parse's guards (_run_first_trigger_parse()): the progress
+        dialog pumps events, so no warm, held pan or unit model prebuild may
+        run on a half-edited map. A failed run refreshes what it rolled back
+        too, since the canvas may have painted mid-run state meanwhile."""
+        if self.scenario is None:
+            return None
+        scenario = self.scenario
+        outcome = None
+
+        def unit_model() -> UnitEditModel:
+            # Not _ensure_unit_edits(): its box would land mid-run. The run reports the raise.
+            if self.unit_edits is None:
+                self.unit_edits = UnitEditModel(scenario)
+            return self.unit_edits
+
+        def selected_tiles():
+            mm = scenario.map_manager
+            return () if self._region is None else region_tiles(self._region, mm.map_width, mm.map_height)
+
+        progress = script_menu.Progress(self, title)
+        # Read once: the pick index is not updated mid-run, so a later read could name removed units.
+        selected = [entry.unit for entry in self._selected_unit_entries()]
+        run = scripting.ScriptRun(
+            scenario,
+            self.edit_history,
+            model=self.unit_edits,
+            model_getter=unit_model,
+            selected_units=lambda: selected,
+            selected_tiles=selected_tiles,
+            progress=progress,
+        )
+        self._cancel_warms()
+        self.map_view.hold_preframes(True)
+        self.map_view.release_held_pan()
+        prebuild_owed = self._unit_model_prebuild.is_active
+        self._unit_model_prebuild.cancel()
+        was_busy, self._busy = self._busy, True
+        self._first_parse_running = True
+        try:
+            outcome = fn(run)
+        finally:
+            progress.close()
+            self._first_parse_running = False
+            self._busy = was_busy
+            self.map_view.hold_preframes(False)
+            if self.isVisible():
+                self.map_view.repoll_viewport()
+            if prebuild_owed and self.unit_edits is None:
+                self._schedule_unit_model_prebuild()
+            if outcome is None:
+                # A KeyboardInterrupt and its kind: the run rolled back first, so repaint all it may have touched.
+                everything = list(range(len(scenario.map_manager.terrain)))
+                self._refresh_after_history_move(frozenset({"tile", "unit"}), everything)
+        try:
+            record = outcome.record
+            if record is not None:
+                kinds = record.kinds()
+                elev = self._elevation_changed_tiles(record) if "unit" in kinds else set()
+                self._refresh_after_history_move(kinds, record.touched_indices(), None, elev_changed=elev)
+            elif outcome.rolled_back or (run.expected and not outcome.ok):
+                # A unit the facade moved away and back is not in rolled_back, yet the canvas may show it away.
+                kinds = frozenset(
+                    kind for kind, part in (("tile", "terrain"), ("unit", "units")) if part in outcome.rolled_back
+                ) | ({"unit"} if run.expected else set())
+                self._refresh_after_history_move(kinds, list(outcome.touched))
+            else:
+                self._update_edit_actions()
+        finally:
+            self.map_view.refresh_cliff_ghost()
+        script_menu.report(self, outcome)
+        return outcome
 
     def _if_spliceable(self, splices: list[UnitSplice] | None, cap: int | None = None) -> list[UnitSplice] | None:
         """`splices` for the scoped repaint (_patch_unit_edit_cache()), or

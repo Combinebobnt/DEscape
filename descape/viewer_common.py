@@ -99,6 +99,9 @@ SKIP_OCCUPIED_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_
 # Tools that offer "Moving a gate updates walls" (GH #194); see
 # ToolDef.supports_gate_walls.
 GATE_WALLS_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_gate_walls)
+# Tools that offer Place Unit's "Random facing/variant" (TASK-367); see
+# ToolDef.supports_place_random.
+PLACE_RANDOM_TOOLS = frozenset(t.tool_id for t in settings.TOOLS if t.supports_place_random)
 # The tools that are neither an edit tool nor Pan, so they can't be
 # recognised by set membership the way the sets above are.
 TOOL_RULER = "ruler"
@@ -461,7 +464,8 @@ def clamp_group_delta(units, dx, dy, map_w: int, map_h: int, whole_tiles: bool):
     lo_x = lo_y = -math.inf
     hi_x = hi_y = math.inf
     for unit in units:
-        if unit_tile_bounds(unit, map_w, map_h) is None:
+        # The sign is tested on the float, as unit_paste_targets() does: int() reads -0.5 as tile 0.
+        if unit.x < 0 or unit.y < 0 or unit_tile_bounds(unit, map_w, map_h) is None:
             continue
         span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
         low_x, low_y = span_low_corner(unit)
@@ -476,6 +480,11 @@ def clamp_group_delta(units, dx, dy, map_w: int, map_h: int, whole_tiles: bool):
 def _reshaping_clause(reshaped: int) -> str:
     """_report_delete()'s wording for the walls an edit reshaped beside it."""
     return f", reshaping {reshaped} adjacent" if reshaped else ""
+
+
+def _rects_bbox(rects) -> tuple[int, int, int, int]:
+    """The union bbox of top-down Flat's patch rects (render_paint.flat_tile_rects())."""
+    return min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects)
 
 
 # Shown when off-grid placement was asked for and the screen -> map-point inverse
@@ -640,13 +649,14 @@ StatRow = tuple[str, str, str, str]
 def _sync_hi_res() -> str:
     """unit_sprites.set_hi_res() from Graphics Quality (GH #241): x2 art at
     Enhanced, each file falling back to x1 where the install has no x2. And
-    set_smooth_shrink() (GH #254): box-filtered shrinking at Default and above,
-    on the native kernel only. Returns a status-log suffix at Enhanced naming the Enhanced Graphics DLC,
+    set_smooth_shrink() (GH #254): box-filtered shrinking, and enlarging by a
+    non-whole factor, at Default and above, on the native kernel only.
+    Returns a status-log suffix at Enhanced naming the Enhanced Graphics DLC,
     or the active game's own x2 art where its root ships some (Return of Rome), else ""."""
     quality = settings.get_graphics_quality()
     enhanced = quality == settings.GRAPHICS_QUALITY_MAX
     unit_sprites.set_hi_res(enhanced)
-    # On numpy the box shrink costs +46-80% at first paint (TASK-440 bench), so it stays nearest there.
+    # On numpy the box resample costs +46-80% at first paint (TASK-440 bench), so it stays nearest there.
     unit_sprites.set_smooth_shrink(
         quality >= settings.GRAPHICS_QUALITY_DEFAULT and composite_backend.active_backend() == "native"
     )

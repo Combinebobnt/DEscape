@@ -25,7 +25,7 @@ import pytest
 from AoE2ScenarioParser.exceptions.asp_exceptions import UnsupportedAttributeError
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-from descape import library_compat, unit_model
+from descape import library_compat, render_units, unit_model
 from descape.edit_history import EditHistory
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units, load_map_and_units_from_bytes
 from descape.terrain_units import UnitAddSpec
@@ -608,6 +608,64 @@ def test_batch_adds_is_refused_inside_a_fields_only_edit() -> None:
     model.abort_unit_edit()
 
 
+def _document_state(loaded, model) -> tuple:
+    lists = [list(units) for units in loaded.unit_manager.units]
+    states = [[unit_model.unit_state(u) for u in units] for units in lists]
+    return lists, states, model.serialize(), model.next_unit_id, model.has_edits
+
+
+def _assert_document_is(loaded, model, then) -> None:
+    lists, states, blob, next_id, dirty = then
+    now = loaded.unit_manager.units
+    assert [len(units) for units in now] == [len(units) for units in lists]
+    assert all(a is b for old, new in zip(lists, now, strict=True) for a, b in zip(old, new, strict=True))
+    assert [[unit_model.unit_state(u) for u in units] for units in now] == states
+    assert model.serialize() == blob
+    assert (model.next_unit_id, model.has_edits) == (next_id, dirty)
+
+
+def test_rollback_unit_edit_puts_a_whole_list_edit_back() -> None:
+    """TASK-503: a tool edit that raises partway puts back what already landed,
+    where abort_unit_edit() only drops the snapshot."""
+    loaded, model = _open()
+    then = _document_state(loaded, model)
+    gen0 = loaded.unit_gen
+    model.begin_unit_edit([1])
+    model.add(player=1, unit_const=83, x=5.5, y=5.5)
+    model.remove(_unit(loaded, _REF_VILLAGER_P1))
+    model.set_position(_unit(loaded, _REF_ARCHER_P1), 9.5, 9.5, 0.0)
+    model.rollback_unit_edit()
+    _assert_document_is(loaded, model, then)
+    assert model._pending is None
+    assert loaded.unit_gen > gen0
+    model.begin_unit_edit([1])
+    model.set_position(_unit(loaded, _REF_ARCHER_P1), 9.5, 9.5, 0.0)
+    model.commit_unit_edit("Move", EditHistory())
+
+
+def test_rollback_unit_edit_puts_a_fields_only_edit_back() -> None:
+    loaded, model = _open()
+    then = _document_state(loaded, model)
+    model.begin_unit_edit([1, 2], fields_only=True)
+    model.set_position(_unit(loaded, _REF_ARCHER_P1), 9.5, 9.5, 0.0)
+    model.set_position(_unit(loaded, _REF_ARCHER_P2), 11.5, 11.5, 0.0)
+    model.rollback_unit_edit()
+    _assert_document_is(loaded, model, then)
+    assert model._pending is None
+
+
+def test_rollback_unit_edit_on_drifted_lists_raises_and_clears_the_edit() -> None:
+    """restore()'s alignment gate refuses, as an undo would; the edit is closed
+    anyway, so the next begin_unit_edit() is not wedged."""
+    loaded, model = _open()
+    model.begin_unit_edit([1])
+    model.add(player=1, unit_const=83, x=5.5, y=5.5)
+    loaded.unit_manager.units[1].append(copy.copy(_unit(loaded, _REF_ARCHER_P1)))
+    with pytest.raises(RuntimeError, match="behind the model"):
+        model.rollback_unit_edit()
+    assert model._pending is None
+
+
 def test_serialize_depoisons_before_encoding_a_dirty_unit() -> None:
     """Plan 2026-09-12's save-side half: a poisoned class's property getter
     is a data descriptor that shadows the real instance attribute, so both
@@ -1051,6 +1109,69 @@ def test_a_remove_marks_the_highest_reference_id_cache_stale() -> None:
     model.serialize()  # invariant 4 would fire here if the flag were missed
 
 
+def test_add_with_a_free_reference_id_keeps_it_and_leaves_the_counter_alone() -> None:
+    """A Unit Cut's paste hands add() the cut unit's own id (TASK-341)."""
+    _loaded, model = _open()
+    counter = model.next_unit_id
+    free = 150
+    assert not model.reference_id_in_use(free) and free < counter
+
+    kept = model.add(player=1, unit_const=4, x=5.5, y=5.5, reference_id=free)
+
+    assert kept.reference_id == free
+    assert model.next_unit_id == counter
+    assert model.add(player=1, unit_const=4, x=6.5, y=6.5).reference_id not in (free, _REF_HOUSE)
+    model.serialize()
+
+
+@pytest.mark.parametrize("which", ["live", "negative", "at_counter"])
+def test_add_refuses_a_reference_id_held_negative_or_at_the_counter(which) -> None:
+    loaded, model = _open()
+    ref = {"live": _REF_HOUSE, "negative": -1, "at_counter": model.next_unit_id}[which]
+    before = [list(units) for units in loaded.unit_manager.units]
+
+    with pytest.raises(ValueError):
+        model.add(player=1, unit_const=4, x=5.5, y=5.5, reference_id=ref)
+
+    assert [list(units) for units in loaded.unit_manager.units] == before
+    model.serialize()
+
+
+def test_the_live_id_set_follows_a_remove_and_a_restore() -> None:
+    """Remove the holder: its id is free. restore() itself must drop the set
+    built after the remove, or a stale set would let a paste duplicate it."""
+    loaded, model = _open()
+    history = EditHistory()
+    model.begin_unit_edit([1])
+    model.remove(_unit(loaded, _REF_ARCHER_P1))
+    record = model.commit_unit_edit("Delete", history)
+
+    assert not model.reference_id_in_use(_REF_ARCHER_P1)  # builds the set
+    assert model._live_ref_ids is not None
+    model._check_derived()
+
+    model.restore(record.before)
+
+    assert model.reference_id_in_use(_REF_ARCHER_P1)
+    with pytest.raises(ValueError):
+        model.add(player=1, unit_const=4, x=5.5, y=5.5, reference_id=_REF_ARCHER_P1)
+    model._check_derived()
+
+    model.restore(record.after)
+    model.add(player=1, unit_const=4, x=5.5, y=5.5, reference_id=_REF_ARCHER_P1)
+    model._check_derived()
+
+
+def test_check_derived_catches_a_drifted_live_id_set() -> None:
+    _loaded, model = _open()
+    model.reference_id_in_use(_REF_HOUSE)
+    model._check_derived()
+    model._live_ref_ids.discard(_REF_HOUSE)
+
+    with pytest.raises(RuntimeError, match="_live_ref_ids"):
+        model._check_derived()
+
+
 # -- Batch D's D6: delta snapshots for set_* ops -----------------------------
 
 
@@ -1342,3 +1463,43 @@ def test_clean_serialize_is_verbatim_across_the_corpus(scenario_path: Path) -> N
     model = UnitEditModel(loaded)
     section = loaded.decompressed_body[loaded.units_block_offset : loaded.units_section_end]
     assert model.serialize() == section
+
+
+# -- set_unit_const: a non-square object's orientation siblings (TASK-329) -------
+
+
+def _bridge(loaded, unit_const: int = 605) -> object:
+    """An `a` bridge top piece (2, 3) on low corner (10, 20), the _gate() trick."""
+    unit = _unit(loaded, _REF_WALL)
+    unit.unit_const = unit_const
+    unit.x, unit.y = render_units.span_anchor(10, 20, 2, 3)
+    unit.z, unit.rotation = 3.0, 7.0
+    return unit
+
+
+def test_set_unit_const_re_anchors_a_bridge_onto_its_axis_sibling_low_corner() -> None:
+    loaded, model = _open()
+    bridge = _bridge(loaded)
+    model.set_unit_const(bridge, 608)
+    assert (bridge.unit_const, bridge.x, bridge.y) == (608, *render_units.span_anchor(10, 20, 3, 2))
+    assert (bridge.rotation, bridge.z) == (7.0, 3.0)
+    assert model.has_edits
+
+
+def test_set_unit_const_swaps_a_bridges_end_in_place_on_grid() -> None:
+    loaded, model = _open()
+    bridge = _bridge(loaded)
+    before = (bridge.x, bridge.y)
+    model.set_unit_const(bridge, 607)
+    assert (bridge.unit_const, bridge.x, bridge.y) == (607, *before)
+
+
+@pytest.mark.parametrize(("old_const", "new_const"), [(605, 606), (2421, 2422)])
+def test_set_unit_const_refuses_an_object_outside_its_orientation_group(old_const, new_const) -> None:
+    loaded, model = _open()
+    before = model.serialize()
+    unit = _bridge(loaded, old_const)
+    with pytest.raises(ValueError):
+        model.set_unit_const(unit, new_const)
+    assert not model.has_edits
+    assert model.serialize() == before

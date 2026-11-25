@@ -192,6 +192,9 @@ class _ViewerUnitInspectorMixin:
                     idx = self._unit_list_index(entry.player_id, unit)
                     setter(unit, raw)
                     splices.append(UnitSplice(entry.player_id, idx, unit, own, own, tiles, tiles))
+                if not capture and not self._unit_filter.show_inactive:
+                    # A state edit can hide or show the unit under this filter, and no index patch covers that.
+                    self._rebuild_unit_index()
             return
 
         axis = spec.field_id
@@ -199,7 +202,10 @@ class _ViewerUnitInspectorMixin:
         def axis_value(unit):
             return getattr(unit, "z", 0.0) if axis == "z" else getattr(unit, axis)
 
-        changing = [e for e in entries if axis_value(e.unit) != value]
+        # TASK-531: a gate's corner pieces keep their offset from it; a selected one rides with its selected gate.
+        pieces = self._gate_companion_entries(entries)
+        riding = {id(p.unit) for rows in pieces.values() for p in rows}
+        changing = [e for e in entries if axis_value(e.unit) != value and id(e.unit) not in riding]
         if not changing:
             return
         label = f"Set unit {spec.label}" if single else f"Set {spec.label} on {len(changing)} units"
@@ -207,35 +213,24 @@ class _ViewerUnitInspectorMixin:
         # counted out of the label: the user edited the units they selected.
         # An occupant already on the typed value has nothing to write.
         changing += [e for e in self._garrison_occupant_entries(model, changing) if axis_value(e.unit) != value]
-        mm = self.scenario.map_manager
+        goal = {id(p.unit): axis_value(p.unit) + value - axis_value(e.unit) for e in changing for p in pieces.get(id(e.unit), ())}
+        changing += [p for e in changing for p in pieces.get(id(e.unit), ())]
+
+        def landing(unit) -> tuple[float, float, float]:
+            to = goal.get(id(unit), value)
+            return (to if axis == "x" else unit.x, to if axis == "y" else unit.y, to if axis == "z" else getattr(unit, "z", 0.0))
+
         # GH #266: a typed X or Y carries walls too (no gate part, as GH #194 kept this out of the box).
         plan = None
         if axis in ("x", "y"):
-            plan = self._move_plan(
-                model,
-                [(e, value if axis == "x" else e.unit.x, value if axis == "y" else e.unit.y) for e in changing],
-                gate_walls=False,
-            )
+            plan = self._move_plan(model, [(e, *landing(e.unit)[:2]) for e in changing], gate_walls=False)
         players = sorted({e.player_id for e in changing} | (wall_run.move_plan_players(plan) if plan else set()))
         wholesale = plan is not None and plan.wholesale
         splices = []
         with self._unit_edit(model, label, players, None if wholesale else splices, fields_only=not wholesale):
             for entry in changing:
-                unit = entry.unit
-                x, y, z = unit.x, unit.y, getattr(unit, "z", 0.0)
-                if axis == "x":
-                    x = value
-                elif axis == "y":
-                    y = value
-                elif axis == "z":
-                    z = value
-                old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
-                old_own, old_tiles = self._unit_footprint(unit)
-                idx = self._unit_list_index(entry.player_id, unit)
-                model.set_position(unit, x, y, z)
-                new_own, new_tiles = self._unit_footprint(unit)
-                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
-                self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
+                x, y, z = landing(entry.unit)
+                self._move_occupant_to(model, entry, x, y, splices, z)
             if wholesale:
                 wall_run.apply_move_plan(model, plan)
             elif plan:
@@ -367,13 +362,15 @@ class _ViewerUnitInspectorMixin:
             def write(splices) -> None:
                 self._write_variants(model, turned, next_variant, splices)
         elif mode == "gate":
-            writable = entries
+            # TASK-532: a selected corner piece of a selected gate turns with it, not on its own.
+            writable = entries = self._without_carried_pieces(entries)
             changing = [e for e in writable if steps % len(gate_orientation.orientation_siblings(e.unit.unit_const))]
             turned = [e for e in changing if self._gate_cycle_fits(e.unit, steps)]
             blocked = len(changing) - len(turned)
+            rows = self._gate_turn_rows(turned, lambda _unit: steps)
 
             def write(splices) -> None:
-                self._write_gate_consts(model, turned, lambda _unit: steps, splices)
+                self._write_gate_consts(model, rows, splices)
         else:
             return
         if turned:
@@ -381,7 +378,7 @@ class _ViewerUnitInspectorMixin:
             label = f"Turn {units}"
             status = f"Turned {units} by {steps:+d}"
             players = {e.player_id for e in turned}
-            gate_plan = self._gate_cycle_plan(model, turned, lambda _unit: steps) if mode == "gate" else None
+            gate_plan = self._gate_cycle_plan(model, rows) if mode == "gate" else None
             if gate_plan:
                 # GH #339, as on_unit_rotate: removals first, one wholesale record.
                 with self._unit_edit(model, label, sorted(players | wall_run.gate_move_players(gate_plan))):
@@ -436,24 +433,26 @@ class _ViewerUnitInspectorMixin:
             siblings = gate_orientation.orientation_siblings(unit.unit_const)
             return (index - siblings.index(unit.unit_const)) % len(siblings)
 
-        changing = [e for e in entries if steps_for(e.unit)]
+        # TASK-532: a selected corner piece of a selected gate turns with it, not on its own.
+        changing = [e for e in self._without_carried_pieces(entries) if steps_for(e.unit)]
         turned = [e for e in changing if self._gate_cycle_fits(e.unit, steps_for(e.unit))]
         blocked = len(changing) - len(turned)
         if turned:
             label = "Set unit Rotation" if single else f"Set rotation on {len(turned)} units"
             players = {e.player_id for e in turned}
-            gate_plan = self._gate_cycle_plan(model, turned, steps_for)
+            rows = self._gate_turn_rows(turned, steps_for)
+            gate_plan = self._gate_cycle_plan(model, rows)
             if gate_plan:
                 # GH #339, as on_unit_rotate: removals first, one wholesale record.
                 with self._unit_edit(model, label, sorted(players | wall_run.gate_move_players(gate_plan))):
                     model.remove_many([wall for _player_id, wall in gate_plan.removals])
-                    self._write_gate_consts(model, turned, steps_for, None)
+                    self._write_gate_consts(model, rows, None)
                     wall_run.apply_gate_move_plan(model, gate_plan)
                 self._log_status(label + self._gate_move_clauses(gate_plan))
             else:
                 splices: list[UnitSplice] = []
                 with self._unit_edit(model, label, sorted(players), splices, fields_only=True):
-                    self._write_gate_consts(model, turned, steps_for, splices)
+                    self._write_gate_consts(model, rows, splices)
         if blocked:
             self._log_status(f"Set Rotation: {blocked} gate(s) skipped (would hang off the map edge)", level=debug_log.WARNING)
             # The field still shows the typed index; put it back to what the gates hold.

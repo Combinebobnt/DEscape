@@ -304,11 +304,16 @@ def test_every_entry_has_the_promised_fields_and_types(graphics):
         for field, kind in FIELDS.items():
             assert isinstance(entry[field], kind), f"unit_const {key}.{field}"
         if "particle" in entry or "art_scale" in entry:
-            # Both or neither, on a single graphic drawn from frame 0 only.
+            # Both or neither, on a single graphic drawn from frame 0 only, or
+            # from each ImageAngles run's first frame (the waterfalls, GH #330).
             assert entry.get("particle") is True, key
             assert isinstance(entry.get("art_scale"), float) and entry["art_scale"] > 0, key
-            assert (entry["angle_count"], entry["frame_count"]) == (1, 1), key
-            assert not {"pieces", "dx", "rotation_is_variant", "frame_offset"} & set(entry), key
+            if entry["angle_count"] == 1:
+                assert entry["frame_count"] == 1 and "rotation_is_variant" not in entry, key
+            else:
+                assert entry.get("rotation_is_variant") is True, key
+                assert entry.get("variant_count") == entry["angle_count"], key
+            assert not {"pieces", "dx", "frame_offset"} & set(entry), key
         if "frame_offset" in entry:
             # Added to a dispatched frame run, so it must stay inside one run.
             assert isinstance(entry["frame_offset"], int), key
@@ -736,9 +741,16 @@ def test_ship_pieces_are_the_hull_then_every_sail_in_dat_order(graphics):
 
 # GH #20: unit_const -> (graphic_id, particle effect stem, the effect's Scale), read
 # off the real .dat 2026-10-12 (Seagulls 2026-10-17, GH #67; Smoke and the Flames
-# 2026-10-28, GH #256). Their standing graphic has no modern art file.
+# 2026-10-28, GH #256; their hidden twins and the waterfalls 2026-10-28, GH #330).
+# Their standing graphic has no modern art file.
 PARTICLE_ENTRIES = {
     303: (4411, "dock_seagulls", 0.525),
+    896: (7569, "waterfall", 0.53),
+    902: (5314, "smoke_chimney", 0.66),
+    939: (1734, "fire_small_left", 0.5),
+    940: (1736, "fire_medium_left", 0.5),
+    941: (1738, "fire_large_left", 0.5),
+    942: (1741, "fire_large_right", 0.5),
     1308: (5314, "smoke_chimney", 0.66),
     1333: (1734, "fire_small_left", 0.5),
     1334: (1736, "fire_medium_left", 0.5),
@@ -747,7 +759,12 @@ PARTICLE_ENTRIES = {
     1608: (12300, "butterflies_1_low", 0.5),
     1609: (12301, "butterflies_2_low", 0.5),
     1610: (12302, "butterflies_3_low", 0.5),
+    1635: (7971, "waterfall_background", 0.53),
+    2598: (13214, "waterfall_small", 0.53),
 }
+# GH #330: the waterfalls' ImageAngles runs as (angle_count, frame_count, variant_count).
+# SWFALL's 2 is its art's, not its .dat graphic's 3.
+PARTICLE_RUNS = {896: (3, 60, 3), 1635: (3, 60, 3), 2598: (2, 30, 2)}
 
 
 BUILDING_ART_PATH = GRAPHIC_MAP_PATH.parent / "building_art_map.json"
@@ -881,7 +898,7 @@ def test_a_data_mod_dat_narrows_the_hand_measured_lists_to_the_consts_it_has(mon
     assert 2625 not in gen._UNDERWATER_BODY_CONSTS and 61 not in gen._UNDERWATER_BODY_CONSTS
     assert 53 in gen._UNDERWATER_BODY_CONSTS
     assert not gen._BODY_FRAME_OFFSETS
-    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [446]
+    assert sorted(gen._ART_INVARIANT_HOLDOUTS) == [446, 520, 1279, 1434]
 
 
 def test_a_data_mod_lacking_a_start_tech_gets_a_report_not_a_refusal(monkeypatch, capsys):
@@ -949,6 +966,14 @@ def lenient(gen):
     root.WARNINGS.clear()
 
 
+def _texts(warnings) -> list[str]:
+    return [warning["text"] for warning in warnings]
+
+
+def _kinds(warnings) -> list[tuple[str, object]]:
+    return [(warning["kind"], warning["subject"]) for warning in warnings]
+
+
 def _graphic(gid: int, file_name: str, deltas=(), angle_count: int = 1, layer: int = 20):
     from types import SimpleNamespace as NS
 
@@ -993,12 +1018,13 @@ def test_a_buildings_multi_delta_shell_is_drawn_as_its_hull_when_lenient(gen, le
     assert (entry, kind) == ({
         "graphic_id": 1, "file_name": "BSHIPY1_S-C1_x1", "angle_count": 1, "mirroring_mode": 0, "frame_count": 10,
     }, "plain")
-    assert lenient == [
+    assert _texts(lenient) == [
         (
             "unit_const 45 (type 80) has a multi-delta legacy shell '-C1' but is not type 70, so its pieces would "
             "not dispatch on a facing. Re-verify the ship-sail rule against the .dat (drawn as 'BSHIPY1_S-C1_x1' alone)"
         )
     ]
+    assert _kinds(lenient) == [("parts_dropped", 45)]
     ship, ship_kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
     assert ship_kind == "shell_deltas" and len(ship["pieces"]) == 2, "a creatable keeps its sails"
 
@@ -1086,7 +1112,8 @@ def test_a_modern_named_shell_keeps_itself_without_a_hidden_body(gen, lenient, d
 def test_a_garrison_shell_outside_the_measured_shape_gives_no_flags_when_lenient(gen, lenient, change):
     unit, graphics = _shell_case(**change)
     assert gen._garrison_flags(unit, graphics, 109) == []
-    assert len(lenient) == 1 and lenient[0].endswith("(drawn without garrison flags)")
+    assert len(lenient) == 1 and lenient[0]["text"].endswith("(drawn without garrison flags)")
+    assert _kinds(lenient) == [("no_garrison_flags", 109)]
 
 
 @pytest.mark.parametrize(
@@ -1102,7 +1129,8 @@ def test_a_wall_shell_outside_the_measured_shape_draws_its_body_alone(gen, lenie
         gen._resolve_wall_pieces(graphics, 72, shell, 1)
     gen._game_root.set_lenient(True)
     assert gen._resolve_wall_pieces(graphics, 72, shell, 1) is None
-    assert len(lenient) == 1 and lenient[0].endswith("(drawn as its body alone)")
+    assert len(lenient) == 1 and lenient[0]["text"].endswith("(drawn as its body alone)")
+    assert _kinds(lenient) == [("parts_dropped", 72)]
 
 
 def test_a_rotating_gate_piece_skips_the_gate_when_lenient(gen, lenient):
@@ -1112,7 +1140,7 @@ def test_a_rotating_gate_piece_skips_the_gate_when_lenient(gen, lenient):
         gen._entry_for(units, graphics, Path("no-graphics"), 64, {})
     gen._game_root.set_lenient(True)
     assert gen._entry_for(units, graphics, Path("no-graphics"), 64, {}) == (None, "gate_no_modern_replacement")
-    assert len(lenient) == 1
+    assert _kinds(lenient) == [("not_drawn", 64)]
 
 
 def test_a_pasture_whose_annex_tree_changed_is_a_plain_entry_when_lenient(gen, lenient):
@@ -1126,7 +1154,7 @@ def test_a_pasture_whose_annex_tree_changed_is_a_plain_entry_when_lenient(gen, l
     gen._game_root.set_lenient(True)
     entry, kind = gen._entry_for(units, graphics, Path("no-graphics"), 1893, {})
     assert kind == "plain" and "pieces" not in entry and entry["file_name"] == "b_pasture_x1"
-    assert len(lenient) == 1
+    assert _kinds(lenient) == [("parts_dropped", 1893)]
 
 
 def test_a_fish_without_its_underwater_body_is_not_drawn_when_lenient(gen, lenient):
@@ -1137,7 +1165,8 @@ def test_a_fish_without_its_underwater_body_is_not_drawn_when_lenient(gen, lenie
         gen._entry_for(units, graphics, Path("no-graphics"), 450, {})
     gen._game_root.set_lenient(True)
     assert gen._entry_for(units, graphics, Path("no-graphics"), 450, {}) == (None, "underwater_body_missing")
-    assert len(lenient) == 1 and "not drawn" in lenient[0]
+    assert len(lenient) == 1 and "not drawn" in lenient[0]["text"]
+    assert _kinds(lenient) == [("not_drawn", 450)]
 
 
 def test_a_sail_off_the_shell_layer_draws_the_ship_as_its_hull_when_lenient(gen, lenient):
@@ -1149,7 +1178,8 @@ def test_a_sail_off_the_shell_layer_draws_the_ship_as_its_hull_when_lenient(gen,
     gen._game_root.set_lenient(True)
     entry, kind = gen._entry_for(_units(45, type_=70), graphics, Path("no-graphics"), 45, {})
     assert kind == "plain" and "pieces" not in entry and entry["file_name"] == "BSHIPY1_S-C1_x1"
-    assert len(lenient) == 1 and lenient[0].endswith("(drawn as 'BSHIPY1_S-C1_x1' alone)")
+    assert len(lenient) == 1 and lenient[0]["text"].endswith("(drawn as 'BSHIPY1_S-C1_x1' alone)")
+    assert _kinds(lenient) == [("parts_dropped", 45)]
 
 
 def test_a_town_centre_whose_art_has_no_slots_is_drawn_without_annexes_when_lenient(gen, lenient):
@@ -1164,7 +1194,8 @@ def test_a_town_centre_whose_art_has_no_slots_is_drawn_without_annexes_when_leni
         gen._resolve_pieces(units, graphics, 109, graphics[0])
     gen._game_root.set_lenient(True)
     assert gen._resolve_pieces(units, graphics, 109, graphics[0]) is None
-    assert len(lenient) == 1 and lenient[0].endswith("(drawn without its annexes)")
+    assert len(lenient) == 1 and lenient[0]["text"].endswith("(drawn without its annexes)")
+    assert _kinds(lenient) == [("parts_dropped", 109)]
 
 
 def test_a_decoration_shell_without_its_body_is_not_drawn_when_lenient(gen, lenient, monkeypatch):
@@ -1174,14 +1205,15 @@ def test_a_decoration_shell_without_its_body_is_not_drawn_when_lenient(gen, leni
     graphics = [_graphic(0, "b_palisade_flag_x1", deltas=[_delta(2)]), _graphic(1, "b_palisade_x1"),
                 _graphic(2, "legacy_body")]
     assert gen._body_delta_positions(units, graphics) == {}
-    assert lenient[-1].endswith("(not drawn: its standing graphic is only a decoration over that body)")
+    assert lenient[-1]["text"].endswith("(not drawn: its standing graphic is only a decoration over that body)")
     assert gen._entry_for(units, graphics, Path("no-graphics"), 72, {}) == (None, "body_override_missing")
     gen._game_root.set_lenient(False)
     with pytest.raises(SystemExit, match="has no modern body at delta position 0"):
         gen._entry_for(units, graphics, Path("no-graphics"), 72, {72: 0})
     gen._game_root.set_lenient(True)
     assert gen._entry_for(units, graphics, Path("no-graphics"), 72, {72: 0}) == (None, "body_override_missing")
-    assert len(lenient) == 2 and lenient[-1].endswith("(not drawn: its standing graphic is only a decoration over that body)")
+    assert len(lenient) == 2 and lenient[-1]["text"].endswith("(not drawn: its standing graphic is only a decoration over that body)")
+    assert _kinds(lenient) == [("not_drawn", 72), ("not_drawn", 72)]
 
 
 def _building_art_case(gen, monkeypatch):
@@ -1214,7 +1246,7 @@ def test_building_art_violations_fail_the_run_when_strict(gen, monkeypatch):
     with pytest.raises(SystemExit) as failed:
         gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
     assert failed.value.code == (
-        "per-civ/per-age building art breaks the placed const's own logic -- re-verify against the .dat:\n"
+        "per-civ/per-age building or unit art breaks the placed const's own logic -- re-verify against the .dat:\n"
         "  civ 0 age 3 11 -> 12: angle_count 8 != reference 1\n"
         "  civ 1 const 10: angle_count 8 != reference 1\n"
         "  civ 1 age 3 11 -> 12: angle_count 8 != reference 1\n"
@@ -1227,10 +1259,11 @@ def test_building_art_holds_out_a_civ_entry_and_drops_an_age_pair_when_lenient(g
     art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
     assert art["civ_art"] == {"1": {"11": 0}} and art["entries"][0]["file_name"] == "civ11_x1"
     assert art["age_upgrades"] == {"11": {"4": 13}}, "the bad pair is dropped from the one shared table"
-    assert lenient == [
+    assert _texts(lenient) == [
         "civ 0 age 3 11 -> 12: angle_count 8 != reference 1 (dropped from the age table for every civ)",
         "civ 1 const 10: angle_count 8 != reference 1 (drawn with Gaia's art)",
     ], "a lenient hold-out is not a measured one, so the holdout list check stays quiet"
+    assert _kinds(lenient) == [("age_art", 11), ("civ_art", 10)]
 
 
 @pytest.mark.parametrize("bad", ["GTCA3", "GTAB3", "PGTAA"])  # turned, opened, another family
@@ -1244,11 +1277,12 @@ def test_a_gate_upgrade_must_keep_its_orientation_code(gen, lenient, monkeypatch
         gaia_units[const].class_, gaia_units[const].name = gen._GATE_CLASS, name
     art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
     assert art["age_upgrades"] == {"11": {"4": 13}}
-    assert lenient[0] == (
+    assert lenient[0]["text"] == (
         f"age table: gate upgrade 11 'GTAA2' -> 12 '{bad}' changes its family, orientation or state "
         "(dropped from the age table for every civ)"
     )
-    assert not any("-> 13" in warning for warning in lenient), lenient
+    assert _kinds(lenient[:1]) == [("age_art", 11)]
+    assert not any("-> 13" in warning for warning in _texts(lenient)), lenient
 
 
 def test_a_civ_missing_an_age_target_drops_the_pair_when_lenient(gen, lenient, monkeypatch):
@@ -1260,17 +1294,151 @@ def test_a_civ_missing_an_age_target_drops_the_pair_when_lenient(gen, lenient, m
     )
     art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
     assert "4" not in art["age_upgrades"].get("11", {})
-    assert any("age 4 upgrade 11 -> 13 has no entry on one side" in warning for warning in lenient)
+    assert [w["kind"] for w in lenient if "age 4 upgrade 11 -> 13 has no entry on one side" in w["text"]] == ["age_art"]
 
 
 def test_a_dropped_age_pair_warns_only_a_base_an_annex_upgrade_uses(gen, lenient, monkeypatch):
     data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
     annexes = {71: {11: 13}}
     gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, annexes)
-    assert "annexes may still show" in lenient[0], "keyed by composite, so the base is looked up inside"
+    assert "annexes may still show" in lenient[0]["text"], "keyed by composite, so the base is looked up inside"
     lenient.clear()
     gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {71: {99: 13}})
-    assert "annexes may still show" not in lenient[0]
+    assert "annexes may still show" not in lenient[0]["text"]
+
+
+ANTIQUITY = 46
+
+
+def _unit_art_case(gen, monkeypatch):
+    """TASK-140: Gaia, civ 1 and the antiquity civ 46 over non-building consts
+    20-26, one per group plus 25, whose civ 1 art breaks angle_count, and 26,
+    a type-10 rubble only the antiquity civ changes."""
+    from types import SimpleNamespace as NS
+
+    def table():
+        units: list = [None] * 27
+        for const in range(20, 27):
+            units[const] = NS(class_=3, name="u", type=10 if const in (24, 26) else 70, clearance_size=(1.0, 1.0), hide_in_editor=0)
+        return units
+
+    flag = {"file_name": "b_west_garrison_flag_x1", "dx": 2, "dy": -24}
+    ship = {"file_name": "u_ship_x1", "angle_count": 16, "pieces": [
+        {"file_name": "u_ship_x1", "dx": 0, "dy": 0, "parent": True}, {"file_name": "sail_west_x1", "dx": 0, "dy": -25}]}
+    gaia = {const: {"file_name": f"u{const}_x1", "angle_count": 16} for const in range(20, 27)}
+    gaia[22], gaia[23] = ship, {**gaia[23], "garrison_flags": [flag]}
+    east = {
+        20: {**gaia[20], "file_name": "u20_east_x1"},
+        22: {**ship, "pieces": [ship["pieces"][0], {**ship["pieces"][1], "file_name": "sail_east_x1"}]},
+        23: {**gaia[23], "garrison_flags": [{**flag, "file_name": "b_east_garrison_flag_x1"}]},
+        24: {**gaia[24], "file_name": "rubble_east_x1"},
+        25: {**gaia[25], "angle_count": 8},
+    }
+    antiquity = {const: {**gaia[const], "file_name": f"u{const}_ant_x1"} for const in (21, 22, 23, 26)}
+    antiquity[22].pop("pieces")
+    civs = [NS(name=f"Civ{i}", units=table()) for i in range(ANTIQUITY + 1)]
+    by_civ = {id(civs[0].units): gaia, id(civs[1].units): {**gaia, **east}, id(civs[ANTIQUITY].units): {**gaia, **antiquity}}
+
+    def entry_for(units, *args):
+        const = args[2]
+        return dict(by_civ.get(id(units), gaia)[const]), "shell_deltas" if const == 22 else "plain"
+
+    monkeypatch.setattr(gen, "_entry_for", entry_for)
+    monkeypatch.setattr(gen, "_sld_frame_count", lambda path: None if path.stem == "u20_east_x1_missing" else 1)
+    gaia_entries = {str(const): entry for const, entry in gaia.items()}
+    return NS(civs=civs), gaia_entries
+
+
+def _unit_art(gen, data, gaia_entries):
+    return gen._unit_art(data, [], Path("no-graphics"), {}, gaia_entries, set(), None)
+
+
+def test_unit_art_groups_each_const_by_how_the_non_antiquity_civs_differ(gen, monkeypatch):
+    """The antiquity civs' own art rides along a sails or flags const (the
+    Transport Ship, the rams); type 10 is scenery whoever changes it."""
+    data, gaia_entries = _unit_art_case(gen, monkeypatch)
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {25: "measured"})
+    art = _unit_art(gen, data, gaia_entries)
+    assert art.groups == {20: "regional", 21: "antiquity", 22: "sails", 23: "flags", 24: "scenery", 26: "scenery"}
+    assert sorted(art.art) == [1, ANTIQUITY]
+    assert sorted(art.art[1]) == [20, 22, 23, 24] and sorted(art.art[ANTIQUITY]) == [21, 22, 23, 26]
+    assert art.held_out == {25} and art.violations == []
+
+
+def test_an_unlisted_unit_art_break_is_a_violation_strict_and_gaia_art_lenient(gen, monkeypatch, capsys):
+    """Lenient (a data mod's derive) logs it rather than warning the user: no render draws unit_art yet."""
+    data, gaia_entries = _unit_art_case(gen, monkeypatch)
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {})
+    art = _unit_art(gen, data, gaia_entries)
+    assert art.violations == ["civ 1 const 25: angle_count 8 != reference 16"] and not art.held_out
+    root = gen._game_root
+    root.WARNINGS.clear()
+    root.set_lenient(True)
+    try:
+        art = _unit_art(gen, data, gaia_entries)
+        assert art.violations == [] and 25 not in art.art[1] and 25 not in art.groups
+        assert root.WARNINGS == [] and "civ 1 const 25: angle_count 8" in capsys.readouterr().out
+    finally:
+        root.set_lenient(False)
+        root.WARNINGS.clear()
+
+
+def test_a_held_out_unit_entry_still_reports_its_structure_break(gen, monkeypatch):
+    data, gaia_entries = _unit_art_case(gen, monkeypatch)
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {22: "measured", 25: "measured"})
+    entry_for = gen._entry_for
+
+    def two_parents(units, *args):
+        entry, kind = entry_for(units, *args)
+        if args[2] == 22 and units is data.civs[1].units:
+            entry = {**entry, "angle_count": 8, "pieces": [{**p, "parent": True} for p in entry["pieces"]]}
+        return entry, kind
+
+    monkeypatch.setattr(gen, "_entry_for", two_parents)
+    art = _unit_art(gen, data, gaia_entries)
+    assert 22 in art.held_out and art.violations == ["civ 1 const 22: 2 parent pieces, not exactly 1"]
+    assert 22 not in art.art[1]
+
+
+def test_a_civ_unit_entry_naming_a_file_the_install_lacks_keeps_gaias(gen, monkeypatch, capsys):
+    """Three antiquity rubbles name files no install ships (2026-11-25)."""
+    data, gaia_entries = _unit_art_case(gen, monkeypatch)
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {25: "measured"})
+    entry_for = gen._entry_for
+
+    def missing(units, *args):
+        entry, kind = entry_for(units, *args)
+        if entry["file_name"] == "u20_east_x1":
+            entry["file_name"] = "u20_east_x1_missing"
+        return entry, kind
+
+    monkeypatch.setattr(gen, "_entry_for", missing)
+    art = _unit_art(gen, data, gaia_entries)
+    assert 20 not in art.art[1] and 20 not in art.groups and 24 in art.art[1]
+    assert "u20_east_x1_missing" in capsys.readouterr().out, "reported in the regen log"
+    monkeypatch.setattr(gen, "_DATA_MOD_DAT", True)
+    assert 20 in _unit_art(gen, data, gaia_entries).art[1], "a data mod's art may ship with the mod (GH #272)"
+
+
+def test_building_art_emits_unit_art_after_its_own_rows_and_checks_both_holdouts(gen, monkeypatch):
+    """The building rows keep their entry indices; a unit holdout counts toward
+    the one measured-vs-listed check, keyed by .dat civ index (a data mod's own)."""
+    data, gaia_entries, _ages = _building_art_case(gen, monkeypatch)
+    ages = {11: {4: 13}}
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {10: "building"})
+    plain = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    units = gen.UnitArt({ANTIQUITY: {21: {"file_name": "u21_ant_x1"}}}, {21: "antiquity"}, set(), [])
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {10: "building", 25: "unit"})
+    with pytest.raises(SystemExit, match=r"holdouts measured \[10\], listed \[10, 25\]"):
+        gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {}, None, None, units)
+    held = units._replace(held_out={25})
+    art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {}, None, None, held)
+    assert art["civ_art"] == {"1": {"11": 0}}
+    assert art["unit_art"] == {str(ANTIQUITY): {"21": 1}} and art["entries"][1] == {"file_name": "u21_ant_x1"}
+    assert art["unit_groups"] == {"21": "antiquity"}
+    assert "unit_art" not in plain and "unit_groups" not in plain
+    monkeypatch.setattr(gen, "_DATA_MOD_DAT", True)  # a mod's .dat may lack a listed holdout's breaks
+    gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {}, None, None, units)
 
 
 def test_the_generator_gives_a_unit_without_a_garrison_graphic_no_flags(monkeypatch):
@@ -1287,16 +1455,29 @@ def test_only_the_allowlisted_particle_consts_are_particle_entries(graphics):
     assert found == PARTICLE_ENTRIES
     for unit_const, (_graphic_id, _stem, scale) in PARTICLE_ENTRIES.items():
         entry = graphics[str(unit_const)]
+        angles, frames, variants = PARTICLE_RUNS.get(unit_const, (1, 1, None))
+        runs = {} if variants is None else {"rotation_is_variant": True, "variant_count": variants}
         assert entry == {
             "graphic_id": entry["graphic_id"], "file_name": entry["file_name"],
-            "angle_count": 1, "mirroring_mode": 0, "frame_count": 1,
-            "particle": True, "art_scale": scale,
+            "angle_count": angles, "mirroring_mode": 0, "frame_count": frames,
+            "particle": True, "art_scale": scale, **runs,
         }, unit_const
+
+
+def test_no_particle_entry_is_a_composite_and_no_piece_is_a_particle(graphics):
+    """A piece's own art_scale stays unreachable: no particle entry carries
+    pieces, and no piece is a particle, so _native_pieces_for need not handle one."""
+    for key, entry in graphics.items():
+        if entry.get("particle"):
+            assert "pieces" not in entry, key
+        for piece in entry.get("pieces", ()):
+            assert "particle" not in piece and "art_scale" not in piece, (key, piece["file_name"])
 
 
 def test_return_of_rome_keeps_the_particle_consts_measured_on_its_dat(monkeypatch):
     """GH #311: the RoR .dat gives Smoke and the Flames AoE2's graphics and effects
-    (measured 2026-11-02), and main() refuses a run whose emitted set differs from the list."""
+    (measured 2026-11-02), and main() refuses a run whose emitted set differs from the list.
+    AoE2's later consts (GH #330) are unmeasured there, so RoR's list is its own nine."""
     import importlib.util
 
     monkeypatch.syspath_prepend(str(GRAPHIC_MAP_PATH.parent.parent / "tools"))
@@ -1304,10 +1485,8 @@ def test_return_of_rome_keeps_the_particle_consts_measured_on_its_dat(monkeypatc
     spec = importlib.util.spec_from_file_location("gen_unit_graphic_map_ror", path)
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)  # a private copy: _select_dataset rewrites module globals
-    aoe2 = gen._PARTICLE_CONSTS
-    assert 1336 in aoe2
+    assert 1336 in gen._PARTICLE_CONSTS
     gen._select_dataset("ror")
-    assert aoe2 == gen._PARTICLE_CONSTS
     assert sorted(gen._PARTICLE_CONSTS) == [303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610]
 
 
@@ -1335,6 +1514,28 @@ def test_the_generator_refuses_a_non_bool_fliph(gen, tmp_path, flip):
 def test_the_generator_takes_a_particle_effect_of_known_keys(gen, tmp_path, effect):
     entry = gen._particle_entry(1336, _particle_graphic(tmp_path, **effect), tmp_path)
     assert entry is not None and entry["file_name"] == "fx" and entry["art_scale"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [{"ImageCount": 6, "ImageAngles": 4}, {"ImageCount": 6, "ImageAngles": 0},
+     {"ImageCount": 6, "ImageAngles": "3"}, {"ImageCount": 6, "ImageAngles": True},
+     {"ImageCount": 6, "ImageAngles": 3, "Layer": "Units"}],
+    ids=["not-a-divisor", "zero", "str", "bool", "layer-units"],
+)
+def test_the_generator_refuses_a_malformed_image_angles_or_layer(gen, tmp_path, effect):
+    with pytest.raises(SystemExit, match="ImageAngles"):
+        gen._particle_entry(896, _particle_graphic(tmp_path, **effect), tmp_path, 20)
+
+
+def test_the_generator_splits_image_angles_into_variant_runs(gen, tmp_path):
+    """GH #330: the waterfalls. Layer "Terrain" (1635) is accepted."""
+    effect = {"ImageCount": 6, "ImageAngles": 3, "Layer": "Terrain"}
+    entry = gen._particle_entry(1635, _particle_graphic(tmp_path, **effect), tmp_path, 20)
+    assert (entry["angle_count"], entry["frame_count"]) == (3, 2)
+    assert (entry["rotation_is_variant"], entry["variant_count"]) == (True, 3)
+    plain = gen._particle_entry(1308, _particle_graphic(tmp_path, ImageCount=6), tmp_path, 20)
+    assert (plain["angle_count"], plain["frame_count"]) == (1, 1) and "rotation_is_variant" not in plain
 
 
 def _gate_piece(file_name: str, dx: int, dy: int, parent: bool = False) -> dict:

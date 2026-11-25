@@ -22,7 +22,10 @@ mods are disabled and nothing is remembered.
 
 A mod whose derive simplified objects or rows (GH #262, dat_derive's lenient
 mode) says so once per window and cache key, in the status log when its tables
-take effect (up to WARNING_LINES of them), and from then on in its menu item's tooltip.
+take effect, and from then on in its menu item's tooltip. The status log words
+it for the user (GH #323): one line per warning kind, in WARNING_TEXT's words,
+with its count of distinct objects or terrains and a few example names, and
+the meta.json path that holds the generators' own text for a bug report.
 """
 
 from __future__ import annotations
@@ -33,12 +36,25 @@ from dataclasses import dataclass, field
 from PyQt5.QtCore import QObject, QProcess, QTimer
 from PyQt5.QtWidgets import QAction, QActionGroup, QMenu
 
-from descape import asset_source, dat_cache, data_mods, debug_log, game_dataset, games, mod_graphics, settings, unit_sprites
+from descape import (
+    asset_source,
+    dat_cache,
+    data_mods,
+    debug_log,
+    game_dataset,
+    games,
+    mod_graphics,
+    object_catalog,
+    settings,
+    unit_sprites,
+)
 
 # How often a finished parse re-checks for an idle window before swapping.
 APPLY_RETRY_MS = 200
-# How many of a mod's derive warnings the status log lists; meta.json has them all.
+# How many of a mod's missing art files the status log lists (art_summary()).
 WARNING_LINES = 20
+# How many example names a warning kind's line gives.
+WARNING_EXAMPLES = 3
 # load_scenario()'s default: a saved document's remembered mod, the session's for an untitled one.
 FROM_PATH = object()
 
@@ -123,11 +139,11 @@ class DataModMenu(QObject):
             menu.addAction(action)
 
     def _item_tooltip(self, mod: data_mods.DataMod) -> str:
-        """A usable mod's tooltip: its status path, plus its warning count once the status log has the summary."""
+        """A usable mod's tooltip: its status path, plus how much it simplifies once the status log has the summary."""
         count = self._warning_counts.get(mod.status_path)
         if not count:
             return mod.status_path
-        return f"{mod.status_path} ({_warning_count(count)}; see the status log)"
+        return f"{mod.status_path} ({_object_count(count)} shown simplified; see the status log)"
 
     def unusable_reason(self, mod: data_mods.DataMod) -> str | None:
         """Why `mod` cannot be picked right now, or None."""
@@ -357,7 +373,7 @@ class DataModMenu(QObject):
             self._window._log_status(f"Showing {shown}")
         if changed and tables is not None:
             if mod is not None:
-                self._warning_counts[mod.status_path] = len(tables.warnings)
+                self._warning_counts[mod.status_path] = simplified_count(tables.warnings)
             if tables.warnings and tables.key not in self._warned:
                 self._warned.add(tables.key)
                 self._window._log_status(warning_summary(tables), level=debug_log.WARNING)
@@ -366,8 +382,83 @@ class DataModMenu(QObject):
         return changed
 
 
-def _warning_count(count: int) -> str:
-    return "1 warning" if count == 1 else f"{count} warnings"
+@dataclass(frozen=True)
+class WarningText:
+    """One warning kind's status log line, for a count of 1 (`one`) and of
+    {n} (`many`). `subject` is what the kind's records name: "unit" (a unit
+    const, which gets example names), "terrain" (a terrain id) or "none"."""
+
+    subject: str
+    one: str
+    many: str
+
+
+# Every tools/_game_root.WARNING_KINDS kind plus "other", dat_cache's fallback
+# (tests/test_dat_derive.py pins both directions). What the user sees differently, and
+# what to do about it where there is anything.
+WARNING_TEXT: dict[str, WarningText] = {
+    "parts_dropped": WarningText(
+        "unit",
+        "1 object is drawn without some of its parts (lights, flags, sails or annexes), or as a mark only",
+        "{n} objects are drawn without some of their parts (lights, flags, sails or annexes), some as a mark only",
+    ),
+    "not_drawn": WarningText(
+        "unit",
+        "1 object is not drawn: only its mark shows",
+        "{n} objects are not drawn: only their marks show",
+    ),
+    "no_garrison_flags": WarningText(
+        "unit",
+        "1 object shows no garrison flag when units are inside",
+        "{n} objects show no garrison flag when units are inside",
+    ),
+    "age_art": WarningText(
+        "unit",
+        "1 building may show another age's look, or its annexes may",
+        "{n} buildings may show another age's look, or their annexes may",
+    ),
+    "civ_art": WarningText(
+        "unit",
+        "1 building is drawn with the default look for some civilizations",
+        "{n} buildings are drawn with the default look for some civilizations",
+    ),
+    "footprint": WarningText(
+        "unit",
+        "1 object takes up one tile for selection and placement, maybe less than in the game: leave room around it",
+        "{n} objects take up one tile for selection and placement, maybe less than in the game: leave room around them",
+    ),
+    "placement_unchecked": WarningText(
+        "none",
+        "Some objects are placed without a terrain check: keep them on terrain the game allows",
+        "Some objects are placed without a terrain check: keep them on terrain the game allows",
+    ),
+    "invisible_rule": WarningText(
+        "none",
+        "Some invisible objects may not count as invisible for Filters > Show Invisible Objects and the Eraser",
+        "Some invisible objects may not count as invisible for Filters > Show Invisible Objects and the Eraser",
+    ),
+    "terrain_class": WarningText(
+        "terrain",
+        "1 terrain is not known as land, water or beach: the terrain list may file it elsewhere, "
+        "and Auto beach lays no shoreline beside it",
+        "{n} terrains are not known as land, water or beach: the terrain list may file them elsewhere, "
+        "and Auto beach lays no shoreline beside them",
+    ),
+    "terrain_blend": WarningText(
+        "terrain",
+        "1 terrain is drawn without blending into its neighbours",
+        "{n} terrains are drawn without blending into their neighbours",
+    ),
+    dat_cache.OTHER_KIND: WarningText(
+        "none",
+        "1 other object or table row is shown simplified",
+        "{n} other objects or table rows are shown simplified",
+    ),
+}
+
+
+def _object_count(count: int) -> str:
+    return "1 object" if count == 1 else f"{count} objects"
 
 
 def _file_count(count: int) -> str:
@@ -394,18 +485,65 @@ def art_summary(tables: game_dataset.DataModTables) -> str:
     return "\n".join(lines)
 
 
+def _kind_of(warning) -> str:
+    return warning.kind if warning.kind in WARNING_TEXT else dat_cache.OTHER_KIND
+
+
+def _subjects(warnings) -> tuple[list[int], int]:
+    """(the distinct ids `warnings` name, in order; how many name none). A tuple subject names each member."""
+    ids: dict[int, None] = {}
+    unnamed = 0
+    for warning in warnings:
+        subject = warning.subject
+        if subject is None:
+            unnamed += 1
+        else:
+            ids.update(dict.fromkeys(subject if isinstance(subject, tuple) else (subject,)))
+    return list(ids), unnamed
+
+
+def simplified_count(warnings) -> int:
+    """How many objects or terrains `warnings` simplify: each distinct unit or
+    terrain once across every kind, plus one per warning that names none."""
+    named: set[tuple[str, int]] = set()
+    unnamed = 0
+    for warning in warnings:
+        subject_type = WARNING_TEXT[_kind_of(warning)].subject
+        ids, none = _subjects((warning,))
+        named.update((subject_type, i) for i in ids)
+        unnamed += none
+    return len(named) + unnamed
+
+
+def _kind_line(kind: str, warnings) -> tuple[int, str]:
+    text = WARNING_TEXT[kind]
+    ids, unnamed = _subjects(warnings)
+    count = len(ids) + unnamed
+    line = (text.one if count == 1 else text.many).format(n=count)
+    if text.subject == "unit" and ids:
+        names = list(dict.fromkeys(object_catalog.display_name(i) for i in ids))
+        more = ", ..." if len(names) > WARNING_EXAMPLES else ""
+        line += f" ({', '.join(names[:WARNING_EXAMPLES])}{more})"
+    return count, f"  {line}."
+
+
 def warning_summary(tables: game_dataset.DataModTables) -> str:
-    """The status log's lines for a mod's derive warnings: a count, up to WARNING_LINES of them, the rest's count."""
-    warnings = tables.warnings
-    lines = [
+    """The status log's lines for a mod's derive warnings (GH #323): a header
+    with simplified_count(), one line per kind by descending count, and where
+    the technical text is for a bug report."""
+    by_kind: dict[str, list] = {kind: [] for kind in WARNING_TEXT}
+    for warning in tables.warnings:
+        by_kind[_kind_of(warning)].append(warning)
+    # sorted() is stable, so equal counts keep WARNING_TEXT's order.
+    kind_lines = sorted((_kind_line(kind, found) for kind, found in by_kind.items() if found), key=lambda cl: -cl[0])
+    return "\n".join([
         (
-            f"Data mod {tables.title}: {_warning_count(len(warnings))}: objects or rows that differ from what "
-            "DEscape measured on the game's own data are shown simplified:"
+            f"Data mod {tables.title} loads simplified: DEscape shows {simplified_count(tables.warnings)} "
+            "of its objects or terrains differently from the game."
         ),
-        *(f"  {warning}" for warning in warnings[:WARNING_LINES]),
-    ]
-    if len(warnings) > WARNING_LINES:
-        lines.append(
-            f"  ... and {len(warnings) - WARNING_LINES} more (full list in {tables.tables_dir / dat_cache.META_NAME})"
-        )
-    return "\n".join(lines)
+        *(line for _count, line in kind_lines),
+        (
+            "Your scenario is saved as usual. For a bug report to the mod's author or DEscape, "
+            f"the technical details are in {tables.tables_dir / dat_cache.META_NAME}."
+        ),
+    ])

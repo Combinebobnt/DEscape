@@ -20,8 +20,11 @@ folder is deleted by hand, which is safe while no data mod is active.
 
 meta.json also carries `mod_only_ids`, the unit consts the mod's .dat defines and
 the install's does not, which the catalog tags (object_catalog.DATA_MOD_TAG), and
-`warnings`, what derive()'s lenient generators simplified (GH #262), which the
-viewer shows in the status log.
+`warnings`, what derive()'s lenient generators simplified (GH #262): one
+{"text", "kind", "subject"} object per dat_derive.DeriveWarning (GH #323),
+which the viewer groups by kind in the status log. A reader maps a bare string
+item, a malformed object or a kind this build does not know to kind "other"
+with no subject, so an entry from another version still reads.
 The install's id set is parsed once per install fingerprint and kept beside the
 entries.
 
@@ -34,6 +37,7 @@ Qt-free.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import importlib.metadata
@@ -88,7 +92,7 @@ class Entry:
     key: str
     path: Path
     mod_only_ids: frozenset[int]
-    warnings: tuple[str, ...] = ()
+    warnings: tuple[dat_derive.DeriveWarning, ...] = ()
 
 
 def write_refusal(path: Path) -> str | None:
@@ -171,7 +175,31 @@ def _read_entry(folder: Path, key: str) -> Entry | None:
     warnings = meta.get("warnings")
     if not isinstance(warnings, list):
         warnings = []
-    return Entry(key, folder, frozenset(int(i) for i in ids), tuple(str(w) for w in warnings))
+    return Entry(key, folder, frozenset(int(i) for i in ids), tuple(_read_warning(w) for w in warnings))
+
+
+OTHER_KIND = "other"
+
+
+def _is_id(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _read_warning(item) -> dat_derive.DeriveWarning:
+    """One meta.json warnings item as a record; anything unreadable is kind OTHER_KIND, no subject."""
+    if not isinstance(item, dict):
+        return dat_derive.DeriveWarning(str(item), OTHER_KIND)
+    text = item.get("text")
+    if not isinstance(text, str):
+        return dat_derive.DeriveWarning(json.dumps(item, sort_keys=True), OTHER_KIND)
+    kind, subject = item.get("kind"), item.get("subject")
+    if isinstance(subject, list) and all(_is_id(member) for member in subject):
+        subject = tuple(subject) or None
+    elif subject is not None and not _is_id(subject):
+        return dat_derive.DeriveWarning(text, OTHER_KIND)
+    if not isinstance(kind, str) or kind not in dat_derive.warning_kinds():
+        return dat_derive.DeriveWarning(text, OTHER_KIND)
+    return dat_derive.DeriveWarning(text, kind, subject)
 
 
 def lookup(key: str, root: Path | None = None) -> Entry | None:
@@ -269,7 +297,7 @@ def build_entry(mod_dat: Path, install: Path, out_dir: Path, *, progress=None) -
     step("done")
     _write_json(
         staging / META_NAME,
-        {**inputs, "mod_only_ids": sorted(mod_ids - install_ids), "warnings": list(warnings)},
+        {**inputs, "mod_only_ids": sorted(mod_ids - install_ids), "warnings": [dataclasses.asdict(w) for w in warnings]},
     )
     return _place(staging, out_dir)
 

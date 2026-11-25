@@ -506,6 +506,18 @@ def test_the_hover_s_ghost_parts_start_over_when_the_look_changes():
         _close(window)
 
 
+def test_opening_a_file_drops_the_hovers_ghost_parts():
+    """TASK-291: a part's GhostSprite holds its document's scenario."""
+    window = _shown_window()
+    try:
+        _hover_tile(window, 30, 40)
+        assert window._cliff_hover_parts
+        window.load_scenario(FIXTURE_PATH)
+        assert window._cliff_hover_parts == {}
+    finally:
+        _close(window)
+
+
 def test_the_hover_s_ghost_parts_start_over_after_an_elevation_edit():
     """An in-place elevation edit keeps id(_iso_elevations), so the look
     cannot tell: _apply_dirty() drops the cached draws along with the memo."""
@@ -1288,5 +1300,68 @@ def test_the_cliff_tooltip_names_the_right_click_erase():
         assert window.cliff_action.toolTip().endswith(
             "Right-click or right-drag to erase cliffs; a run left with one neighbour gets its end cap back."
         )
+    finally:
+        _close(window)
+
+
+# --- TASK-291: a cliff run ghost draws the level the canvas paints -------------
+
+
+@pytest.fixture
+def cliff_art(tmp_path, monkeypatch):
+    """The default cliff piece drawn with test_unit_sprites' synthetic art. The
+    cliff families and Place Unit's wall set are cached off the real table first."""
+    from descape import asset_source, unit_sprites, viewer_unit_place
+
+    from test_unit_sprites import FILE_NAME, build_sld
+
+    cliff_catalog.families()
+    viewer_unit_place._wall_consts()
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    graphics.mkdir(parents=True)
+    (graphics / f"{FILE_NAME}.sld").write_bytes(build_sld(24, canvas=16))
+    entry = {"graphic_id": 1, "file_name": FILE_NAME, "angle_count": 24, "mirroring_mode": 0, "frame_count": 1}
+    table = {**unit_sprites.graphic_map(), _DEFAULT_CLIFF: entry}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
+    asset_source.set_install_path_override(tmp_path)
+    unit_sprites.clear_caches()
+    yield tmp_path
+    asset_source.set_install_path_override(None)
+    unit_sprites.clear_caches()
+
+
+def test_a_cliff_run_ghost_draws_level_1_and_a_step_with_no_new_node_resolves_nothing(cliff_art, monkeypatch):
+    from PyQt5.QtWidgets import QApplication
+    from test_ghost_sprite import counting_resolver, paint_at
+
+    window = _window()
+    try:
+        window.terrain_style_combo.setCurrentText("Stepped")
+        window.show()
+        QApplication.processEvents()
+        window.show_sprites_action.setChecked(True)
+        _select_piece(window, _DEFAULT_CLIFF)
+        window.cliff_action.setChecked(True)
+        view = window.map_view
+        cache = view._canvas_item._cache
+        window.on_edit_stroke_start()
+        for y in range(10, 18):
+            window.on_edit_stroke_tile(10, y, Qt.NoModifier)
+        nodes = window._cliff_stroke.nodes()
+        item = view._unit_ghost_item
+        assert item is not None and item._cache is cache
+        assert len(item._sprites) == len(nodes) > 1 and not item._marks
+        assert cache.mip_for_scale(1.25) == 1
+        paint_at(item, 1.25)
+        assert len(item._level_images[1]) == len(item._images)
+
+        calls = counting_resolver(monkeypatch)
+        window.on_edit_stroke_tile(10, 17, Qt.NoModifier)
+        item = view._unit_ghost_item
+        assert window._cliff_stroke.nodes() == nodes and item._level_images == {}
+        paint_at(item, 1.25)
+        assert len(item._level_images[1]) == len(item._images)
+        assert calls == [], "the parts memo keeps each member, and each member its level-1 draws"
+        window.on_edit_stroke_end()
     finally:
         _close(window)

@@ -556,21 +556,21 @@ def _crop(arr: np.ndarray, ox: int, oy: int, tile_px: int) -> np.ndarray:
     return asset_source.crop_source(arr, tile_px)[oy : oy + tile_px, ox : ox + tile_px]
 
 
-def _compose(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
+def _compose(key, ox: int, oy: int, tile_px: int, angled: bool = False) -> np.ndarray | None:
     own_tid, layer_tid, entries = key
     size = asset_source.terrain_texture_size(tile_px)
-    base = asset_source.terrain_texture_at(own_tid, size)
+    base = asset_source.terrain_texture_at(own_tid, size, angled=angled)
     if base is None:
         return None
     out = _crop(base, ox, oy, tile_px).astype(np.uint32)
     if layer_tid >= 0:
-        layer = asset_source.terrain_texture_at(layer_tid, size)
+        layer = asset_source.terrain_texture_at(layer_tid, size, angled=angled)
         mask = asset_source.terrain_mask_at(layer_mask_name(layer_tid), size)
         if layer is not None and mask is not None:
             m = _crop(mask, ox, oy, tile_px).astype(np.uint32)[:, :, None]
             out = (out * (256 - m) + _crop(layer, ox, oy, tile_px) * m + 128) >> 8
     for n_tid, mode, tile in entries:
-        neighbour = asset_source.terrain_texture_at(n_tid, size)
+        neighbour = asset_source.terrain_texture_at(n_tid, size, angled=angled)
         alpha = asset_source.get_blend_mask(mode, tile, tile_px)
         if neighbour is None or alpha is None:
             continue
@@ -581,7 +581,7 @@ def _compose(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
     return block
 
 
-def blended_block(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
+def blended_block(key, ox: int, oy: int, tile_px: int, angled: bool = False) -> np.ndarray | None:
     """The (tile_px, tile_px, 3) uint8 square top block for a non-None
     influences() key, read-only and cached: the own texture cropped at
     (ox, oy) (render._crop_offset's), then the layer
@@ -591,15 +591,17 @@ def blended_block(key, ox: int, oy: int, tile_px: int) -> np.ndarray | None:
     (ox, oy), so a bleed continues the neighbour's own tiles. Integer math
     only, so numpy and native can share the bytes. A missing layer,
     neighbour texture or mask is skipped; None when the own texture is
-    missing (the caller's flat-colour fallback)."""
-    cache_key = (key, ox, oy, tile_px)
+    missing (the caller's flat-colour fallback). `angled` reads every
+    texture's angled variant (asset_source.terrain_texture_at()), cached apart;
+    masks stay unfiltered."""
+    cache_key = (key, ox, oy, tile_px, angled)
     with _cache_lock:
         block = _blocks.get(cache_key)
         if block is not None:
             _blocks.move_to_end(cache_key)
             return block
         generation = _generation
-    block = _compose(key, ox, oy, tile_px)
+    block = _compose(key, ox, oy, tile_px, angled)
     if block is None:
         return None
     global _block_bytes

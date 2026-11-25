@@ -1,5 +1,6 @@
 """GH #20: units drawn from a particle effect's atlas (Butterflies 1608-1610; Seagulls 303
-since GH #67; Smoke 1308 and Flames 1333-1336 since GH #256).
+since GH #67; Smoke 1308 and Flames 1333-1336 since GH #256; their hidden twins and the
+waterfalls' ImageAngles runs since GH #330).
 
 Two halves. The synthetic one builds a tiny TexturePacker atlas in tmp_path
 and pins what descape/particle_art.py reads out of it: which rect a frame is
@@ -17,12 +18,14 @@ config.yaml. Not `corpus`-marked: one 2048 px atlas decode and a few dozen cuts.
 from __future__ import annotations
 
 import json
+import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from descape import asset_source, game_dataset, games, iso_geometry, particle_art, render_paint, unit_sprites
+from descape import asset_source, game_dataset, games, iso_geometry, particle_art, render_paint, render_units, unit_sprites
 
 CONST = 990001
 BLOCK_CONST = 990002
@@ -181,7 +184,7 @@ def _hide(path) -> None:
         lambda folder: _hide(folder / f"{EFFECT}.json"),
         lambda folder: (folder / f"{EFFECT}.json").write_text("{not json"),
         lambda folder: (folder / f"{EFFECT}.json").write_text(json.dumps({"ImageCount": 2})),
-        # Per-angle frame runs (the waterfalls) are not read: nothing, not frame 0.
+        # An ImageAngles that does not divide ImageCount: nothing, not frame 0.
         lambda folder: (folder / f"{EFFECT}.json").write_text(json.dumps(
             {"AtlasFile": ATLAS_FILE, "ImageFirst": 1, "ImageCount": 2, "ImageAngles": 3}
         )),
@@ -210,6 +213,69 @@ def test_every_failure_is_none_not_an_exception(particles, break_it):
 def test_no_install_is_none(particles):
     asset_source.set_install_path_override(None)
     assert particle_art.native_frame(EFFECT, 0) is None
+
+
+# --- ImageAngles runs (GH #330, the waterfalls) -------------------------------
+
+RUNS_CONST = 990003
+RUNS_EFFECT = "fx_runs"
+
+
+def _runs_effect(folder, **extra) -> str:
+    """EFFECT's two frames as two ImageAngles runs of one frame each."""
+    (folder / f"{RUNS_EFFECT}.json").write_text(json.dumps(
+        {"AtlasFile": ATLAS_FILE, "ImageFirst": 1, "ImageCount": 2, "Scale": 0.5, "ImageAngles": 2, **extra}
+    ))
+    return RUNS_EFFECT
+
+
+def test_an_image_angles_run_starts_at_its_share_of_the_count(particles):
+    """Run 1's first frame is index ImageCount / ImageAngles, across the whole run."""
+    folder, _table = particles
+    stem = _runs_effect(folder)
+    assert np.array_equal(particle_art.native_frame(stem, 0)[0], UPRIGHT)
+    assert np.array_equal(particle_art.native_frame(stem, 1)[0], TURNED)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"ImageAngles": 3}, {"ImageAngles": 0}, {"ImageAngles": -2}, {"ImageAngles": "2"},
+     {"ImageAngles": 2.0}, {"ImageAngles": True}, {"ImageCount": "2"}],
+    ids=["not-a-divisor", "zero", "negative", "str", "float", "bool", "str-count"],
+)
+def test_a_malformed_image_angles_draws_nothing(particles, extra):
+    folder, _table = particles
+    stem = _runs_effect(folder, **extra)
+    assert particle_art.native_frame(stem, 0) is None
+    assert particle_art.native_frame(stem, 1) is None
+
+
+def test_the_variant_dispatch_picks_an_image_angles_run(particles):
+    """A waterfall-shaped entry (angle_count = runs, frame_count = run length)
+    lands on each run's first frame, install-free."""
+    folder, table = particles
+    table[RUNS_CONST] = _entry(
+        _runs_effect(folder), art_scale=1.0, angle_count=2, rotation_is_variant=True, variant_count=2
+    )
+    unit_sprites.clear_caches()
+    runs = [unit_sprites.sprite_pieces_for(RUNS_CONST, r, 0, NATIVE_HALF_W) for r in (0.0, 1.0)]
+    assert [len(pieces) for pieces in runs] == [1, 1]
+    assert np.array_equal(runs[0][0].draw.rgba, UPRIGHT[0:3, 1:6])
+    assert np.array_equal(runs[1][0].draw.rgba, TURNED)
+
+
+def test_a_particle_stem_has_no_drawn_frame_count_and_reads_no_file(monkeypatch):
+    """drawn_frame_count() is the dispatch's frame_count_of; a particle stem
+    returns None before the .sld and mod lookups, so the variant branch falls
+    back to angle_count with no miss lookup per draw."""
+    unit_sprites.clear_caches()
+    touched = []
+    monkeypatch.setattr(unit_sprites, "_sld_index", touched.append)
+    monkeypatch.setattr(unit_sprites, "_mod_only_index", touched.append)
+    assert unit_sprites.drawn_frame_count("waterfall") is None
+    assert touched == []
+    unit_sprites.drawn_frame_count("not_a_particle_x1")
+    assert touched, "the spy saw no lookup at all, so it proves nothing"
 
 
 # --- the unit_sprites seam ------------------------------------------------
@@ -298,8 +364,16 @@ SMOKE_AND_FLAMES = {
     FLAME3: "fire_large_left",
     FLAME4: "fire_large_right",
 }
+# The hidden SMOKE 902 and FLAME1-4 939-942 name the same effects (GH #330).
+HIDDEN_TWINS = {902: SMOKE, 939: FLAME1, 940: FLAME2, 941: FLAME3, 942: FLAME4}
+# GH #330: const -> (effect stem, ImageAngles runs, frames per run).
+WATERFALLS = {896: ("waterfall", 3, 60), 1635: ("waterfall_background", 3, 60), 2598: ("waterfall_small", 2, 30)}
 # Every particle entry the committed AoE2 table carries, so the seagulls (GH #67) too.
-PARTICLE_STEMS = {**BUTTERFLIES, **SMOKE_AND_FLAMES, 303: "dock_seagulls"}
+PARTICLE_STEMS = {
+    **BUTTERFLIES, **SMOKE_AND_FLAMES, 303: "dock_seagulls",
+    **{const: SMOKE_AND_FLAMES[twin] for const, twin in HIDDEN_TWINS.items()},
+    **{const: stem for const, (stem, _runs, _n) in WATERFALLS.items()},
+}
 SOURCE = 400
 
 # Opaque px of each effect's first frame at native size, measured 2026-10-12.
@@ -325,8 +399,11 @@ def test_every_particle_stem_names_an_effect_this_install_has():
         stem = entry["file_name"]
         effect = json.loads((folder / f"{stem}.json").read_text())
         assert effect["Scale"] == entry["art_scale"], stem
-        # Still the plain atlas run particle_art reads.
-        assert effect["AtlasFile"] and "ImageAngles" not in effect, stem
+        # A plain atlas run, or ImageAngles runs the entry's angle_count / frame_count split.
+        assert effect["AtlasFile"], stem
+        assert effect.get("ImageAngles", 1) == entry["angle_count"], stem
+        if entry["angle_count"] > 1:
+            assert entry["angle_count"] * entry["frame_count"] == effect["ImageCount"], stem
         assert particle_art.native_frame(stem, 0) is not None, stem
 
 
@@ -342,13 +419,27 @@ def _match(a: np.ndarray, b: np.ndarray) -> float:
     return float((a * b).sum() / (np.sqrt((a * a).sum() * (b * b).sum()) + 1e-9))
 
 
-def _in_source(rgba: np.ndarray, hx: int, hy: int) -> np.ndarray:
-    """The frame's alpha on its 400 px source canvas, placed by its hotspot
-    (the pivot is the canvas centre on every butterflies record)."""
-    plane = np.zeros((SOURCE, SOURCE), dtype=np.float32)
-    x0, y0 = SOURCE // 2 - hx, SOURCE // 2 - hy
+def _in_source(rgba: np.ndarray, hx: int, hy: int, size: int = SOURCE) -> np.ndarray:
+    """The frame's alpha on a `size` px canvas, placed by its hotspot at the
+    centre (the pivot is the canvas centre on every butterflies record)."""
+    plane = np.zeros((size, size), dtype=np.float32)
+    x0, y0 = size // 2 - hx, size // 2 - hy
     plane[y0 : y0 + rgba.shape[0], x0 : x0 + rgba.shape[1]] = rgba[..., 3] / 255.0
     return plane
+
+
+def _restored_wins(effect: str, pairs, size: int = SOURCE) -> int:
+    """How many (rotated, unrotated neighbour) pairs the restored frame
+    matches better than its half turn does."""
+    wins = 0
+    for index, neighbour in pairs:
+        rgba, _pc, hx, hy = particle_art.native_frame(effect, index)
+        beside, _pc, beside_hx, beside_hy = particle_art.native_frame(effect, neighbour)
+        reference = _in_source(beside, beside_hx, beside_hy, size)
+        restored = _match(_in_source(rgba, hx, hy, size), reference)
+        half_turn = _match(_in_source(np.rot90(rgba, 2), hx, hy, size), reference)
+        wins += restored > half_turn
+    return wins
 
 
 def test_a_rotated_butterfly_frame_is_turned_back_the_right_way():
@@ -369,14 +460,7 @@ def test_a_rotated_butterfly_frame_is_turned_back_the_right_way():
         for n in (i - 1, i + 1) if n in live and not records[first + n]["rotated"]
     ]
     assert len(pairs) >= 30, f"only {len(pairs)} rotated frames have an unrotated neighbour"
-    wins = 0
-    for index, neighbour in pairs:
-        rgba, _pc, hx, hy = particle_art.native_frame(effect, index)
-        beside, _pc, beside_hx, beside_hy = particle_art.native_frame(effect, neighbour)
-        reference = _in_source(beside, beside_hx, beside_hy)
-        restored = _match(_in_source(rgba, hx, hy), reference)
-        half_turn = _match(_in_source(np.rot90(rgba, 2), hx, hy), reference)
-        wins += restored > half_turn
+    wins = _restored_wins(effect, pairs)
     assert wins >= 0.9 * len(pairs), (
         f"the restored frame beat its half turn on only {wins} of {len(pairs)} pairs: "
         "np.rot90 is turning rotated atlas frames the wrong way"
@@ -469,8 +553,110 @@ def test_particle_art_keeps_ink_down_to_its_floor(unit_const, floor_tile_px):
         assert int((piece.draw.rgba[..., 3] > 0).sum()) >= 1, (unit_const, tile_px)
 
 
-@pytest.mark.parametrize("unit_const", sorted({*BUTTERFLIES, *SMOKE_AND_FLAMES}))
+@pytest.mark.parametrize("unit_const", sorted({*BUTTERFLIES, *SMOKE_AND_FLAMES, *WATERFALLS}))
 def test_every_particle_unit_has_a_flat_icon(unit_const):
     _require_install()
     icon = unit_sprites.icon_for(unit_const, 0.0, 0, 64, 64)
     assert icon is not None and int((icon.rgba[..., 3] > 0).sum()) >= 10, unit_const
+
+
+# --- the waterfalls and the hidden twins (GH #330) -------------------------------
+
+
+@pytest.mark.parametrize("unit_const", sorted(WATERFALLS))
+def test_every_waterfall_run_is_a_distinct_waterfall_with_ink_above_its_anchor(unit_const):
+    """Each ImageAngles run's first frame is non-empty and differs from the
+    others, and at the default zoom it draws with ink above the anchor.
+    Measured 2026-11-25, share above: 0.76 / 0.79 / 0.79 for the large runs,
+    0.42 / 0.12 for SWFALL, whose pivot sits on the fall's edge."""
+    _require_install()
+    stem, runs, per_run = WATERFALLS[unit_const]
+    entry = unit_sprites.graphic_map()[unit_const]
+    assert (entry["file_name"], entry["angle_count"], entry["frame_count"]) == (stem, runs, per_run)
+    natives = [particle_art.native_frame(stem, k * per_run) for k in range(runs)]
+    assert all(native is not None and (native[0][..., 3] > 0).sum() > 1000 for native in natives), stem
+    for a in range(runs):
+        for b in range(a + 1, runs):
+            assert not np.array_equal(natives[a][0], natives[b][0]), (stem, a, b)
+    half_w, _half_h = iso_geometry.half_dims(render_paint.SMALL_MAP_TILE_PIXELS)
+    floor = 0.5 if runs == 3 else 0.05
+    for variant in range(runs):
+        (piece,) = unit_sprites.sprite_pieces_for(unit_const, float(variant), 0, half_w)
+        ys, _xs = np.nonzero(piece.draw.rgba[..., 3] > 0)
+        assert int((ys < piece.draw.hotspot_y).sum()) >= floor * len(ys), (unit_const, variant)
+
+
+def _in_run_pairs(atlas: str, per_run: int) -> list[tuple[int, int]]:
+    """(rotated, unrotated neighbour) index pairs inside one ImageAngles run."""
+    folder = asset_source.get_install_path() / asset_source.PARTICLE_SUBPATH
+    records = particle_art._atlas_frames(folder / "textures" / "atlases" / f"{atlas}.json")
+    return [
+        (i, n) for i, record in enumerate(records) if record["rotated"]
+        for n in (i - 1, i + 1)
+        if 0 <= n < len(records) and n // per_run == i // per_run and not records[n]["rotated"]
+    ]
+
+
+def test_a_rotated_waterfall_frame_is_turned_back_the_right_way():
+    """The butterflies' measure over waterfall.dds, the atlas whose drawn frames
+    (runs 1 and 2's first) are rotated: 146 of its 180 records are. Its 8
+    in-run rotated/unrotated neighbour pairs, read off waterfall.json."""
+    _require_install()
+    pairs = _in_run_pairs("waterfall", 60)
+    assert len(pairs) >= 8, pairs
+    assert particle_art._atlas_frames(
+        asset_source.get_install_path() / asset_source.PARTICLE_SUBPATH / "textures" / "atlases" / "waterfall.json"
+    )[60]["rotated"], "run 1's first frame is no longer rotated, so this pins nothing it draws"
+    wins = _restored_wins("waterfall", pairs, size=1400)
+    assert wins >= 0.9 * len(pairs), f"restored beat its half turn on {wins} of {len(pairs)} pairs"
+
+
+@pytest.mark.parametrize("unit_const", sorted(HIDDEN_TWINS))
+def test_a_hidden_twin_draws_pixel_identical_to_its_visible_const(unit_const):
+    _require_install()
+    half_w, _half_h = iso_geometry.half_dims(render_paint.SMALL_MAP_TILE_PIXELS)
+    (twin,) = unit_sprites.sprite_pieces_for(unit_const, 0.0, 0, half_w)
+    (visible,) = unit_sprites.sprite_pieces_for(HIDDEN_TWINS[unit_const], 0.0, 0, half_w)
+    assert np.array_equal(twin.draw.rgba, visible.draw.rgba), unit_const
+    assert (twin.draw.hotspot_x, twin.draw.hotspot_y) == (visible.draw.hotspot_x, visible.draw.hotspot_y)
+
+
+def _drawn(unit_const: int, rotation: float) -> np.ndarray:
+    half_w, _half_h = iso_geometry.half_dims(render_paint.SMALL_MAP_TILE_PIXELS)
+    (piece,) = unit_sprites.sprite_pieces_for(unit_const, rotation, 0, half_w)
+    return piece.draw.rgba
+
+
+def test_a_waterfalls_rotation_picks_its_run():
+    """896's literal 0, 1, 2 draw three different runs, and the radian form
+    2*pi/3 draws run 1. SWFALL 2598 has 2 runs, so its literal 2 wraps to run
+    0, variant_index()'s rule for an exact integer past the count."""
+    _require_install()
+    runs = [_drawn(896, float(r)) for r in range(3)]
+    assert not np.array_equal(runs[0], runs[1]) and not np.array_equal(runs[1], runs[2])
+    assert not np.array_equal(runs[0], runs[2])
+    assert np.array_equal(_drawn(896, 2 * math.pi / 3), runs[1])
+    small = [_drawn(2598, float(r)) for r in range(3)]
+    assert not np.array_equal(small[0], small[1])
+    assert np.array_equal(small[2], small[0])
+
+
+def test_the_reach_scan_measures_every_waterfall_run():
+    """tools/scan_sprite_reach.py takes each run's first frame, not frame 0
+    alone: run 2 reaches furthest down. Measured 2026-11-25 (left, up, right,
+    down): 87/127/76/46 for the large waterfall against run 0's 87/127/76/32."""
+    _require_install()
+    import conftest
+
+    scan = conftest.load_verify_module("scan_sprite_reach")
+    assert scan.particle_scales()["waterfall"] == (0.53, 60, 3)
+    assert scan.particle_reach("waterfall", *scan.particle_scales()["waterfall"]) == (87, 127, 76, 46)
+    assert scan.particle_reach("waterfall", 0.53, 60, 1) == (87, 127, 76, 32)
+
+
+def test_a_gaia_waterfall_keeps_its_stored_rotation():
+    """render_units.stored_rotation() zeroes a GAIA const that is neither VARIANT
+    nor ANGLE; a waterfall's rotation_is_variant keeps its stored run."""
+    for unit_const in WATERFALLS:
+        unit = SimpleNamespace(unit_const=unit_const, rotation=1.0)
+        assert render_units.stored_rotation(0, unit) == 1.0, unit_const

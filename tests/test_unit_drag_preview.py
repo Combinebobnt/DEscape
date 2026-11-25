@@ -29,7 +29,7 @@ import pytest
 from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt
 from PyQt5.QtGui import QKeyEvent
 from PyQt5.QtWidgets import QApplication
-from test_place_preview import _ghost_draws, _placed_draws
+from test_place_preview import _ghost_draws, _placed_draws, level_install, sprite_install  # noqa: F401
 
 from descape import iso_geometry, object_catalog, placement_rules, render_units, unit_pick, unit_rotation
 from descape.terrain_palette import tile_span
@@ -1613,5 +1613,47 @@ def test_a_gate_turned_mid_drag_names_its_sibling_and_the_status_keeps_it() -> N
         assert _last_status(window) == f"Move: {object_catalog.display_name(_GATE_Y)}"
         _release(window, (70, 70))
         assert f"now {object_catalog.display_name(_GATE_Y)}" in _last_status(window)
+    finally:
+        _close(window)
+
+
+# --- TASK-291: a drag ghost draws the level the canvas paints -------------------
+
+
+@pytest.mark.parametrize("tiles", [[(40, 40)], [(40, 40), (43, 41)]], ids=["single", "group"])
+def test_a_drag_ghost_at_mip_1_draws_the_level_1_art_the_drop_lands(level_install, tiles) -> None:  # noqa: F811
+    from test_ghost_sprite import paint_at
+    from test_place_preview import SPRITE_CONST, level_window
+
+    from descape import render_sprites
+
+    window = level_window("Stepped")
+    try:
+        window.move_action.setChecked(True)
+        view = window.map_view
+        cache = view._canvas_item._cache
+        model = window._ensure_unit_edits()
+        with window._unit_edit(model, "Add", [1]):
+            units = [model.add(1, SPRITE_CONST, tx + 0.5, ty + 0.5) for tx, ty in tiles]
+        keys = [(1, u.reference_id) for u in units]
+        window._selection = list(keys)
+        window._refresh_selection_view()
+        pos = QPointF(*iso_geometry.map_point_to_screen(50.5, 52.5, 0, view._iso_proj))
+        window.on_unit_drag_preview(keys[0], pos, Qt.NoModifier)
+        item = view._unit_ghost_item
+        assert item is not None and item._cache is cache and len(item._sprites) == len(tiles)
+        assert cache.mip_for_scale(1.25) == 1
+        paint_at(item, 1.25)
+        got = sorted((x, y, img.width(), img.height()) for img, _src, _hold, x, y, _s in item._level_images[1])
+
+        window.on_unit_move(keys[0], pos, Qt.NoModifier)
+        assert (units[0].x, units[0].y) == (50.5, 52.5), "the drop lands where the ghost stood"
+        proj, rise = cache.level_sprite_inputs(1)
+        want = sorted(
+            (float(ax - d.hotspot_x), float(ay - d.hotspot_y), d.rgba.shape[1], d.rgba.shape[0])
+            for u in units
+            for d, ax, ay in render_sprites.unit_sprite_draws_at(window.scenario, proj, view._iso_elevations, rise, 1, u)
+        )
+        assert got == want and len(want) == len(tiles)
     finally:
         _close(window)

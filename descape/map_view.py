@@ -18,7 +18,8 @@ MapView is this module's class plus six mixins, one module per area:
 - map_view_viewport.py: zoom anchor and stops, preframes, chunk targets,
   view-state capture and restore, resize and scroll.
 - map_view_triggers.py: the trigger unit and tile pickers, area and location
-  edit, the trigger overlay, its ghosts, ring paths and run labels.
+  edit, the trigger overlay, its ghosts, ring paths and run labels, the
+  outlined map labels' constructor and their cache refresh in paintEvent().
 - map_view_highlight.py: cliff and place ghosts, tile geometry, the brush
   highlight, shape preview and pan highlight.
 
@@ -35,7 +36,7 @@ A branch cut before the split is ported with tools/split_class.py's
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from typing import ClassVar
 
 import numpy as np
@@ -478,6 +479,7 @@ class MapView(
         # state moves up to ViewerWindow.
         self._edge_tick_item: EdgeTickItem | None = None
         self._edge_ticks_enabled = settings.get_distance_ticks()
+        self._edge_ticks_behind_terrain = settings.get_distance_ticks_behind_terrain()
         self._edge_tick_interval = settings.get_distance_tick_interval()
         # View > Grid, same lifetime as the tick state above.
         self._grid_item: GridItem | None = None
@@ -530,6 +532,8 @@ class MapView(
         self._trigger_emphasis: frozenset[tuple[str, int]] | None = None
         self._trigger_items: list[QGraphicsItem] = []
         self._trigger_ring_memo: dict[tuple[int, int, int, int], _RingEntry] = {}
+        # The view key paintEvent() last refreshed the cached map labels for (TASK-519).
+        self._label_cache_key: tuple | None = None
         self._trigger_overlay_enabled = settings.get_trigger_overlay()
         # GH #167: the trigger_geometry.CreatedUnit records the selected triggers would place,
         # kept like the shapes; the two ghost items (strong, dim) go with every scene().clear().
@@ -589,6 +593,11 @@ class MapView(
         self.on_unit_pick = lambda key: None
         self.on_unit_picker_cancel = lambda: None
         self._unit_picker_active = False
+        # TASK-168: a Unit[] pick takes a box too: its (keys, modifiers), the armed
+        # target's is_list slot, and a press's scene pos for the deferred click.
+        self.on_unit_marquee_pick = lambda keys, modifiers: None
+        self._unit_picker_multi = False
+        self._picker_press_scene_pos: QPointF | None = None
         # GH #138's Set Location ("point") / Set Area ("rect") pick, or None: a tile,
         # a normalised inclusive rect, and a cancel. Assigned by the window.
         self.on_tile_pick = lambda tile: None
@@ -689,10 +698,13 @@ class MapView(
         # setter rather than a constructor callable, which would grow the
         # already long injected list (a known merge-collision point).
         self._place_shape_query: Callable[[], str] = lambda: ""
+        # TASK-086: Create Objects' footprint step, from set_stamp_step_query().
+        self._stamp_step_query: Callable[[], tuple[int, int]] = lambda: (1, 1)
         # GH #124: tiles a wall drag must leave empty, from set_place_blocked_query().
         # Latched at press for a "wall" drag or a wall-branch latch below; empty otherwise.
-        self._place_blocked_query: Callable[[], frozenset] = frozenset
-        self._drag_blocked: frozenset = frozenset()
+        # Membership and truth only: since TASK-328 a wall_run.RunGaps, which has no __iter__.
+        self._place_blocked_query: Callable[[], Container[tuple[int, int]]] = frozenset
+        self._drag_blocked: Container[tuple[int, int]] = frozenset()
         # GH #365: Unit Line / Unit Shape's press query, from set_shape_press_query(),
         # and the latch it returned for the live drag, handed to on_shape_commit().
         # Only MapView keeps it, so a cancelled drag leaves nothing behind.
@@ -915,8 +927,9 @@ class MapView(
         # Memoizes the last highlight built, so mouseMoveEvent's per-pixel
         # calls into _update_highlight() don't rebuild an up-to-81-tile
         # QPainterPath every time the mouse moves within the same tile. The
-        # Cliff tool keys its footprint instead: ("cliff", tiles).
-        self._highlight_key: tuple[int, int, int, str, int] | tuple[str, tuple[tuple[int, int], ...]] | None = None
+        # Cliff tool keys its footprint instead: ("cliff", tiles), and a stepped
+        # Create Objects stamp ("stamp", x, y, size, shape, thickness, step).
+        self._highlight_key: tuple[int, int, int, str, int] | tuple[str, tuple[tuple[int, int], ...]] | tuple | None = None
         self._map_rect: QRectF | None = None
         # Set by set_source() just before it calls set_isometric(), consumed
         # (and cleared) by set_isometric() itself -- see set_source()'s
@@ -1077,14 +1090,19 @@ class MapView(
         wall, which turns Place Unit into a wall-run drag tool."""
         self._place_shape_query = fn
 
+    def set_stamp_step_query(self, fn: Callable[[], tuple[int, int]]) -> None:
+        """TASK-086: `fn()` returns Create Objects' footprint step; the highlight keeps its anchors."""
+        self._stamp_step_query = fn
+
     def set_shape_press_query(self, fn: Callable[[], unit_shape.ShapeLatch | None]) -> None:
         """GH #365: `fn()` reads Unit Line / Unit Shape's pick and options at a
         press: a latch held for the drag, or None to start no drag."""
         self._shape_press_query = fn
 
-    def set_place_blocked_query(self, fn: Callable[[], frozenset]) -> None:
-        """GH #124: `fn()` returns the tiles a wall drag leaves empty (empty
-        with "Walls skip occupied tiles" off). Read once per press."""
+    def set_place_blocked_query(self, fn: Callable[[], Container[tuple[int, int]]]) -> None:
+        """GH #124: `fn()` returns the tiles a wall drag leaves empty: the
+        occupied ones with "Walls skip occupied tiles" on, and (TASK-328) the
+        ones the wall can't stand on. Read once per press."""
         self._place_blocked_query = fn
 
     def set_place_preview(self, fn: Callable[[QPointF, object], None]) -> None:
@@ -1657,6 +1675,8 @@ class MapView(
         # after the user next touched the Appearance spinbox in the same
         # session, not on the next map open.
         self._edge_tick_item.set_label_font_px(settings.get_distance_tick_font_px())
+        # Settings > Appearance's behind-terrain clip; computed only while ticks and option are on.
+        self._sync_edge_tick_overhang()
         self.scene().addItem(self._edge_tick_item)
 
         # Same always-built-then-hidden shape as the ticks. No setZValue: at
@@ -1749,6 +1769,8 @@ class MapView(
         self._schedule_trigger_ghost_refresh()
         # Same for a pinned ruler's endpoints: at most a handful of items.
         self._rebuild_pinned_rulers()
+        # The behind-terrain clip: one numpy pass over the border band, about 1 ms on a 480x480.
+        self._sync_edge_tick_overhang()
         # Stack badges anchor on the tile outline too (GH #100). Two outline lookups per
         # stack, but only in Units mode: elevation tools are Terrain-only, so a stroke skips it.
         self._rebuild_stack_badges()

@@ -63,6 +63,9 @@ TERRAIN_TEXTURE_SUBPATH = "resources/_common/terrain/textures/2x"
 TERRAIN_TEXTURE_SPAN = 10
 # The level get_terrain_texture_array() serves: render.SMALL_MAP_TILE_PIXELS, a small map's reference level.
 TEXTURE_REFERENCE_TILE_PIXELS = 64
+# TASK-691: Stepped and Sloped read every other texel along (row +1, col -1) (iso_geometry._inverse_sample),
+# so their texture is low-passed along that axis: the (row, col) step and the weights, centred.
+ANGLED_PREFILTER = ((1, -1), (1, 2, 1))
 
 
 def terrain_texture_size(tile_px: int) -> int:
@@ -381,10 +384,11 @@ def data_mod_string_ids(lang: str | None = None) -> frozenset[int]:
 @game_dataset.cache(maxsize=4)
 def _data_mod_changed_string_ids(lang: str) -> frozenset[int]:
     install = get_install_path()
-    base = {} if install is None else {
-        int(m.group(1)): m.group(2) for m in _string_lines(install / STRINGS_SUBPATH_TEMPLATE.format(lang=lang))
-    }
-    mod = {int(m.group(1)): m.group(2) for path in _data_mod_strings_paths(lang) for m in _string_lines(path)}
+    mod_paths = _data_mod_strings_paths(lang)
+    # The base is every strings file of the game's own chain, the paphos file included.
+    own = [] if install is None else [p for p in game_dataset.stack().strings_paths(install, lang) if p not in mod_paths]
+    base = {int(m.group(1)): m.group(2) for path in own for m in _string_lines(path)}
+    mod = {int(m.group(1)): m.group(2) for path in mod_paths for m in _string_lines(path)}
     return frozenset(key for key, text in mod.items() if base.get(key) != text)
 
 
@@ -963,24 +967,45 @@ def get_terrain_texture_array(terrain_id: int):
     return _texture_for_path(path, terrain_texture_size(TEXTURE_REFERENCE_TILE_PIXELS))
 
 
-def terrain_texture_at(terrain_id: int, size: int):
+def terrain_texture_at(terrain_id: int, size: int, angled: bool = False):
     """terrain_id's texture at `size` (terrain_texture_size()), resized from
-    the full source file, or None. A terrain with no file gets whatever
-    get_terrain_texture_array() serves: None, or a stand-in at its own size."""
+    the full source file, or None. `angled` (Stepped and Sloped) serves it
+    through angled_prefilter(). A terrain with no file gets whatever
+    get_terrain_texture_array() serves, never filtered: None, or a stand-in at
+    its own size."""
     path = get_terrain_texture_path(terrain_id)
     if path is None:
         return get_terrain_texture_array(terrain_id)
-    return _texture_for_path(path, size)
+    return _texture_for_path(path, size, angled)
 
 
-def _texture_for_path(path: Path, size: int):
+def angled_prefilter(arr):
+    """`arr` (a square texture) convolved with ANGLED_PREFILTER, wrapping at
+    the edges (ground textures tile), rounded half up: a new read-only uint8 array."""
+    import numpy as np
+
+    (dr, dc), weights = ANGLED_PREFILTER
+    half, total, n = len(weights) // 2, sum(weights), arr.shape[0]
+    reach = half * max(abs(dr), abs(dc))
+    padded = np.pad(arr, ((reach, reach), (reach, reach)) + ((0, 0),) * (arr.ndim - 2), mode="wrap")
+    acc = np.full(arr.shape, total // 2, dtype=np.uint16)
+    for i, weight in enumerate(weights):
+        r0, c0 = reach + (i - half) * dr, reach + (i - half) * dc
+        acc += padded[r0 : r0 + n, c0 : c0 + n].astype(np.uint16) * weight
+    out = (acc // total).astype(np.uint8)
+    out.flags.writeable = False
+    return out
+
+
+def _texture_for_path(path: Path, size: int, angled: bool = False):
     """One file's texture at `size`, keyed on the FILE like
     _terrain_thumbnail_for_path: a map's 37 ids resolve to 26 files. Read-only,
     since ids sharing a file share the array; consumers only crop views.
     Takes a prefetched load's result (waiting if it is still running) rather
     than decoding the file a second time; a worker's exception raises here.
-    Cached in _textures under TEXTURE_CACHE_BUDGET_BYTES (_keep_texture())."""
-    key = (path, size)
+    Cached in _textures under TEXTURE_CACHE_BUDGET_BYTES (_keep_texture()),
+    the angled variant as its own entry."""
+    key = (path, size, angled)
     with _prefetch_lock:
         if key in _textures:
             _textures.move_to_end(key)
@@ -992,7 +1017,7 @@ def _texture_for_path(path: Path, size: int):
             arr, average = entry[1].result()
     else:
         with perf_trace.texture_load():
-            arr, average = _load_texture(path, size)
+            arr, average = _load_texture(path, size, angled)
     with _prefetch_lock:
         if generation == _generation:
             _keep_texture(key, arr)
@@ -1001,7 +1026,7 @@ def _texture_for_path(path: Path, size: int):
     return arr
 
 
-def _keep_texture(key: tuple[Path, int], arr) -> None:
+def _keep_texture(key: tuple[Path, int, bool], arr) -> None:
     """Caches arr (None for a file that will not decode, so it is not retried)
     as the most recently used entry, then drops least recently used entries
     until the cache is back within TEXTURE_CACHE_BUDGET_BYTES, never the new
@@ -1041,14 +1066,18 @@ def loaded_texture_count() -> int:
 TEXTURE_REDUCING_GAP: float | None = 3.0
 
 
-def _load_texture(path: Path, size: int):
-    """Decode one texture file and resize it to (size, size): (read-only
-    array, the file's _average_rgb() or None once known). (None, None) for a
-    mod file that will not decode. Any thread: PIL releases the GIL."""
+def _load_texture(path: Path, size: int, angled: bool = False):
+    """Decode one texture file and resize it to (size, size), prefiltered if
+    `angled`: (read-only array, the file's _average_rgb() or None once known).
+    (None, None) for a mod file that will not decode. Any thread: PIL releases the GIL."""
     decoded = _decode_texture(path)
     if decoded is None:
         return None, None
-    return _sized_texture(decoded[0], size), decoded[1]
+    return _variant(_sized_texture(decoded[0], size), angled), decoded[1]
+
+
+def _variant(arr, angled: bool):
+    return angled_prefilter(arr) if angled else arr
 
 
 def _decode_texture(path: Path):
@@ -1233,12 +1262,12 @@ def _sized_terrain_mask(name: str, size: int):
 # module pulls in Qt). Created on first use; tests swap in an inline executor.
 PREFETCH_WORKERS = min(4, max(1, (os.cpu_count() or 2) - 1))
 _prefetch_executor = None
-# (path, size) -> (generation, Future) for prefetched loads no get has taken yet.
-_pending: dict[tuple[Path, int], tuple[int, Future]] = {}
-# Queued prefetch jobs, (path, [(size, Future)]), the next to run first; each has one pool slot.
-_jobs: deque[tuple[Path, list[tuple[int, Future]]]] = deque()
-# (path, size) -> texture (or None), least recently used first; _texture_bytes is their total nbytes.
-_textures: OrderedDict[tuple[Path, int], object] = OrderedDict()
+# (path, size, angled) -> (generation, Future) for prefetched loads no get has taken yet.
+_pending: dict[tuple[Path, int, bool], tuple[int, Future]] = {}
+# Queued prefetch jobs, (path, [((size, angled), Future)]), the next to run first; each has one pool slot.
+_jobs: deque[tuple[Path, list[tuple[tuple[int, bool], Future]]]] = deque()
+# (path, size, angled) -> texture (or None), least recently used first; _texture_bytes is their total nbytes.
+_textures: OrderedDict[tuple[Path, int, bool], object] = OrderedDict()
 _texture_bytes = 0
 # The user's ~512 MB (2026-11-20): above it the least recently used level's file reloads on its next visit.
 TEXTURE_CACHE_BUDGET_BYTES = 512 * 2**20
@@ -1265,27 +1294,34 @@ def _prefetch_pool():
 
 def _run_prefetch_job() -> None:
     """One pool slot: takes the job at the front of _jobs, decodes its file
-    once and resolves each size's Future as soon as that size is resized, in
-    the caller's order. A size whose Future was cancelled is skipped."""
+    once and resolves each (size, angled) Future as soon as it is resized and
+    filtered, in the caller's order, resizing once per size. One whose Future
+    was cancelled is skipped."""
     with _prefetch_lock:
         if not _jobs:
             return
         path, futures = _jobs.popleft()
-    wanted = [(size, future) for size, future in futures if future.set_running_or_notify_cancel()]
+    wanted = [(variant, future) for variant, future in futures if future.set_running_or_notify_cancel()]
     if not wanted:
         return
     with perf_trace.texture_prefetch():
         try:
             decoded = _decode_texture(path)
-            for size, future in wanted:
-                future.set_result((None, None) if decoded is None else (_sized_texture(decoded[0], size), decoded[1]))
+            sized: dict[int, object] = {}
+            for (size, angled), future in wanted:
+                if decoded is None:
+                    future.set_result((None, None))
+                    continue
+                if size not in sized:
+                    sized[size] = _sized_texture(decoded[0], size)
+                future.set_result((_variant(sized[size], angled), decoded[1]))
         except Exception as exc:  # noqa: BLE001 - raised again at the get
-            for _size, future in wanted:
+            for _variant_key, future in wanted:
                 if not future.done():
                     future.set_exception(exc)
 
 
-def prefetch_terrain_textures(terrain_ids, tile_pxs, back: bool = False) -> int:
+def prefetch_terrain_textures(terrain_ids, tile_pxs, back: bool = False, angled: bool = False) -> int:
     """Starts loading the texture files behind terrain_ids, at the texture
     size of each level in tile_pxs, on a small thread pool, so a render that
     needs them later waits on the load already in flight instead of decoding
@@ -1298,15 +1334,20 @@ def prefetch_terrain_textures(terrain_ids, tile_pxs, back: bool = False) -> int:
     neighbour, goes to the front); the earlier job keeps its other sizes.
     `back` instead queues behind everything and moves nothing: the whole
     ladder after a load settles (GH #326). Loads already cached, running or
-    taken by a get are skipped, as are ids with no texture. Returns the
-    number of (file, size) loads submitted."""
-    sizes = list(dict.fromkeys(terrain_texture_size(px) for px in tile_pxs))
+    taken by a get are skipped, as are ids with no texture. `angled` loads
+    terrain_texture_at()'s angled variant, and drops the other variant's
+    loads of the same files that no get has taken (a queued one cancelled),
+    so a style switch strands no finished load outside the cache budget.
+    Returns the number of (file, size) loads submitted."""
+    variants = [(s, angled) for s in dict.fromkeys(terrain_texture_size(px) for px in tile_pxs)]
     paths = dict.fromkeys(p for p in map(get_terrain_texture_path, map(int, terrain_ids)) if p is not None)
     jobs, submitted = [], 0
     with _prefetch_lock:
-        moved: dict[Path, dict[int, Future]] = {}
+        for key in [k for k in _pending if k[2] != angled and k[0] in paths]:
+            _pending.pop(key)[1].cancel()
+        moved: dict[Path, dict[tuple[int, bool], Future]] = {}
         if not back and _jobs:
-            wanted, kept = set(sizes), []
+            wanted, kept = set(variants), []
             for path, queued in _jobs:
                 rest = queued
                 if path in paths:
@@ -1320,14 +1361,14 @@ def prefetch_terrain_textures(terrain_ids, tile_pxs, back: bool = False) -> int:
         for path in paths:
             earlier = moved.get(path, {})
             futures = []
-            for size in sizes:
-                key = (path, size)
-                if size in earlier:
-                    futures.append((size, earlier[size]))
+            for variant in variants:
+                key = (path, *variant)
+                if variant in earlier:
+                    futures.append((variant, earlier[variant]))
                 elif key not in _textures and key not in _pending:
                     future = Future()
                     _pending[key] = (_generation, future)
-                    futures.append((size, future))
+                    futures.append((variant, future))
                     submitted += 1
             if futures:
                 jobs.append((path, futures))
@@ -1370,7 +1411,7 @@ def shutdown_prefetch_pool() -> None:
         _pending.clear()
         # A get may hold a queued job's Future already: cancelled, it raises rather than waiting on a dead slot.
         for _path, futures in _jobs:
-            for _size, future in futures:
+            for _variant_key, future in futures:
                 future.cancel()
         _jobs.clear()
         executor, _prefetch_executor = _prefetch_executor, None

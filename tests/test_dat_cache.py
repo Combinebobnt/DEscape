@@ -36,8 +36,12 @@ def mod_dat(tmp_path) -> Path:
     return path
 
 
-# What fake_derive's derive() returns: one lenient guard's warning (GH #262).
-FAKE_WARNINGS = ["gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)"]
+# What fake_derive's derive() returns: lenient guards' warnings (GH #262, GH #323).
+FAKE_WARNINGS = [
+    dat_derive.DeriveWarning("gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)", "parts_dropped", 45),
+    dat_derive.DeriveWarning("gen_unit_graphic_map.py: fish 450, 451 broke a rule (not drawn)", "not_drawn", (450, 451)),
+    dat_derive.DeriveWarning("gen_object_catalog.py: a row broke a rule (unchecked)", "placement_unchecked"),
+]
 
 
 @pytest.fixture()
@@ -82,8 +86,45 @@ def test_the_derive_warnings_land_in_meta_and_the_entry(tmp_path, install, mod_d
     key = _key(mod_dat, install)
     entry = dat_cache.build_entry(mod_dat, install, tmp_path / "cache" / key)
     assert entry.warnings == tuple(FAKE_WARNINGS)
-    assert json.loads((entry.path / dat_cache.META_NAME).read_text())["warnings"] == FAKE_WARNINGS
-    assert dat_cache.lookup(key, tmp_path / "cache").warnings == tuple(FAKE_WARNINGS)
+    assert json.loads((entry.path / dat_cache.META_NAME).read_text())["warnings"] == [
+        {"text": FAKE_WARNINGS[0].text, "kind": "parts_dropped", "subject": 45},
+        {"text": FAKE_WARNINGS[1].text, "kind": "not_drawn", "subject": [450, 451]},
+        {"text": FAKE_WARNINGS[2].text, "kind": "placement_unchecked", "subject": None},
+    ]
+    assert dat_cache.lookup(key, tmp_path / "cache").warnings == tuple(FAKE_WARNINGS), "records round-trip"
+
+
+@pytest.mark.parametrize(
+    "item, text",
+    [
+        ("gen_unit_stats.py: an old string warning (dropped)", "gen_unit_stats.py: an old string warning (dropped)"),
+        ({"text": "t (f)", "kind": "drawn_oddly", "subject": 45}, "t (f)"),
+        ({"text": "t (f)", "kind": "other", "subject": 45}, "t (f)"),
+        ({"text": "t (f)", "kind": "not_drawn", "subject": "45"}, "t (f)"),
+        ({"text": "t (f)", "kind": "not_drawn", "subject": [45, True]}, "t (f)"),
+        ({"text": "t (f)", "kind": "not_drawn", "subject": True}, "t (f)"),
+        ({"kind": "not_drawn", "subject": 45}, '{"kind": "not_drawn", "subject": 45}'),
+        (7, "7"),
+        ({"text": "t (f)", "kind": ["not_drawn"], "subject": 45}, "t (f)"),
+        ({"text": "t (f)", "kind": {"not_drawn": 1}, "subject": 45}, "t (f)"),
+    ],
+    ids=[
+        "string", "unknown_kind", "other_kind", "string_subject", "bad_member", "bool_subject", "no_text", "number",
+        "list_kind", "dict_kind",
+    ],
+)
+def test_an_unreadable_warning_item_reads_as_other(tmp_path, install, mod_dat, fake_derive, item, text):
+    """GH #323: an entry from an older or newer build still reads, so warning_summary() never meets an unknown kind."""
+    key = _key(mod_dat, install)
+    entry = dat_cache.build_entry(mod_dat, install, tmp_path / "cache" / key)
+    meta = json.loads((entry.path / dat_cache.META_NAME).read_text())
+    meta["warnings"] = [item, {"text": "kept", "kind": "terrain_blend", "subject": 3}, {"text": "e", "kind": "footprint", "subject": []}]
+    (entry.path / dat_cache.META_NAME).write_text(json.dumps(meta))
+    assert dat_cache.lookup(key, tmp_path / "cache").warnings == (
+        dat_derive.DeriveWarning(text, dat_cache.OTHER_KIND),
+        dat_derive.DeriveWarning("kept", "terrain_blend", 3),
+        dat_derive.DeriveWarning("e", "footprint"),
+    )
 
 
 @pytest.mark.parametrize("warnings", [None, "not a list"], ids=["absent", "not_a_list"])
@@ -273,10 +314,10 @@ for name in {names!r}:
 with (out / "argv.jsonl").open("a") as log:
     log.write(json.dumps(args) + "\\n")
 if {script!r} == "gen_unit_graphic_map.py":
-    _game_root.refuse("unit_const 45 broke a rule", "drawn alone")
-    _game_root.refuse("unit_const 45 broke a rule", "drawn alone")
+    _game_root.refuse("unit_const 45 broke a rule", "drawn alone", kind="parts_dropped", subject=45)
+    _game_root.refuse("unit_const 45 broke a rule", "drawn alone", kind="parts_dropped", subject=45)
 if {script!r} in ("gen_unit_graphic_map.py", "gen_unit_render_data.py"):
-    _game_root.refuse("a shared rule broke", "left out")
+    _game_root.refuse("a shared rule broke", "left out", kind="footprint", subject=(7, 8))
 """
 
 
@@ -313,9 +354,9 @@ def test_a_lenient_derive_labels_each_warning_by_its_generator(tmp_path, spy_too
     out = tmp_path / "out"
     warnings = dat_derive.derive(tmp_path / "mod.dat", tmp_path / "install", out, tools=spy_tools)
     assert warnings == [
-        "gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)",
-        "gen_unit_graphic_map.py: a shared rule broke (left out)",
-        "gen_unit_render_data.py: a shared rule broke (left out)",
+        dat_derive.DeriveWarning("gen_unit_graphic_map.py: unit_const 45 broke a rule (drawn alone)", "parts_dropped", 45),
+        dat_derive.DeriveWarning("gen_unit_graphic_map.py: a shared rule broke (left out)", "footprint", (7, 8)),
+        dat_derive.DeriveWarning("gen_unit_render_data.py: a shared rule broke (left out)", "footprint", (7, 8)),
     ], "de-duplicated per generator run, so a later generator's repeat keeps its own label"
     assert all("--lenient" in argv for argv in _argvs(out))
     assert sys.modules["_game_root"] is _game_root, "the caller's copy is put back"
@@ -394,8 +435,9 @@ def test_derive_reproduces_the_committed_tables(tmp_path):
 @pytest.mark.slow
 def test_the_galactic_battlegrounds_dat_derives_with_warnings(tmp_path):
     """GH #262, local only: the Galactic Battlegrounds Test - Data mod's .dat
-    (my-scenarios/, never committed; DESCAPE_GBG_DAT overrides the path) loads,
-    building 45's ship-sail shell simplified rather than failing the derive."""
+    (my-scenarios/, never committed; DESCAPE_GBG_DAT overrides the path, and may
+    point at the subscribed mod, which this only reads) loads, building 45's
+    ship-sail shell simplified rather than failing the derive."""
     from descape import asset_source
 
     dat = Path(os.environ.get("DESCAPE_GBG_DAT") or DESCAPE.parent / "my-scenarios" / "gbg_empires2_x2_p1.dat")
@@ -407,7 +449,9 @@ def test_the_galactic_battlegrounds_dat_derives_with_warnings(tmp_path):
     pytest.importorskip("genieutils")
     code = (
         "import json, sys; from pathlib import Path; from descape import dat_derive; "
-        "print(json.dumps(dat_derive.derive(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))))"
+        "import dataclasses; "
+        "warnings = dat_derive.derive(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])); "
+        "print(json.dumps([dataclasses.asdict(w) for w in warnings]))"
     )
     run = subprocess.run(
         [sys.executable, "-c", code, str(dat), str(install), str(tmp_path)],
@@ -416,4 +460,8 @@ def test_the_galactic_battlegrounds_dat_derives_with_warnings(tmp_path):
     assert run.returncode == 0, run.stderr
     assert all((tmp_path / name).is_file() for name in dat_derive.TABLE_NAMES)
     warnings = json.loads(run.stdout.strip().splitlines()[-1])
-    assert any(w.startswith("gen_unit_graphic_map.py: unit_const 45 (type 80)") for w in warnings), warnings[:5]
+    assert any(
+        w["text"].startswith("gen_unit_graphic_map.py: unit_const 45 (type 80)") and (w["kind"], w["subject"]) == ("parts_dropped", 45)
+        for w in warnings
+    ), warnings[:5]
+    assert {w["kind"] for w in warnings} <= dat_derive.warning_kinds()

@@ -290,6 +290,78 @@ def test_a_unit_brush_ghost_draws_the_painted_units_own_sprite(sprite_install, s
         _close(window)
 
 
+# --- TASK-291: the ghost draws the level the canvas paints ---------------------
+
+# Each level's own ratio, so its pixels land 1:1 on device pixels and the filter adds no edge.
+LEVEL_SCALES = {-1: 0.5, 0: 1.0, 1: 1.5}
+
+
+@pytest.fixture
+def level_install(sprite_install):
+    """sprite_install's art on a 16 px canvas: its hotspot, 8, rounds to 5 at
+    level 0 (x 2/3) and to 3 at level -1 (x 1/3), and stays 8 at level 1 (x 1)."""
+    (sprite_install / unit_sprites.GRAPHICS_SUBPATH / f"{FILE_NAME}.sld").write_bytes(build_sld(4, canvas=16))
+    unit_sprites.clear_caches()
+    yield sprite_install
+    unit_sprites.clear_caches()
+
+
+def changed_box(a: np.ndarray, b: np.ndarray):
+    ys, xs = np.nonzero((a != b).any(axis=2))
+    return None if len(xs) == 0 else (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+
+
+def level_window(style: str):
+    """A level_install window with Show sprites on and the synthetic sprite picked."""
+    window = _window(style, const=None)
+    window.show_sprites_action.setChecked(True)
+    window.units_panel._set_pending_object(SPRITE_CONST)
+    return window
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_ghost_sits_on_the_placed_sprite_at_every_level(level_install, style) -> None:
+    """Hover, render at each level's scale with the ghost opaque, place, render
+    again: the ghost's changed-pixel box is the placed sprite's."""
+    from test_mip_viewer import _render_scene_rect
+
+    from descape import ghost_sprite
+
+    window = level_window(style)
+    try:
+        view = window.map_view
+        cache = view._canvas_item._cache
+        scene = _hover_tile(window, 40, 40)
+        item = view._unit_ghost_item
+        assert item is not None and item._images, "the sprite must resolve, or this test proves nothing"
+        item.setOpacity(1.0)
+        corners = {
+            mip: [(x * s, y * s) for _d, x, y, s, _look in ghost_sprite.level_entries(item._sprites, cache, mip)]
+            for mip in LEVEL_SCALES
+        }
+        assert corners[-1] != corners[0] and corners[1] != corners[0], f"no level misses level 0: {corners}"
+        centre = item.boundingRect().center()
+        # An even origin keeps every level pixel on whole device pixels at 0.5 and 1.5.
+        src = QRectF(2 * round(centre.x() / 2) - 32, 2 * round(centre.y() / 2) - 32, 64, 64)
+        ghosts = {}
+        for mip, scale in LEVEL_SCALES.items():
+            assert cache.mip_for_scale(scale) == mip
+            item.setVisible(False)
+            base = _render_scene_rect(view.scene(), src, scale)
+            item.setVisible(True)
+            ghosts[mip] = (base, changed_box(base, _render_scene_rect(view.scene(), src, scale)))
+        view.set_unit_ghost()
+        _place_at(window, scene)
+        view.set_unit_ghost()
+        view.set_unit_selection([])
+        for mip, scale in LEVEL_SCALES.items():
+            base, ghost_box = ghosts[mip]
+            assert ghost_box is not None
+            assert changed_box(base, _render_scene_rect(view.scene(), src, scale)) == ghost_box, (style, mip)
+    finally:
+        _close(window)
+
+
 # --- The scene item's lifecycle ----------------------------------------------
 
 
@@ -780,8 +852,10 @@ def test_loading_a_scenario_resets_the_pending_rotation() -> None:
         _hover_tile(window, 40, 40)
         window.rotate_place_ghost(steps=3)
         assert window._place_rotation.facing != 0.0
+        window._place_roll_const = _UNIT_CONST  # TASK-367: what a ticked Random box leaves
         window.load_scenario(FIXTURE_PATH)
         assert window._place_rotation == type(window._place_rotation)()
+        assert window._place_roll_const is None
     finally:
         _close(window)
 
@@ -1868,5 +1942,294 @@ def test_the_unit_brush_over_a_host_is_unaffected() -> None:
         item = window.map_view._unit_ghost_item
         assert item is None or not item.garrison
         assert window.map_view._unit_hover_key is None
+    finally:
+        _close(window)
+
+
+# --- TASK-367: Place Unit's Random facing/variant ---------------------------------
+
+
+def _ghost_rotation(window) -> float:
+    """The rotation the current hover ghost was built with (its memo key)."""
+    memo = window._place_ghost_memo
+    assert memo is not None and memo[1] is window.map_view._unit_ghost_item
+    return memo[0][3]
+
+
+def _rolls(seed: int, const: int, owner: int, count: int = 12) -> list[float]:
+    """What a box ticked on `const` places, click by click, from a Random(seed)."""
+    import random
+
+    from descape import place_rotation
+
+    rng = random.Random(seed)
+    return [place_rotation.rotation_for(place_rotation.roll(rng, const), const, owner) for _ in range(count)]
+
+
+def _tick_random(window, seed: int) -> None:
+    import random
+
+    window._place_rng = random.Random(seed)
+    window.place_random_check.setChecked(True)
+    assert window.place_random_check.isEnabled()
+
+
+@pytest.mark.parametrize(("const", "owner"), [(_UNIT_CONST, 1), (_OAK, 0)], ids=["villager", "oak"])
+def test_each_click_places_the_roll_its_ghost_showed_and_the_next_shows_at_once(rotating_install, const, owner) -> None:
+    window = _sprite_window(const, owner=owner)
+    try:
+        view = window.map_view
+        _tick_random(window, 367)
+        rolls = _rolls(367, const, owner)
+        placed = []
+        for i in range(10):
+            scene = _hover_tile(window, 30 + 2 * i, 40)
+            assert _ghost_rotation(window) == rolls[i]
+            ghost = _ghost_draws(view)
+            entry = _place_at(window, scene)
+            assert entry.unit.rotation == rolls[i]
+            assert ghost == _placed_draws(window, entry)
+            if const == _OAK:
+                assert entry.unit.rotation == int(entry.unit.rotation)
+                assert entry.unit.initial_animation_frame == int(entry.unit.rotation)
+            assert _ghost_rotation(window) == rolls[i + 1], "the next roll shows with no mouse move"
+            placed.append(entry.unit.rotation)
+        assert len(set(placed)) >= 2
+    finally:
+        _close(window)
+
+
+def test_a_turn_with_random_ticked_sets_the_next_click_alone(rotating_install) -> None:
+    import math
+
+    window = _sprite_window(_UNIT_CONST)
+    try:
+        view = window.map_view
+        _tick_random(window, 3)
+        rolls = _rolls(3, _UNIT_CONST, 1)
+        scene = _hover_tile(window, 40, 40)
+        assert _ghost_rotation(window) == rolls[0]
+        window.rotate_place_ghost(steps=3)
+        turned = (round(rolls[0] / (2 * math.pi / 16)) + 3) % 16 * 2 * math.pi / 16
+        assert _ghost_rotation(window) == pytest.approx(turned)
+        ghost = _ghost_draws(view)
+        entry = _place_at(window, scene)
+        assert entry.unit.rotation == pytest.approx(turned)
+        assert ghost == _placed_draws(window, entry)
+        assert window.place_random_check.isChecked(), "a turn leaves the box ticked"
+        second = _place_at(window, _hover_tile(window, 44, 44))
+        assert rolls[1] != pytest.approx(turned), "the seed must tell the turn from the next roll"
+        assert second.unit.rotation == rolls[1]
+    finally:
+        _close(window)
+
+
+def test_a_refused_click_keeps_the_roll_for_the_next_good_one() -> None:
+    window = _window()
+    try:
+        _tick_random(window, 12)
+        rolls = _rolls(12, _UNIT_CONST, 1)
+        assert rolls[0] != rolls[1], "the seed must tell the two rolls apart"
+        scene = _hover_tile(window, 40, 40)
+        assert _place_at(window, scene).unit.rotation == rolls[0]
+        count =sum(len(units) for units in window.scenario.unit_manager.units)
+        state = window._place_rng.getstate()
+        _hover_tile(window, 40, 40)
+        assert _ghost_rotation(window) == rolls[1]
+        window.on_unit_place(scene, Qt.NoModifier)
+        assert sum(len(units) for units in window.scenario.unit_manager.units) == count, "refused: blocked"
+        assert _ghost_rotation(window) == rolls[1]
+        assert window._place_rng.getstate() == state
+        assert _place_at(window, _hover_tile(window, 44, 44)).unit.rotation == rolls[1]
+    finally:
+        _close(window)
+
+
+def test_random_villager_with_random_ticked_ghosts_each_clicks_villager_and_facing(rotating_install) -> None:
+    import random
+
+    from descape.place_random import RANDOM_VILLAGER
+
+    window = _sprite_window(_UNIT_CONST)
+    try:
+        panel = window.units_panel
+        panel._rng = random.Random(164)
+        panel.catalog_view.select(RANDOM_VILLAGER)
+        _tick_random(window, 5)
+        view = window.map_view
+        placed = []
+        for i in range(10):
+            scene = _hover_tile(window, 30 + 2 * i, 40)
+            const, rotation, ghost = _ghost_const(window), _ghost_rotation(window), _ghost_draws(view)
+            entry = _place_at(window, scene)
+            assert (entry.unit.unit_const, entry.unit.rotation) == (const, rotation)
+            assert ghost == _placed_draws(window, entry)
+            placed.append((const, rotation))
+        assert {const for const, _ in placed} == {_UNIT_CONST, _FEMALE_VILLAGER}
+        assert len({rotation for _, rotation in placed}) >= 2
+    finally:
+        _close(window)
+
+
+def test_ticking_rolls_the_ghost_at_once_and_unticking_keeps_the_shown_value() -> None:
+    from descape import place_rotation
+
+    seed = next(s for s in range(100) if 0.0 != _rolls(s, _UNIT_CONST, 1)[0] != _rolls(s, _UNIT_CONST, 1)[1])
+    rolls = _rolls(seed, _UNIT_CONST, 1)
+    window = _window()
+    try:
+        _hover_tile(window, 40, 40)
+        assert _ghost_rotation(window) == 0.0
+        _tick_random(window, seed)
+        assert _ghost_rotation(window) == rolls[0], "ticking re-rolls with no mouse move"
+        window.place_random_check.setChecked(False)
+        assert _ghost_rotation(window) == rolls[0]
+        # A second tick rolls afresh, though nothing was placed since the first.
+        window.place_random_check.setChecked(True)
+        shown = _ghost_rotation(window)
+        assert shown == rolls[1]
+        window.place_random_check.setChecked(False)
+        assert _ghost_rotation(window) == shown
+        first = _place_at(window, _hover_tile(window, 42, 40))
+        second = _place_at(window, _hover_tile(window, 44, 40))
+        assert first.unit.rotation == second.unit.rotation == shown
+        assert place_rotation.rotation_for(window._place_rotation, _UNIT_CONST, 1) == shown
+    finally:
+        _close(window)
+
+
+def test_an_eyedropped_facing_is_the_next_click_and_the_click_after_rolls() -> None:
+    import math
+
+    window = _window(const=_HOUSE)
+    try:
+        _tick_random(window, 21)
+        window.eyedropper_action.setChecked(True)
+        assert window.map_view._tool == "eyedropper"
+        rolls = _rolls(21, _ARCHER, 2)
+        entry = _fixture_entry(window, _ARCHER_KEY)
+        entry.unit.rotation = _OFF_GRID_FACING
+        window.pick_unit_value(entry, (20, 20), Qt.NoModifier)
+        window.place_unit_action.setChecked(True)
+        first = _place_at(window, _hover_tile(window, 40, 40))
+        assert (first.unit.unit_const, first.player_id) == (_ARCHER, 2)
+        assert first.unit.rotation == pytest.approx(6 * 2 * math.pi / 16)
+        second = _place_at(window, _hover_tile(window, 44, 44))
+        assert rolls[0] != pytest.approx(first.unit.rotation), "the seed must tell the pick from the roll"
+        assert second.unit.rotation == rolls[0]
+    finally:
+        _close(window)
+
+
+@pytest.mark.parametrize("const", [_STONE_GATE, _HOUSE], ids=["gate", "inert"])
+def test_a_gate_or_inert_pick_with_random_ticked_places_its_const_at_zero(const) -> None:
+    window = _window(const=const)
+    try:
+        _tick_random(window, 2)
+        for tile in ((40, 40), (50, 50)):
+            entry = _place_at(window, _hover_tile(window, *tile))
+            assert (entry.unit.unit_const, entry.unit.rotation) == (const, 0.0)
+    finally:
+        _close(window)
+
+
+def test_the_unit_brush_never_spends_a_place_unit_roll() -> None:
+    from descape import place_rotation
+
+    window = _window()
+    try:
+        _tick_random(window, 8)
+        rolls = _rolls(8, _UNIT_CONST, 1)
+        # Nothing rolled yet: hovering and turning the brush must not roll either.
+        fresh = window._place_rng.getstate()
+        window.unit_brush_action.setChecked(True)
+        window.unit_brush_random_check.setChecked(False)
+        _hover_tile(window, 44, 44)
+        assert _ghost_rotation(window) == 0.0
+        window.rotate_place_ghost(steps=1)
+        assert (window._place_rng.getstate(), window._place_roll_const) == (fresh, None)
+
+        window.place_unit_action.setChecked(True)
+        _hover_tile(window, 40, 40)
+        assert _ghost_rotation(window) == rolls[0]
+        state = window._place_rng.getstate()
+
+        window.unit_brush_action.setChecked(True)
+        _hover_tile(window, 44, 44)
+        assert _ghost_rotation(window) == rolls[0], "the brush ghost draws the raw pending state"
+        window.place_unit_action.setChecked(True)
+        _hover_tile(window, 40, 40)
+        assert _ghost_rotation(window) == rolls[0], "back on Place Unit, the roll it showed before"
+        assert (window._place_rng.getstate(), window._place_roll_const) == (state, _UNIT_CONST)
+
+        window.unit_brush_action.setChecked(True)
+        _hover_tile(window, 44, 44)
+        window.rotate_place_ghost(steps=2)
+        assert (window._place_rng.getstate(), window._place_roll_const) == (state, _UNIT_CONST)
+        assert _ghost_rotation(window) == place_rotation.rotation_for(window._place_rotation, _UNIT_CONST, 1)
+        assert _ghost_rotation(window) != rolls[0], "the brush's turn turned the shared state"
+    finally:
+        _close(window)
+
+
+def test_a_click_into_a_garrison_host_spends_the_roll_like_a_map_click() -> None:
+    window, host = _garrison_window()
+    try:
+        _tick_random(window, 13)
+        rolls = _rolls(13, _ARCHER, 1)
+        scene = _hover_tile(window, *_host_tile(host))
+        assert _ghost(window).garrison
+        assert _ghost_rotation(window) == rolls[0]
+        window.on_unit_place(scene, Qt.NoModifier)
+        occupant = window.scenario.unit_manager.units[1][-1]
+        assert occupant.garrisoned_in_id == host.reference_id
+        assert occupant.rotation == rolls[0]
+        assert rolls[0] != rolls[1], "the seed must tell the two rolls apart"
+        assert _ghost_rotation(window) == rolls[1], "the next ghost shows the next roll"
+    finally:
+        _close(window)
+
+
+def test_an_eyedropped_variant_is_the_next_click_and_the_click_after_rolls() -> None:
+    window = _window(const=_HOUSE)
+    try:
+        _tick_random(window, 4)
+        window.eyedropper_action.setChecked(True)
+        rolls = _rolls(4, _OAK, 0)
+        assert rolls[0] != 7.0, "the seed must tell the pick from the roll"
+        window.pick_unit_value(_fixture_entry(window, _OAK_KEY), (5, 5), Qt.NoModifier)
+        window.place_unit_action.setChecked(True)
+        first = _place_at(window, _hover_tile(window, 40, 40))
+        assert (first.unit.unit_const, first.unit.rotation) == (_OAK, 7.0)
+        second = _place_at(window, _hover_tile(window, 44, 44))
+        assert second.unit.rotation == rolls[0]
+    finally:
+        _close(window)
+
+
+def test_a_click_and_a_turn_with_no_hover_still_read_the_rolled_state() -> None:
+    """The click and the turn ask for the roll themselves, not only the hover."""
+    import math
+    import random
+
+    from descape import place_rotation
+
+    seed = next(s for s in range(100) if _rolls(s, _UNIT_CONST, 1)[0] not in (0.0, 2 * math.pi / 16))
+    rolls = _rolls(seed, _UNIT_CONST, 1)
+    window = _window()
+    try:
+        _tick_random(window, seed)
+        window.on_unit_place(_scene_pos(window, 40.5, 40.5), Qt.NoModifier)
+        assert window.scenario.unit_manager.units[1][-1].rotation == rolls[0]
+
+        # Whatever the post-click refresh drew, the turn below must roll afresh first.
+        window._place_roll_const = None
+        peek = random.Random()
+        peek.setstate(window._place_rng.getstate())
+        base = place_rotation.rotation_for(place_rotation.roll(peek, _UNIT_CONST), _UNIT_CONST, 1)
+        window.rotate_place_ghost(steps=1)
+        window.on_unit_place(_scene_pos(window, 44.5, 44.5), Qt.NoModifier)
+        turned = (round(base / (2 * math.pi / 16)) + 1) % 16 * 2 * math.pi / 16
+        assert window.scenario.unit_manager.units[1][-1].rotation == pytest.approx(turned)
     finally:
         _close(window)

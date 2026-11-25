@@ -18,6 +18,7 @@ These apply while a trigger field's Set, Pick or eyedropper button, or the Garri
 
 - A location takes one click. An area takes a drag, and is set when you let go.
 - Picking units: click a unit, and click again to walk down a stack.
+- For a trigger field's list of objects (not the Garrison list), drag a box to add every unit it covers; Ctrl+drag adds or removes each of them instead. Each box is one undo step.
 - Right-click or Esc cancels the pick, or finishes Pick from map.
 - With Edit Area ticked under Pan in Triggers mode, drag the middle of the shown area to move it, or an edge or corner to resize it. With Move ticked too, drag a location's mark to move it, unless the mark is dimmed. Right-click or Esc during the drag cancels it.
 - With the Create Objects tool, a left click stamps; a right click does nothing.
@@ -54,7 +55,7 @@ These apply while a trigger field's Set, Pick or eyedropper button, or the Garri
 - The ▲ and ▼ buttons: a click moves the selection one place, Shift+click five places, and Ctrl+click to the top or bottom. Ctrl wins when both are held.
 - Right-click the trigger list for Cut, Copy, Paste, the four Move commands, Renumber IDs to Display Order, Select Section and Select Tag.
 - Right-click the conditions and effects for Cut, Copy, Paste, the four Move commands and Select Same Type.
-- Double-click a trigger to rename it in the list. A section header with triggers under it collapses or expands instead.
+- Double-click a trigger to rename it in the list (**Settings > General** can turn this off). A section header with triggers under it collapses or expands instead.
 - Double-click a variable in the Trigger Variables window to rename it. Double-click in the type picker to accept a type.
 - Neither list reorders by dragging, and Delete does nothing in them.
 

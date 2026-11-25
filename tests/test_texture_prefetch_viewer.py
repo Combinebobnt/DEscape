@@ -42,7 +42,7 @@ def recorded(monkeypatch):
 
     events: list = []
     monkeypatch.setattr(
-        asset_source, "prefetch_terrain_textures", lambda ids, _tile_pxs, back=False: events.append(("prefetch", set(ids)))
+        asset_source, "prefetch_terrain_textures", lambda ids, _tile_pxs, back=False, angled=False: events.append(("prefetch", set(ids)))
     )
 
     class _RecordingCache(IsoChunkCache):
@@ -87,6 +87,22 @@ def test_top_down_flat_prefetches_the_farm_overlays_terrain_too(recorded):
     assert _FARM_TERRAIN not in window._texture_prefetch_ids()
 
 
+def test_each_style_prefetches_the_texture_variant_it_draws(recorded, monkeypatch):
+    """TASK-691: Stepped, Sloped and flattened Stepped read the angled variant, top-down Flat the
+    sharp one. A wrong flag only shows as a silent GUI-thread reload, so it is pinned here."""
+    _events, window = recorded
+    flags: list = []
+    monkeypatch.setattr(
+        asset_source, "prefetch_terrain_textures", lambda ids, tile_pxs, back=False, angled=False: flags.append(angled)
+    )
+    for label, iso, want in (("Sloped", False, True), ("Flat", False, False), ("Flat", True, True), ("Stepped", False, True)):
+        flags.clear()
+        window.terrain_style_combo.setCurrentText(label)
+        window.iso_action.setChecked(iso)
+        window._render_current(reset_view=False)
+        assert flags and set(flags) == {want}, (label, iso, window._render_style, flags)
+
+
 def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(recorded, monkeypatch):
     from descape import asset_source, render_paint
 
@@ -117,15 +133,21 @@ def test_prefetch_ids_include_layered_terrains_only_while_blending_is_effective(
 
 @pytest.mark.parametrize("preload", [True, False])
 def test_a_settled_load_queues_every_ladder_level_behind_while_zoom_levels_preload(monkeypatch, preload):
-    """GH #326: the finest levels' 1920 px resizes start after the first paint, not at their first visit."""
+    """GH #326: the finest levels' 1920 px resizes start after the first paint, not at their first visit.
+    TASK-691: every prefetch of this Stepped window, the level warm and the ladder included, asks for the
+    angled variant (a sharp one would cancel the angled loads already queued)."""
     from PyQt5.QtWidgets import QApplication
 
     from descape import settings
 
     calls: list = []
-    monkeypatch.setattr(
-        asset_source, "prefetch_terrain_textures", lambda ids, tile_pxs, back=False: calls.append((list(tile_pxs), back))
-    )
+    flags: list = []
+
+    def _record(ids, tile_pxs, back=False, angled=False):
+        calls.append((list(tile_pxs), back))
+        flags.append(angled)
+
+    monkeypatch.setattr(asset_source, "prefetch_terrain_textures", _record)
     monkeypatch.setattr(settings, "get_preload_zoom_levels", lambda: preload)
     window = conftest.stepped_window(UNITS_FIXTURE, show=True)
     try:
@@ -134,6 +156,7 @@ def test_a_settled_load_queues_every_ladder_level_behind_while_zoom_levels_prelo
         ladder = [window._cache.mip_tile_px(m) for m in window._cache.mip_levels()]
         backs = [pxs for pxs, back in calls if back]
         assert backs == ([ladder] if preload else []), calls
+        assert flags and all(flags), list(zip(calls, flags, strict=True))
     finally:
         conftest.close_window(window)
 

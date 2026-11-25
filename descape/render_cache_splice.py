@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -15,6 +16,9 @@ from descape import (
 )
 from descape.scenario_io import LoadedScenario
 from descape.unit_filter import UnitFilter
+
+if TYPE_CHECKING:
+    from descape.own_tile_index import OwnTileIndex
 
 
 @dataclass(frozen=True)
@@ -258,7 +262,7 @@ _COMPONENT_SPLICE_MAX_UNITS = 1000
 VISIBLE_SPLICE_MAX_UNITS = 3000
 
 
-def _locate(own_index: dict, unit) -> tuple[int, int] | None:
+def _locate(own_index: OwnTileIndex | dict, unit) -> tuple[int, int] | None:
     """unit's current (player_id, i), from the own-tile index; None if absent."""
     for player_id, i, u in own_index.get((int(unit.x), int(unit.y)), ()):
         if u is unit:
@@ -267,7 +271,7 @@ def _locate(own_index: dict, unit) -> tuple[int, int] | None:
 
 
 def _shared_tile_component(
-    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, own_index: dict, seeds, cap: int
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, own_index: OwnTileIndex | dict, seeds, cap: int
 ) -> list[tuple] | None:
     """The connected component of units sharing any footprint or own tile with
     a seed, transitively, sorted into the wholesale walk's order (player-major,
@@ -292,7 +296,7 @@ def _shared_tile_component(
 
 
 def _walk_component(
-    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, own_index: dict, tiles,
+    scenario: LoadedScenario, units_by_tile: dict, unit_filter: UnitFilter, own_index: OwnTileIndex | dict, tiles,
     known: set[int], room: int,
 ) -> tuple[list[tuple] | None, str | None]:
     """The shared-tile walk under both component splices: every unit reachable
@@ -385,7 +389,7 @@ def _reassign_component_splices(
 
 
 def _connector_neighbours(
-    scenario: LoadedScenario, unit_filter: UnitFilter, own_index: dict, changed: list[UnitSplice], known: set[int]
+    scenario: LoadedScenario, unit_filter: UnitFilter, own_index: OwnTileIndex | dict, changed: list[UnitSplice], known: set[int]
 ) -> list[tuple]:
     """Every rotation-variant unit outside `known` whose shape a batch
     connector's move can change, as (player_id, i, unit, own tile, occupied

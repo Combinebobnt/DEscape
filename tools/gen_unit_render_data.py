@@ -315,6 +315,8 @@ def _fish_span(unit_const: int, unit) -> list[int] | None:
             f"fish {unit_const} outline_size {outline} != clearance_size "
             f"{tuple(unit.clearance_size)} -- re-verify _FISH_SPAN_CONSTS against the .dat",
             "no fish_spans row",
+            kind="footprint",
+            subject=unit_const,
         )
         return None
     return [max(1, round(v * 2)) for v in outline]
@@ -332,6 +334,8 @@ def _doodad_span(unit_const: int, unit) -> list[int] | None:
             f"doodad {unit_const} collision span {span} != outline span {outline} "
             "-- re-measure the doodad_spans rule against the .dat",
             "no doodad_spans row",
+            kind="footprint",
+            subject=unit_const,
         )
         return None
     return span

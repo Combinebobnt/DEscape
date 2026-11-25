@@ -278,7 +278,14 @@ class _MapViewInputMixin:
                 self.on_unit_picker_cancel()
             elif event.button() == Qt.LeftButton and self._map_rect is not None:
                 pos = self.mapToScene(event.pos())
-                if self._map_rect.contains(pos):
+                if self._map_rect.contains(pos) and self._unit_picker_multi:
+                    # TASK-168: a list pick waits for the release, a click or a box.
+                    on_unit = self.pick_unit_cover_at(pos) is not None
+                    self._picker_press_scene_pos = pos
+                    self._marquee_start_pos = event.pos()
+                    self._marquee_press_on_unit = on_unit
+                    self._marquee_press_tile = self._pick_tile(pos) if on_unit else None
+                elif self._map_rect.contains(pos):
                     self._picker_click(pos)
             return
         # GH #229: with Pan, a left press on the live area's middle, edge or corner, or
@@ -396,7 +403,7 @@ class _MapViewInputMixin:
                     self._shape_latch = latch
                     walls = shape == "wall" or (latch is not None and latch.branch == unit_shape.WALL)
                     # Gated on the shape: the query walks every unit, and Draw Line needs none of it.
-                    self._drag_blocked = frozenset(self._place_blocked_query()) if walls else frozenset()
+                    self._drag_blocked = self._place_blocked_query() if walls else frozenset()
                     self._shape_anchor = tile
                     self._shape_end = tile
                     self._shape_modifiers = event.modifiers()
@@ -538,6 +545,19 @@ class _MapViewInputMixin:
                 self.on_rect_pick(
                     min(anchor[0], end[0]), min(anchor[1], end[1]), max(anchor[0], end[0]), max(anchor[1], end[1])
                 )
+            return
+        # TASK-168: a list pick decides here, a box past the threshold or the deferred click.
+        if self._unit_picker_active and event.button() == Qt.LeftButton and self._picker_gesture_live():
+            start_pos, press_pos = self._marquee_start_pos, self._picker_press_scene_pos
+            engaged = start_pos is not None and self._marquee_engaged(
+                event.pos(), self._pick_tile(self.mapToScene(event.pos()))
+            )
+            self._clear_picker_gesture()
+            if engaged:
+                rect = QRectF(self.mapToScene(start_pos), self.mapToScene(event.pos())).normalized()
+                self.on_unit_marquee_pick(self._units_in_scene_rect(rect), event.modifiers())
+            elif start_pos is not None:
+                self._picker_click(press_pos)
             return
         # GH #229's drag writes once, here, and only a real change.
         if self._area_drag is not None:
@@ -1421,6 +1441,14 @@ class _MapViewInputMixin:
         if self._unit_picker_active:
             self._clear_highlight()
             self._clear_pan_highlight()
+            # TASK-168: a list pick's box; a move with the button up means its release was swallowed.
+            if self._picker_gesture_live() and not event.buttons() & Qt.LeftButton:
+                self._clear_picker_gesture()
+            if self._picker_gesture_live() and self._marquee_engaged(event.pos(), tile):
+                self._clear_unit_hover()
+                self._update_marquee(self._marquee_start_pos, event.pos())
+                return
+            self._clear_marquee()
             in_canvas = self._map_rect is not None and self._map_rect.contains(pos)
             entry = self.pick_unit_at(pos, tile) if in_canvas else None
             if entry is None:

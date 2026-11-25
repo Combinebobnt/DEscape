@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     debug_log,
+    game_dataset,
     garrison,
     gate_orientation,
     move_turn,
@@ -23,11 +24,12 @@ from descape import (
     settings,
     unit_pick,
     unit_rotation,
+    unit_sprites,
     unit_variant,
     wall_run,
 )
+from descape.ghost_sprite import GhostSprite
 from descape.render_cache_splice import UnitSplice
-from descape.render_sprites import unit_sprite_draws_at
 from descape.render_units import (
     occupied_tiles_for,
     unit_at,
@@ -190,6 +192,7 @@ class _ViewerUnitMoveMixin:
         self._drag_rule_memo = None
         self._group_flags_memo = None
         self._drag_stand_in_memo.clear()
+        self._drag_scene_memo = self._drag_plan_memo = None
         if grid:
             self._group_grid_memo = None
 
@@ -477,7 +480,8 @@ class _ViewerUnitMoveMixin:
         lands by its new span, and "Moving a gate updates walls" reads that
         span for the tiles it reaches and its stored one for those it left.
         Back on its own point the drop is a turn in place: nothing's position
-        is written, and it reads as a Rotate. A garrison drop drops the turn.
+        is written but a turned gate's corner pieces' (TASK-532), and it reads
+        as a Rotate. A garrison drop drops the turn.
         """
         try:
             self._commit_unit_drag(key, pos, modifiers)
@@ -527,10 +531,13 @@ class _ViewerUnitMoveMixin:
         new_const = stand_in.unit_const
         # The garrison rides along, onto the host's new point (GH #42).
         occupants = [] if in_place else self._garrison_occupant_entries(model, [entry])
+        # TASK-531: a gate's corner pieces keep their offset from it; TASK-532: a turn in place carries them too.
+        pieces = self._gate_companion_entries([entry]).get(id(unit), [])
+        landed = self._carried_pieces(unit, stand_in, pieces, x - stand_in.x, y - stand_in.y)
+        carried = [(p, px, py) for p, _const, px, py in landed]
+        consts = {id(unit): new_const} | {id(p.unit): const for p, const, _px, _py in landed}
         # Planned before the refusal, and only read by it: a refused move changes nothing.
-        gate_plan = self._move_plan(
-            model, [(e, x, y) for e in (entry, *occupants)], gate_walls=True, consts={id(unit): new_const}
-        )
+        gate_plan = self._move_plan(model, [(e, x, y) for e in (entry, *occupants)] + carried, gate_walls=True, consts=consts)
         # A facing never changes a footprint, so a unit already refused where it stands can still turn.
         if not self._restrictions_lifted() and (not in_place or new_const != unit.unit_const):
             # GH #176. The mover never blocks itself; its occupants are garrisoned, so they never block.
@@ -551,7 +558,7 @@ class _ViewerUnitMoveMixin:
             done = self._rotate_status(*self._turn_classes([entry]), 0, 0) if in_place else moved
             self._log_status(done + clauses)
 
-        owners = {entry.player_id} | {e.player_id for e in occupants}
+        owners = {entry.player_id} | {e.player_id for e in (*occupants, *pieces)}
         if gate_plan:
             owners |= wall_run.move_plan_players(gate_plan)
         if gate_plan is not None and gate_plan.wholesale:
@@ -565,6 +572,10 @@ class _ViewerUnitMoveMixin:
                     model.set_position(unit, x, y, unit.z)
                 for occupant in occupants:
                     model.set_position(occupant.unit, x, y, occupant.unit.z)
+                for piece, const, px, py in landed:
+                    if const != piece.unit.unit_const:
+                        model.set_unit_const(piece.unit, const)
+                    model.set_position(piece.unit, px, py, piece.unit.z)
                 wall_run.apply_move_plan(model, gate_plan)
             report()
             return
@@ -584,6 +595,8 @@ class _ViewerUnitMoveMixin:
                 self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
             for occupant in occupants:
                 self._move_occupant_to(model, occupant, x, y, splices)
+            for piece, const, px, py in landed:
+                self._move_occupant_to(model, piece, px, py, splices, const=const)
             if gate_plan:
                 self._apply_wall_reshapes(model, gate_plan, splices)
             if swapped:
@@ -679,7 +692,7 @@ class _ViewerUnitMoveMixin:
         if entry is None:
             return
         if self._is_group_key(key):
-            entries = self._drag_entries(key, entry)
+            entries = self._without_carried_pieces(self._drag_entries(key, entry))
             turning = sum(self._drag_stand_in(e, True) is not e.unit for e in entries)
             blocked, skipped = self._turn_skips(entries)
             status = f"Move: turning {turning} of {len(entries)} units"
@@ -740,11 +753,17 @@ class _ViewerUnitMoveMixin:
         A turn the drag holds lands on each member at its own spot, then the
         delta (GH #280). With a zero delta that is a turn in place: only the
         turned members are written, nobody's position is, occupants stay out
-        of it, and only a member whose const changed is judged by the rules."""
+        of it, and only a member whose const changed is judged by the rules.
+        A turned gate's corner pieces land on its turned ends either way, and
+        with a turn pending a selected piece of a selected gate rides with it
+        rather than turning or being judged on its own (TASK-532)."""
         resolved = self._group_delta(anchor, pos, modifiers, commit=True)
         if resolved is None:
             return
         entries, dx, dy, clamped = resolved
+        if self._drag_turn:
+            # TASK-532: a selected corner piece of a selected gate turns with it and is never judged.
+            entries = self._without_carried_pieces(entries)
         stand_ins = {id(e.unit): s for e in entries if (s := self._drag_stand_in(e, True)) is not e.unit}
         in_place = (dx, dy) == (0, 0)
         if in_place and not stand_ins:
@@ -762,25 +781,28 @@ class _ViewerUnitMoveMixin:
             judged = [e for e in entries if stand_ins[id(e.unit)].unit_const != e.unit.unit_const]
             label = "Rotate unit" if len(entries) == 1 else f"Rotate {len(entries)} units"
         elif stand_ins:
-            label = f"Move and rotate {len(entries)} units"
+            label = f"Move and rotate {len(entries)} unit{'s' * (len(entries) != 1)}"
         else:
             label = f"Move {len(entries)} units"
+        piece_ins, pieces = self._piece_stand_ins(entries, stand_ins)
         # One op: _move_units' own same-label op is transparent inside it.
         with perf_trace.op(label):
             # GH #194: one plan for the refusal and the move (TASK-352); only its removals unblock.
-            planned = self._plan_unit_move(model, entries, dx, dy, stand_ins, occupants=not in_place)
+            planned = self._plan_unit_move(
+                model, entries + pieces * in_place, dx, dy, stand_ins | piece_ins, occupants=not in_place
+            )
             if not self._restrictions_lifted():
                 replaced = self._gate_move_replaced(planned[1])
                 refused = self._group_move_refusal(selected, dx, dy, replaced, stand_ins, judged)
                 if refused is not None:
                     self._log_status(refused, level=debug_log.WARNING)
                     return
-            gate_plan = self._move_units(model, entries, dx, dy, label, planned, stand_ins=stand_ins)
+            gate_plan = self._move_units(model, entries, dx, dy, label, planned, stand_ins=stand_ins | piece_ins, carried=piece_ins)
         clauses = self._gate_move_clauses(gate_plan, [e.unit for e in entries])
         if in_place:
             self._log_status(self._rotate_status(*self._turn_classes(entries), blocked, skipped) + clauses)
             return
-        status = f"Moved {len(entries)} units by ({dx:g}, {dy:g})"
+        status = f"Moved {len(entries)} unit{'s' * (len(entries) != 1)} by ({dx:g}, {dy:g})"
         if stand_ins:
             status += f", turning {len(stand_ins)}"
         if clamped:
@@ -859,17 +881,23 @@ class _ViewerUnitMoveMixin:
             moved[id(entry.unit)] = (source.x + dx, source.y + dy)
         return placement_rules.moved_laid_terrain(self.scenario, moved)
 
-    def _move_occupant_to(self, model, entry, x: float, y: float, splices: list) -> None:
+    def _move_occupant_to(
+        self, model, entry, x: float, y: float, splices: list, z: float | None = None, const: int | None = None
+    ) -> None:
         """One garrisoned unit onto (x, y), inside its host's own open
-        _unit_edit. `z` stays the occupant's own: the host's move doesn't
+        _unit_edit. `z` defaults to the occupant's own: the host's move doesn't
         change the ground under it, and the two are already co-located.
-        Scatter's move mode also writes each host through here (GH #105)."""
+        Scatter's move mode also writes each host through here (GH #105), and
+        a gate's carried corner pieces go through it too (TASK-531), with the
+        sibling `const` a drag turn gives them first (TASK-532)."""
         unit = entry.unit
         mm = self.scenario.map_manager
         old_bounds = unit_tile_bounds(unit, mm.map_width, mm.map_height)
         old_own, old_tiles = self._unit_footprint(unit)
         idx = self._unit_list_index(entry.player_id, unit)
-        model.set_position(unit, x, y, unit.z)
+        if const is not None and const != unit.unit_const:
+            model.set_unit_const(unit, const)
+        model.set_position(unit, x, y, unit.z if z is None else z)
         new_own, new_tiles = self._unit_footprint(unit)
         splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
         self._patch_unit_index_for_move(entry.player_id, unit, old_bounds)
@@ -905,10 +933,51 @@ class _ViewerUnitMoveMixin:
         if not occupants:
             return []
         owners = {id(u): pid for pid, units in enumerate(self.scenario.unit_manager.units) for u in units}
+        return self._entry_rows([(owners[id(unit)], unit) for unit in occupants])
+
+    def _gate_companion_entries(self, entries) -> dict[int, list]:
+        """{id(gate unit): [UnitEntry, ...]}: the corner pieces each gate in
+        `entries` carries on a move (TASK-531, placement_rules.companions_by_gate()).
+        Found off the scenario, so a filtered-out piece still moves, as a hidden occupant does."""
+        found = placement_rules.companions_by_gate(self.scenario, [(e.player_id, e.unit) for e in entries])
+        return {gate: self._entry_rows(pieces) for gate, pieces in found.items()}
+
+    def _piece_stand_ins(self, entries, stand_ins) -> tuple[dict, list]:
+        """({id(piece): stand-in}, piece rows): the corner pieces of each gate a
+        group drag turns, stood at the gate's turned ends (TASK-532), which
+        _move_units() writes at their stand-in's point plus the delta."""
+        turned = [e for e in entries if id(e.unit) in stand_ins]
+        found = self._gate_companion_entries(turned)
+        ins, rows = {}, []
+        for entry in turned:
+            for piece, const, x, y in self._carried_pieces(entry.unit, stand_ins[id(entry.unit)], found.get(id(entry.unit), ()), 0, 0):
+                ins[id(piece.unit)] = stand_in = unit_at(piece.unit, x, y)
+                stand_in.unit_const = const
+                rows.append(piece)
+        return ins, rows
+
+    @staticmethod
+    def _carried_pieces(gate, stand_in, pieces, dx: float, dy: float) -> list:
+        """[(row, const, x, y)]: where a moved `gate`'s corner `pieces` land.
+        A gate the drag turned (its `stand_in` const differs) takes them to
+        placement_rules.companion_landing() against the stand-in (TASK-532);
+        either way the delta (dx, dy) from the stand-in's point follows."""
+        landed = []
+        for piece in pieces:
+            unit = piece.unit
+            if stand_in.unit_const == gate.unit_const:
+                const, x, y = unit.unit_const, unit.x, unit.y
+            else:
+                const, x, y = placement_rules.companion_landing(gate, stand_in.unit_const, stand_in.x, stand_in.y, unit)
+            landed.append((piece, const, x + dx, y + dy))
+        return landed
+
+    def _entry_rows(self, pairs) -> list:
+        """[(player_id, unit), ...] as UnitEntry rows: the index's own entry,
+        else one synthesized with `order=-1`, only ever read for player_id/unit."""
         index = self.map_view._unit_index
         rows = []
-        for unit in occupants:
-            player_id = owners[id(unit)]
+        for player_id, unit in pairs:
             entry = index.entry_for_key(unit_pick.unit_key(player_id, unit)) if index is not None else None
             rows.append(entry or unit_pick.UnitEntry(player_id, unit, int(unit.x), int(unit.y), -1))
         return rows
@@ -916,13 +985,17 @@ class _ViewerUnitMoveMixin:
     def _plan_unit_move(
         self, model, entries, dx: float, dy: float, stand_ins=None, occupants: bool = True
     ) -> tuple[list, wall_run.MovePlan | None]:
-        """(entries plus their garrison occupants, _move_plan() for moving
-        them all by (dx, dy)): what _move_units() moves and applies.
-        `stand_ins` is _move_units()'s; `occupants` False is a turn in place,
-        which carries nobody."""
+        """(entries plus their garrison occupants and the gates' corner pieces,
+        _move_plan() for moving them all by (dx, dy)): what _move_units() moves
+        and applies. `stand_ins` is _move_units()'s; `occupants` False is a turn
+        in place, which carries nobody."""
         if occupants:
             with perf_trace.phase("move_garrison"):
                 entries = list(entries) + self._garrison_occupant_entries(model, entries)
+                # TASK-531: a selected piece is already in `entries`, so it moves once.
+                seen = {id(e.unit) for e in entries}
+                for pieces in self._gate_companion_entries(entries).values():
+                    entries += [p for p in pieces if id(p.unit) not in seen]
         turned = stand_ins or {}
         sources = [(e, turned.get(id(e.unit), e.unit)) for e in entries]
         return entries, self._move_plan(
@@ -933,7 +1006,7 @@ class _ViewerUnitMoveMixin:
         )
 
     def _move_units(
-        self, model, entries, dx: float, dy: float, label: str, planned=None, dz: float = 0.0, stand_ins=None
+        self, model, entries, dx: float, dy: float, label: str, planned=None, dz: float = 0.0, stand_ins=None, carried=()
     ) -> wall_run.MovePlan | None:
         """Moves every entry by (dx, dy) in ONE undo record, splicing each
         unit's footprint. `rotation` passes through verbatim, except a wall's
@@ -942,12 +1015,14 @@ class _ViewerUnitMoveMixin:
 
         A host's garrison rides along (GH #42): its occupants sit at its own
         point and cannot be selected while hidden, so the same delta applies
-        to them in the same undo record.
+        to them in the same undo record. So do a gate's corner pieces (TASK-531).
 
         `stand_ins`, {id(unit): stand-in}, are the members a Move drag turned
         (GH #280; never a hidden occupant, an arrow nudge or Scatter). Each
         takes its turn first, then the delta. With a zero delta they take the
-        turn only, and no position is rewritten.
+        turn only, and no position is rewritten, except for the ids in
+        `carried`, a turned gate's corner pieces, which always land at their
+        stand-in's point plus the delta (TASK-532).
 
         Returns _move_plan()'s answer for the caller's status line (GH #194,
         GH #266), applied here: a `wholesale` one as one wholesale record,
@@ -972,9 +1047,10 @@ class _ViewerUnitMoveMixin:
                         stand_in = turned.get(id(unit))
                         if stand_in is not None:
                             self._apply_drag_turn(model, stand_in, unit)
-                        if stand_in is None or moves:
+                        source = stand_in if id(unit) in carried else unit
+                        if stand_in is None or moves or source is not unit:
                             # Guarded: unit.z + 0.0 would turn a stored -0.0 into 0.0.
-                            model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
+                            model.set_position(unit, source.x + dx, source.y + dy, unit.z + dz if dz else unit.z)
                     wall_run.apply_move_plan(model, gate_plan)
                 return gate_plan
             mm = self.scenario.map_manager
@@ -991,9 +1067,10 @@ class _ViewerUnitMoveMixin:
                     stand_in = turned.get(id(unit))
                     swapped = stand_in is not None and self._apply_drag_turn(model, stand_in, unit)
                     rebuild = rebuild or swapped
-                    position = stand_in is None or moves
+                    source = stand_in if id(unit) in carried else unit
+                    position = stand_in is None or moves or source is not unit
                     if position:
-                        model.set_position(unit, unit.x + dx, unit.y + dy, unit.z + dz if dz else unit.z)
+                        model.set_position(unit, source.x + dx, source.y + dy, unit.z + dz if dz else unit.z)
                     new_own, new_tiles = self._unit_footprint(unit)
                     splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
                     # Not scoped to a span change, so a swapped const rebuilds below instead.
@@ -1028,7 +1105,11 @@ class _ViewerUnitMoveMixin:
 
         A ghost the release would refuse is drawn refused (TASK-327), asked
         in the release's own branch order (_single_drag_refused(),
-        _group_refused_ids()), so the two cannot disagree."""
+        _group_refused_ids()), so the two cannot disagree.
+
+        Where the drop moves (not refused, no garrison), a dragged wall's
+        ghost takes the shape it lands as, and each wall the drop reshapes is
+        ghosted in place at its new shape (TASK-523, _drag_wall_plan())."""
         if self.scenario is None:
             self.map_view.set_unit_drop_target(None)
             self.map_view.set_unit_ghost()
@@ -1057,9 +1138,21 @@ class _ViewerUnitMoveMixin:
             return
         ghost = unit_at(stand_in, *point)
         refused = self._single_drag_refused(key, entry, stand_in, point, drop)
-        draws = self._drag_ghost_sprite_draws(entry, ghost)
-        if draws:
-            self.map_view.set_unit_ghost(draws=draws, refused=refused)
+        overrides, neighbours = None, []
+        if not refused and drop is None:
+            # A single drag plans only a wall, which never turns: no consts.
+            plan = self._drag_wall_plan([entry], lambda _companions: ([(entry.unit, *point)], None), point)
+            if plan is not None:
+                overrides, reshaped = self._drag_ghost_shapes(plan, [entry])
+                neighbours = self._reshape_ghosts(reshaped)
+        member = self._drag_ghost_sprite(entry, ghost, overrides)
+        if neighbours:
+            sprites = ([] if member is None else [member]) + neighbours
+            marks = [] if member is not None else [self._ghost_mark(entry.player_id, ghost)]
+            self.map_view.set_unit_ghosts(draws=[d for s in sprites for d in s.level0()], marks=marks, sprites=sprites)
+            return
+        if member is not None:
+            self.map_view.set_unit_ghost(draws=member.level0(), refused=refused, sprites=[member])
             return
         polygons, color = self._ghost_mark(entry.player_id, ghost)
         self.map_view.set_unit_ghost(polygons=polygons, color=color, refused=refused)
@@ -1128,12 +1221,21 @@ class _ViewerUnitMoveMixin:
 
         Only the members the release would refuse are drawn refused (TASK-327),
         though a refused group moves nothing. Past the cap the anchor's ghost
-        stands for the members checked (_group_refused_ids())."""
+        stands for the members checked (_group_refused_ids()).
+
+        With no member refused and no garrison drop, the walls take the
+        shapes the drop plans and the walls it reshapes are ghosted
+        (TASK-523, _drag_wall_plan()), from each member's stand-in point with
+        its turned const, as _plan_unit_move() moves them. Past the cap only
+        the anchor's shape is, and no reshaped wall."""
         resolved = self._group_delta(anchor, pos, modifiers, commit=False)
         if resolved is None:
             self.map_view.set_unit_ghost()
             return
         entries, dx, dy, _clamped = resolved
+        if self._drag_turn:
+            # As _move_group(): a turn draws no ghost of its own for a carried corner piece (TASK-532).
+            entries = self._without_carried_pieces(entries)
         members = entries
         capped = len(entries) > GROUP_GHOST_CAP
         if capped:
@@ -1151,6 +1253,17 @@ class _ViewerUnitMoveMixin:
         marks: list = []
         refused_draws: list = []
         refused_marks: list = []
+        sprites: list = []
+        refused_sprites: list = []
+        overrides = None
+        if not refused_ids and drop is None:
+            pairs = [(e, self._drag_stand_in(e, True)) for e in entries]
+            plan = self._drag_wall_plan(entries, lambda companions: self._group_moves(pairs, companions, dx, dy), (dx, dy))
+            if plan is not None:
+                overrides, reshaped = self._drag_ghost_shapes(plan, entries)
+                if not capped:
+                    sprites += self._reshape_ghosts(reshaped)
+                    draws += [d for s in sprites for d in s.level0()]
         for entry in members:
             stand_in = self._drag_stand_in(entry, True)
             ghost = unit_at(stand_in, stand_in.x + dx, stand_in.y + dy)
@@ -1158,12 +1271,16 @@ class _ViewerUnitMoveMixin:
             if unit_tile_bounds(ghost, mm.map_width, mm.map_height) is None:
                 continue
             refused = bool(refused_ids) if capped else id(entry.unit) in refused_ids
-            sprite = self._drag_ghost_sprite_draws(entry, ghost)
-            if sprite:
-                (refused_draws if refused else draws).extend(sprite)
+            member = self._drag_ghost_sprite(entry, ghost, overrides)
+            if member is not None:
+                (refused_draws if refused else draws).extend(member.level0())
+                (refused_sprites if refused else sprites).append(member)
             else:
                 (refused_marks if refused else marks).append(self._ghost_mark(entry.player_id, ghost))
-        self.map_view.set_unit_ghosts(draws=draws, marks=marks, refused_draws=refused_draws, refused_marks=refused_marks)
+        self.map_view.set_unit_ghosts(
+            draws=draws, marks=marks, refused_draws=refused_draws, refused_marks=refused_marks,
+            sprites=sprites, refused_sprites=refused_sprites,
+        )
 
     def _group_refused_ids(self, entries, anchor, dx: float, dy: float, drop) -> set[int]:
         """id(unit) of every member _move_group() would refuse at (dx, dy), in
@@ -1227,23 +1344,24 @@ class _ViewerUnitMoveMixin:
         self._group_grid_memo = (self._selection, gen, grid)
         return grid
 
-    def _ghost_sprite_draws(self, player_id: int, ghost, rotation_override: float | None = None) -> list:
-        """`ghost`'s real sprite pieces for owner `player_id`, or [] to fall
-        back to the coloured mark. The drag passes its wall-connectivity
-        `rotation_override`; Place Unit's hover ghost passes None.
+    def _ghost_sprite(self, player_id: int, ghost, rotation_override: float | None = None) -> GhostSprite | None:
+        """`ghost`'s real sprite for owner `player_id`, its level 0 resolved
+        (TASK-291: the ghost item resolves the level the canvas paints), or
+        None to fall back to the coloured mark. The drag passes a wall's
+        `rotation_override`: its source shape or the shape it lands as, and
+        for a wall the drop reshapes, the real stationary unit at its new
+        shape (TASK-523). Place Unit's hover ghost passes None.
 
         **Flat is always the mark**, never a sprite. Flat does draw sprites
         now, as footprint-fitted icons, but a Flat ghost with an icon is out
         of scope here (GH #53 Part B left it as the mark)."""
         if not self._ghost_sprites_on():
-            return []
+            return None
         view = self.map_view
         cache = view._sloped_cache()
-        return unit_sprite_draws_at(
+        member = GhostSprite(
             self.scenario,
-            view._iso_proj,
             view._iso_elevations,
-            None if cache is None else cache.corner_rise,
             player_id,
             ghost,
             rotation_override=rotation_override,
@@ -1254,6 +1372,13 @@ class _ViewerUnitMoveMixin:
             wall_alpha=self._layers.wall_alpha,
             fold=None if cache is None else cache.fold,
         )
+        # Level 0 of mip_projections_for() is the base proj, and its corner_rise the cache's own.
+        return member if member.draws(0, view._iso_proj, None if cache is None else cache.corner_rise) else None
+
+    def _ghost_sprite_draws(self, player_id: int, ghost, rotation_override: float | None = None) -> list:
+        """_ghost_sprite()'s level-0 draws, or []: a trigger-created ghost draws level 0 only."""
+        member = self._ghost_sprite(player_id, ghost, rotation_override)
+        return [] if member is None else member.level0()
 
     def _ghost_sprites_on(self) -> bool:
         """Whether a ghost can draw sprites at all, or is always the mark."""
@@ -1262,12 +1387,99 @@ class _ViewerUnitMoveMixin:
             return False
         return view._iso_proj is not None and view._iso_elevations is not None
 
-    def _drag_ghost_sprite_draws(self, entry, ghost) -> list:
-        """_ghost_sprite_draws for a dragged entry. The override is resolved only
-        when a sprite can draw, so a Flat drag never pays its walk."""
+    def _drag_ghost_sprite(self, entry, ghost, overrides=None) -> GhostSprite | None:
+        """_ghost_sprite for a dragged entry. The override is resolved only
+        when a sprite can draw, so a Flat drag never pays its walk: the
+        landing shape in `overrides`, {id(unit): index} from
+        _drag_ghost_shapes(), else the source one."""
         if not self._ghost_sprites_on():
-            return []
-        return self._ghost_sprite_draws(entry.player_id, ghost, self._ghost_rotation_override(entry))
+            return None
+        if overrides is not None and id(entry.unit) in overrides:
+            return self._ghost_sprite(entry.player_id, ghost, overrides[id(entry.unit)])
+        return self._ghost_sprite(entry.player_id, ghost, self._ghost_rotation_override(entry))
+
+    def _moves_gate_walls(self, entries) -> bool:
+        """Whether a drop of `entries` may replace walls under a moved gate
+        (GH #194): the box ticked and a gate among them. The drop then adds
+        removals and fills no ghost draws, planned with the unit model and
+        the riders the preview never builds, so such a drag keeps its source
+        shapes and ghosts no reshaped wall (TASK-523)."""
+        return self.gate_walls_check.isChecked() and any(gate_orientation.is_gate(e.unit.unit_const) for e in entries)
+
+    def _drag_wall_plan(self, entries, moves, key) -> wall_run.MovePlan | None:
+        """The drop's wall plan for dragging `entries` (TASK-523), as
+        wall_run.plan_from_scene() with no gate part: what the drop plans for
+        the same moves, as no gate replaces walls (_moves_gate_walls()) and
+        riders change no connector. None, with no walk, while ghosts draw no
+        sprite, with no wall among `entries`, or for such a gate drag.
+
+        `moves(companions)` builds ([(unit, x, y), ...], consts) on a plan
+        miss only, from {id(gate): corner piece rows} (TASK-531): the drop
+        carries those pieces, connectors, so the preview's movers must too.
+        The scene is walked once per drag; the plan is memoized per `key` (the
+        point or delta) and turn, a None plan included."""
+        if not self._ghost_sprites_on() or self._moves_gate_walls(entries):
+            return None
+        if not any(unit_sprites.rotation_variant_eligible(e.unit.unit_const) for e in entries):
+            return None
+        scenario, mm = self.scenario, self.scenario.map_manager
+        ids = frozenset(id(e.unit) for e in entries)
+        scene_key = (scenario.unit_gen, mm.map_width, mm.map_height, ids, game_dataset.generation())
+        memo = self._drag_scene_memo
+        if memo is None or memo[0] is not scenario or memo[1] != scene_key:
+            companions = self._gate_companion_entries(entries)
+            moved = ids | {id(p.unit) for rows in companions.values() for p in rows}
+            scene = wall_run.move_scene(scenario, mm.map_width, mm.map_height, moved, blocked=False)
+            memo = self._drag_scene_memo = (scenario, scene_key, scene, companions)
+        scene, companions = memo[2], memo[3]
+        turn = self._drag_turn
+        cached = self._drag_plan_memo
+        if cached is not None and cached[0] is scene and cached[1:3] == (key, turn):
+            return cached[3]
+        planned, consts = moves(companions)
+        plan = wall_run.plan_from_scene(scene, mm.map_width, mm.map_height, planned, gate_walls=False, consts=consts)
+        self._drag_plan_memo = (scene, key, turn, plan)
+        return plan
+
+    def _group_moves(self, pairs, companions, dx: float, dy: float) -> tuple[list, dict]:
+        """(moves, consts) for a group drag by (dx, dy), as _move_group()
+        drops it: each (entry, stand-in) from its stand-in's point with its
+        turned const, then each gate's unselected corner pieces, on its turned
+        ends when it turned (_carried_pieces())."""
+        seen = {id(e.unit) for e, _s in pairs}
+        moves, consts = [], {}
+        for entry, stand_in in pairs:
+            moves.append((entry.unit, stand_in.x + dx, stand_in.y + dy))
+            if stand_in is not entry.unit:
+                consts[id(entry.unit)] = stand_in.unit_const
+            for piece, const, x, y in self._carried_pieces(entry.unit, stand_in, companions.get(id(entry.unit), ()), dx, dy):
+                if id(piece.unit) not in seen:
+                    seen.add(id(piece.unit))
+                    moves.append((piece.unit, x, y))
+                    if const != piece.unit.unit_const:
+                        consts[id(piece.unit)] = const
+        return moves, consts
+
+    def _drag_ghost_shapes(self, plan: wall_run.MovePlan, entries) -> tuple[dict, list]:
+        """({id(unit): index} for the dragged walls, [(player_id, unit, index)]
+        for the walls the drop reshapes that the live filter shows) off
+        _drag_wall_plan()'s `plan`. A dragged wall's index is its landing
+        shape, or its rewrite when it stays in its tile."""
+        dragged = {id(e.unit) for e in entries}
+        overrides = {id(unit): float(v) for _p, unit, v in plan.landed}
+        reshaped = []
+        for player_id, unit, variant in plan.rewrites:
+            if id(unit) in dragged:
+                overrides[id(unit)] = float(variant)
+            elif self._unit_filter.matches(player_id, unit):
+                reshaped.append((player_id, unit, variant))
+        return overrides, reshaped
+
+    def _reshape_ghosts(self, reshaped) -> list:
+        """A GhostSprite per (player_id, unit, index) whose sprite resolves:
+        the stationary wall in place at its new shape, as the Cliff tool ghosts a reshaped end."""
+        found = (self._ghost_sprite(player_id, unit, float(variant)) for player_id, unit, variant in reshaped)
+        return [s for s in found if s is not None]
 
     def _ghost_rotation_override(self, entry) -> float | None:
         """This unit's wall-connectivity-derived rotation, resolved once per
@@ -1281,12 +1493,10 @@ class _ViewerUnitMoveMixin:
         rebuilds, so an `is` test against the one this value was derived from
         is exactly "still the same answer", with nothing to keep in sync.
 
-        Boundary worth knowing during an in-app pass: this is the override the
-        unit's SOURCE neighbours give it. A wall dropped somewhere with
-        different neighbours has its index re-derived by the move's plan on
-        release (GH #266, _move_plan()), so the ghost can show the wall shape
-        it has now rather than the one it lands as. Recomputing connectivity
-        per move is the whole-file walk this preview exists to avoid."""
+        This is the override the unit's SOURCE neighbours give it: the shape
+        for a unit the drop does not reshape. A wall the drop carries or
+        reshapes takes its plan's shape instead (TASK-523, _drag_wall_plan()),
+        except in a drag _moves_gate_walls() names, which keeps this one."""
         overrides = wall_variant_rotation_overrides(self.scenario)
         key = unit_pick.unit_key(entry.player_id, entry.unit)
         cached = self._ghost_rotation

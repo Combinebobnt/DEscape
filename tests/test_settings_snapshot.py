@@ -22,7 +22,12 @@ def _write(config: dict) -> None:
 
 
 def test_each_tab_owns_its_keys() -> None:
-    assert DIALOG_TAB_KEYS["General"] == ("zoom_centered_on_cursor", "xwayland_on_wayland")
+    assert DIALOG_TAB_KEYS["General"] == (
+        "zoom_centered_on_cursor",
+        "trigger_section_headers",
+        "trigger_rename_double_click",
+        "xwayland_on_wayland",
+    )
     assert set(DIALOG_TAB_KEYS["Mods"]) == {
         "mod_art_excluded",
         "mod_art_included",

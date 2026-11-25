@@ -25,9 +25,9 @@ from operator import attrgetter
 
 import numpy as np
 
-from descape import asset_source
+from descape import asset_source, unit_state
 from descape.render_paint import tile_field_mirror
-from descape.render_units import NON_BUILDING_SPAN, unit_mark_color, unit_tile_bounds
+from descape.render_units import NON_BUILDING_SPAN, kind_mark_color, unit_mark_color, unit_tile_bounds
 from descape.terrain_palette import palette_color_for_terrain_id, tile_span
 from descape.unit_filter import UnitFilter
 
@@ -72,10 +72,15 @@ def _paint_player(rgb: np.ndarray, units, player_id: int, player_color, unit_fil
     unique, first, inverse = np.unique(consts, return_index=True, return_inverse=True)
     inverse = inverse.reshape(-1)
     samples = [units[i] for i in first.tolist()]
-    # Every gate but the garrison one is per (player, const): one verdict per const.
-    per_const = replace(unit_filter, show_garrisoned=True)
+    # Every gate but the garrison and Unit State ones is per (player, const): one verdict per const.
+    per_const = replace(unit_filter, show_garrisoned=True, show_inactive=True)
     keep = np.array([per_const.matches(player_id, u) for u in samples], dtype=bool)[inverse]
-    colors = np.array([unit_mark_color(u, player_color) for u in samples], dtype=np.uint8)[inverse]
+    colors = np.array([kind_mark_color(c, player_color) for c in unique.tolist()], dtype=np.uint8)[inverse]
+    ghosted = np.fromiter(map(unit_state.is_ghosted, units), dtype=bool, count=n)
+    for i in np.flatnonzero(ghosted).tolist():
+        colors[i] = unit_mark_color(units[i], player_color)
+    if not unit_filter.show_inactive:
+        keep &= ~ghosted
     single = np.array([tile_span(c, NON_BUILDING_SPAN) == (1, 1) for c in unique.tolist()], dtype=bool)[inverse]
     if not unit_filter.show_garrisoned:
         hosts = np.fromiter((getattr(u, "garrisoned_in_id", -1) for u in units), dtype=np.int64, count=n)

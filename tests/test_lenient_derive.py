@@ -45,23 +45,38 @@ def test_refuse_raises_when_strict_and_records_once_when_lenient(tools, lenient)
     root = tools("_game_root")
     root.set_lenient(False)
     with pytest.raises(SystemExit) as raised:
-        root.refuse("const 45 broke a rule", "drawn alone")
+        root.refuse("const 45 broke a rule", "drawn alone", kind="parts_dropped", subject=45)
     assert raised.value.code == "const 45 broke a rule", "the strict message is unchanged"
     warnings = lenient(root)
-    assert root.refuse("const 45 broke a rule", "drawn alone") is None
-    root.refuse("const 45 broke a rule", "drawn alone")
-    root.refuse("const 46 broke a rule", "left out")
-    assert warnings == ["const 45 broke a rule (drawn alone)", "const 46 broke a rule (left out)"]
+    assert root.refuse("const 45 broke a rule", "drawn alone", kind="parts_dropped", subject=45) is None
+    root.refuse("const 45 broke a rule", "drawn alone", kind="parts_dropped", subject=45)
+    root.refuse("consts 46, 47 broke a rule", "left out", kind="not_drawn", subject=(46, 47))
+    root.refuse("a row broke", "unchecked", kind="placement_unchecked")
+    assert warnings == [
+        {"text": "const 45 broke a rule (drawn alone)", "kind": "parts_dropped", "subject": 45},
+        {"text": "consts 46, 47 broke a rule (left out)", "kind": "not_drawn", "subject": (46, 47)},
+        {"text": "a row broke (unchecked)", "kind": "placement_unchecked", "subject": None},
+    ]
+
+
+@pytest.mark.parametrize("strict", [True, False], ids=["strict", "lenient"])
+def test_refuse_rejects_an_unknown_kind_either_way(tools, lenient, strict):
+    root = tools("_game_root")
+    warnings = lenient(root)
+    root.set_lenient(not strict)
+    with pytest.raises(ValueError, match="unknown warning kind 'drawn_oddly'"):
+        root.refuse("a", "b", kind="drawn_oddly")
+    assert warnings == []
 
 
 def test_a_strict_run_after_a_lenient_one_raises_again(tools, lenient):
     root = tools("_game_root")
     lenient(root)
-    root.refuse("a", "b")
+    root.refuse("a", "b", kind="not_drawn")
     root.set_lenient(False)
     assert not root.lenient()
     with pytest.raises(SystemExit):
-        root.refuse("a", "b")
+        root.refuse("a", "b", kind="not_drawn")
 
 
 def test_the_dataset_arguments_carry_the_lenient_flag(tools):
@@ -100,7 +115,8 @@ def test_a_lenient_blend_table_drops_each_offending_terrain(tools, lenient):
     table, violations = gen._blend_table(TERRAINS)
     assert violations == []
     assert sorted(table) == ["0", "4"], "the later of two equal priorities is dropped"
-    assert len(warnings) == 2 and "id=1 name='B'" in warnings[0] and "already used by id=0" in warnings[0]
+    assert len(warnings) == 2 and "id=1 name='B'" in warnings[0]["text"] and "already used by id=0" in warnings[0]["text"]
+    assert [(w["kind"], w["subject"]) for w in warnings] == [("terrain_blend", 1), ("terrain_blend", 2)]
 
 
 def test_a_restriction_without_a_dat_row_is_left_out_when_lenient(tools, lenient):
@@ -113,7 +129,8 @@ def test_a_restriction_without_a_dat_row_is_left_out_when_lenient(tools, lenient
         gen._terrain_restriction_entries(restrictions, objects, terrains)
     warnings = lenient(gen)
     assert gen._terrain_restriction_entries(restrictions, objects, terrains) == {"1": [0], "2": [0]}
-    assert len(warnings) == 1 and warnings[0].startswith("Terrain restriction 30 has no .dat row")
+    assert len(warnings) == 1 and warnings[0]["text"].startswith("Terrain restriction 30 has no .dat row")
+    assert (warnings[0]["kind"], warnings[0]["subject"]) == ("placement_unchecked", None)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +148,8 @@ def test_a_span_that_breaks_its_rule_gets_no_row_when_lenient(tools, lenient, sp
         getattr(gen, span)(3118, unit)
     warnings = lenient(gen)
     assert getattr(gen, span)(3118, unit) is None
-    assert len(warnings) == 1 and "3118" in warnings[0]
+    assert len(warnings) == 1 and "3118" in warnings[0]["text"]
+    assert (warnings[0]["kind"], warnings[0]["subject"]) == ("footprint", 3118)
 
 
 def test_a_lenient_texture_map_keeps_a_terrain_the_install_lacks(tools, lenient):

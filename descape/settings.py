@@ -28,6 +28,7 @@ from descape import (
     terrain_style,
     themes,
     tool_options,
+    trigger_organize,
     view_layers,
 )
 from descape.asset_source import CONFIG_PATH
@@ -263,6 +264,27 @@ def set_zoom_centered_on_cursor(enabled: bool) -> None:
     _zoom_centered_on_cursor = enabled
     config = _load_config()
     config["zoom_centered_on_cursor"] = enabled
+    _save_config(config)
+
+
+_trigger_rename_double_click: bool | None = None
+
+
+def get_trigger_rename_double_click() -> bool:
+    """Whether double-clicking a trigger in the Triggers panel renames it in
+    place (True, the default; GH #279). The right-click Rename is unaffected."""
+    global _trigger_rename_double_click
+    if _trigger_rename_double_click is None:
+        raw = _load_config().get("trigger_rename_double_click", True)
+        _trigger_rename_double_click = raw if isinstance(raw, bool) else True
+    return _trigger_rename_double_click
+
+
+def set_trigger_rename_double_click(enabled: bool) -> None:
+    global _trigger_rename_double_click
+    _trigger_rename_double_click = bool(enabled)
+    config = _load_config()
+    config["trigger_rename_double_click"] = bool(enabled)
     _save_config(config)
 
 
@@ -1743,6 +1765,30 @@ def set_trigger_details(values: dict) -> None:
     _save_config(config)
 
 
+# Settings > General > Trigger section headers; parse and dump live on DividerRule.
+_trigger_section_headers: trigger_organize.DividerRule | None = None
+
+
+def get_trigger_section_headers() -> trigger_organize.DividerRule:
+    global _trigger_section_headers
+    if _trigger_section_headers is None:
+        raw = _load_config().get("trigger_section_headers")
+        _trigger_section_headers = trigger_organize.DividerRule.from_config(raw)
+    return _trigger_section_headers
+
+
+def set_trigger_section_headers(rule: trigger_organize.DividerRule) -> None:
+    """Raises ValueError, writing nothing, on a rule DividerRule.error() refuses."""
+    err = rule.error()
+    if err:
+        raise ValueError(err)
+    global _trigger_section_headers
+    _trigger_section_headers = rule
+    config = _load_config()
+    config["trigger_section_headers"] = rule.to_config()
+    _save_config(config)
+
+
 # The Ruler's on-map measurement label, Settings > Appearance -- previously
 # MapView.RULER_LABEL_FONT_PX, a hardcoded constant hand-bumped once already
 # after in-app feedback (2026-08-26) and likely to be re-litigated again.
@@ -1816,6 +1862,27 @@ def set_distance_tick_font_px(value: int) -> None:
     _distance_tick_font_px = value
     config = _load_config()
     config["distance_tick_font_px"] = value
+    _save_config(config)
+
+
+# Settings > Appearance: the distance ruler clipped where raised terrain overhangs the map border.
+_distance_ticks_behind_terrain: bool | None = None
+
+
+def get_distance_ticks_behind_terrain() -> bool:
+    """Whether the distance ruler is drawn behind elevated terrain. Off by
+    default, which draws it over everything as before the option existed."""
+    global _distance_ticks_behind_terrain
+    if _distance_ticks_behind_terrain is None:
+        _distance_ticks_behind_terrain = bool(_load_config().get("distance_ticks_behind_terrain", False))
+    return _distance_ticks_behind_terrain
+
+
+def set_distance_ticks_behind_terrain(enabled: bool) -> None:
+    global _distance_ticks_behind_terrain
+    _distance_ticks_behind_terrain = enabled
+    config = _load_config()
+    config["distance_ticks_behind_terrain"] = enabled
     _save_config(config)
 
 
@@ -2662,6 +2729,9 @@ class ToolDef:
     # Whether this tool offers "Moving a gate updates walls" (GH #194), in
     # Units mode only: the tool that drags units. Default from Settings > Tools, as above.
     supports_gate_walls: bool = False
+    # Whether this tool offers Place Unit's "Random facing/variant" (TASK-367),
+    # a fresh roll per click. Default from Settings > Tools, as above.
+    supports_place_random: bool = False
     # Which mode(s) this tool's toolbar button shows in; empty means every
     # mode. Drives viewer_common.tool_applicable() and
     # ViewerWindow._update_tool_enabled()'s per-mode visibility loop --
@@ -2766,7 +2836,7 @@ TOOLS: list[ToolDef] = [
     ToolDef(
         "place_unit", "Place Unit", stroke_label="Place unit", default_key="",
         click_only=True, modes=("units",), supports_off_grid=True,
-        supports_unrestricted=True, supports_skip_occupied=True,
+        supports_unrestricted=True, supports_skip_occupied=True, supports_place_random=True,
     ),
     # GH #170: Place Unit's object, owner, rules and rotation over a brush, one
     # undo record per drag on Convert's stroke shape (descape/unit_brush.py).
@@ -2838,9 +2908,11 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # it. Ships unbound like view_distance_ticks below.
     ("file_new_default", "New Map (Default Size)", ""),
     ("file_open", "Open Map", "Ctrl+O"),
+    ("file_browse_scenarios", "Browse Game Scenarios…", ""),
     ("file_close", "Close Map", "Ctrl+W"),
     ("file_save", "Save", "Ctrl+S"),
     ("file_save_as", "Save As", "Ctrl+Shift+S"),
+    ("file_convert", "Convert to Version 1.59…", ""),
     # Autosave's recovery dialog opener. Unbound, like edit_settings below.
     ("file_recover_autosave", "Recover from Autosave…", ""),
     ("file_exit", "Exit", "Ctrl+Q"),
@@ -2984,6 +3056,8 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # titles a section by prefix and "tool" already means the toolbar tools.
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("analysis_run", "Map Analysis", ""),
+    # Tools > Scripts. "script_", not "tools_", for analysis_run's reason; ships unbound.
+    ("script_open_folder", "Open Scripts Folder", ""),
     # GH #160's guide items and web links, in menu order, kept inside the contiguous help_*
     # run so _build_keybinds_tab emits no second "Help" header. F1 is the guide's alone;
     # a config that already binds F1 elsewhere keeps it (_reconcile_load_time_collisions).
@@ -3030,6 +3104,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("filter_show_obstacles", "Show Obstacles", ""),
     ("filter_show_invisible", "Show Invisible Objects", ""),
     ("filter_show_garrisoned", "Show Garrisoned Units", ""),
+    ("filter_show_inactive", "Show Inactive Units", ""),
 ] + [
     # range(1, 9) rather than unit_filter.MAX_PLAYER_ID, as with player_select_ below.
     (f"filter_player_{pid}", f"Show Player {pid}", f"Ctrl+{pid}")
@@ -3114,6 +3189,7 @@ KEYBIND_SECTION_TITLES: dict[str, str] = {
     "edit": "Edit",  # renamed from "Copy/Paste" -- now covers the whole Edit menu
     "map": "Map",
     "analysis": "Analysis",
+    "script": "Scripts",
     "view": "View",
     "elevation": "Elevation View",
     "help": "Help",

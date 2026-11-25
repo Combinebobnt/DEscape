@@ -143,7 +143,7 @@ def stub_pieces(monkeypatch):
 
     def fake(
         unit_const, rotation, team_index, half_w, tree_scale=1.0, seed=None, hero_glow=False, art=None,
-        wall_alpha=1.0,
+        alpha=1.0,
     ):
         seen.append((unit_const, seed))
         draw = unit_sprites.SpriteDraw(rgba=np.full((4, 4, 4), 255, np.uint8), hotspot_x=2, hotspot_y=2)

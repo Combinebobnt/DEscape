@@ -1,8 +1,9 @@
 """The two restrictions "Free placement" lifts (GH #176/#177, GH #174): the
 terrain an object may stand on and the objects it may not overlap. Qt-free.
 viewer_unit_place.py asks refusal() for a Place Unit click and
-viewer_unit_move.py move_refusal() for a drag-move: wall runs, nudges, Scatter, paste and the batch API stay
-unrestricted. refused() and move_refused() give the same answers without
+viewer_unit_move.py move_refusal() for a drag-move. Wall runs ask the terrain
+rule alone, one tile at a time, through TerrainGaps (TASK-328); nudges,
+Scatter, paste and the batch API stay unrestricted. refused() and move_refused() give the same answers without
 the message, for callers that ask per candidate (the Unit Brush, GH #170;
 the Place Unit hover ghost and the drag previews, TASK-327; a group drop)
 and build one message at most. Map Analysis (GH #173) is the second reader: it applies
@@ -249,6 +250,29 @@ def _terrain_blocked(scenario, unit_const: int, x: float, y: float, laid=None) -
     return _footprint_block(scenario, unit_const, tiles, laid) is not None or _shore_block(scenario, unit_const, tiles)
 
 
+class TerrainGaps:
+    """The tiles a 1x1 `unit_const` may not stand on, read one tile at a
+    time (TASK-328: a wall run's terrain gaps). Never collects the map: a
+    whole-map walk costs 34 ms on a 480x480 file, so a preview asks path
+    tiles only. Walls are not mobile units, so no laid terrain is read."""
+
+    def __init__(self, scenario, unit_const: int):
+        self._scenario = scenario
+        self._unit_const = unit_const
+
+    def __contains__(self, tile) -> bool:
+        tx, ty = tile
+        mm = self._scenario.map_manager
+        # An off-map tile is not this rule's to refuse.
+        if not (0 <= tx < mm.map_width and 0 <= ty < mm.map_height):
+            return False
+        return _footprint_block(self._scenario, self._unit_const, ((tx, ty),)) is not None
+
+    def __bool__(self) -> bool:
+        """Whether the const has a restriction row at all, so a caller's empty fast path still holds."""
+        return _restrictions().get(_objects().get(self._unit_const, {}).get("restriction")) is not None
+
+
 # --- objects -------------------------------------------------------------------
 
 
@@ -452,12 +476,72 @@ def gate_companions(scenario, unit) -> list:
     if own is None:
         return []
     shape = boxes(unit.unit_const, unit.x, unit.y)
-    return [
-        piece
-        for piece in own
-        if piece.unit_const == corner
-        and any(x0 <= piece.x < x1 and y0 <= piece.y < y1 for x0, y0, x1, y1 in shape)
-    ]
+    return [piece for piece in own if _is_companion(piece, corner, shape)]
+
+
+def _is_companion(piece, corner: int, shape) -> bool:
+    """gate_companions()' match for one unit of the gate's own owner list:
+    the gate's corner const, its point inside the gate's `shape` (boxes())."""
+    return piece.unit_const == corner and any(x0 <= piece.x < x1 and y0 <= piece.y < y1 for x0, y0, x1, y1 in shape)
+
+
+def companions_by_gate(scenario, movers) -> dict[int, list[tuple[int, object]]]:
+    """gate_companions() for a whole move (TASK-531): `movers` is
+    [(player_id, unit), ...], the answer {id(gate): [(player_id, piece), ...]}
+    for each mover with corner pieces. {} before any scan when no mover is
+    an A/B gate; otherwise one pass per owner list holding one. A piece
+    inside two moving gates' boxes goes to the first only."""
+    gates: dict[int, list] = {}
+    for player_id, unit in movers:
+        corner = gate_orientation.corner_piece(unit.unit_const)
+        if corner is not None:
+            gates.setdefault(player_id, []).append((unit, corner))
+    found: dict[int, list] = {}
+    claimed: set[int] = set()
+    for player_id, owned in gates.items():
+        corners = {corner for _gate, corner in owned}
+        pieces = [u for u in scenario.unit_manager.units[player_id] if u.unit_const in corners]
+        for gate, corner in owned:
+            shape = boxes(gate.unit_const, gate.x, gate.y)
+            mine = [p for p in pieces if id(p) not in claimed and _is_companion(p, corner, shape)]
+            if mine:
+                claimed.update(id(p) for p in mine)
+                found[id(gate)] = [(player_id, p) for p in mine]
+    return found
+
+
+def end_tiles(unit_const: int, x: float, y: float) -> tuple[tuple[int, int], tuple[int, int]]:
+    """The two extreme footprint tiles of a gate `unit_const` at (x, y) along
+    its run vector (gate_orientation.run_vector()), low end first (TASK-532).
+    The footprint is render_units'; raises for a non-gate."""
+    vx, vy = gate_orientation.run_vector(unit_const)
+    span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
+    x0, y0 = render_units._span_start(x, span_x), render_units._span_start(y, span_y)
+    offsets = BUILDING_TILE_OFFSETS.get(unit_const) or [(ox, oy) for ox in range(span_x) for oy in range(span_y)]
+    tiles = sorted(((x0 + ox, y0 + oy) for ox, oy in offsets), key=lambda t: t[0] * vx + t[1] * vy)
+    return tiles[0], tiles[-1]
+
+
+def companion_landing(gate, new_const: int, new_x: float, new_y: float, piece) -> tuple[int, float, float]:
+    """(const, x, y) a corner `piece` of `gate` takes when the gate turns to
+    `new_const` at (new_x, new_y) (TASK-532): from the end tile of the gate's
+    current footprint that holds it (else the end nearer along the run) to
+    the same end of the new one, keeping its sub-tile offset, as
+    gate_orientation.corner_piece(new_const). Raises before any write when
+    that const is not one of the piece's own orientation siblings."""
+    const = gate_orientation.corner_piece(new_const)
+    if const is None or const not in (gate_orientation.orientation_siblings(piece.unit_const) or ()):
+        raise ValueError(f"companion_landing: {new_const} has no corner sibling of {piece.unit_const}")
+    old = end_tiles(gate.unit_const, gate.x, gate.y)
+    tile = (int(piece.x), int(piece.y))
+    if tile in old:
+        end = old.index(tile)
+    else:
+        vx, vy = gate_orientation.run_vector(gate.unit_const)
+        along = [abs(piece.x * vx + piece.y * vy - (tx + 0.5) * vx - (ty + 0.5) * vy) for tx, ty in old]
+        end = 0 if along[0] <= along[1] else 1
+    tx, ty = end_tiles(new_const, new_x, new_y)[end]
+    return const, tx + piece.x - tile[0], ty + piece.y - tile[1]
 
 
 def move_refusal(

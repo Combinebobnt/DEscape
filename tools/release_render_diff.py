@@ -161,6 +161,22 @@ def _fixed_512_textures() -> None:
     asset_source.TEXTURE_REDUCING_GAP = None  # the old 512 load was a plain resize
 
 
+def _unfiltered_angled() -> None:
+    """Put the pre-TASK-691 angled texture back: Stepped and Sloped crop the sharp texture, as Flat does."""
+    from descape import asset_source
+
+    _require(asset_source, "angled_prefilter")
+    asset_source.angled_prefilter = lambda arr: arr
+
+
+def _no_unit_state_fade() -> None:
+    """Put the pre-TASK-275 draw back: a unit whose Unit State is not Alive draws as a live one."""
+    from descape import unit_state
+
+    _require(unit_state, "GHOSTED_STATES")
+    unit_state.GHOSTED_STATES = frozenset()
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -208,6 +224,20 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         since="v0.11", control_file=ELCID,
         must_fail=ALL_CONFIGS,
         patch=_fixed_512_textures,
+    ),
+    Neutralization(
+        "angled-prefilter",
+        "GH #326 (TASK-691): Stepped and Sloped read a texture prefiltered along their squashed axis",
+        since="v0.11", control_file=ELCID,
+        must_fail=ISO_CONFIGS,
+        patch=_unfiltered_angled,
+    ),
+    Neutralization(
+        "unit-state-fade",
+        "GH #332 (TASK-275): units whose Unit State is not Alive draw faded, marks mixed towards grey",
+        since="v0.11", control_file=OLD_ALLIES,
+        must_fail=ALL_CONFIGS,
+        patch=_no_unit_state_fade,
     ),
 )
 

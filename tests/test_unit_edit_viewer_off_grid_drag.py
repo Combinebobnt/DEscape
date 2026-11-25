@@ -545,10 +545,20 @@ def test_clamp_group_delta_uses_each_members_own_span() -> None:
     assert int(villager.x + dx) == 19
 
 
-def test_an_off_map_member_does_not_limit_the_clamp() -> None:
+@pytest.mark.parametrize("whole_tiles", [True, False])
+@pytest.mark.parametrize(
+    ("stray_xy", "delta"),
+    [
+        ((-2.0, 5.5), (-4, 0)),
+        # Just past the low edge: int() truncates -0.5 to tile 0, which used to pin the delta at 0 (TASK-341).
+        ((-0.5, 5.5), (-4, 0)),
+        ((5.5, -0.5), (0, -4)),
+    ],
+)
+def test_an_off_map_member_does_not_limit_the_clamp(stray_xy, delta, whole_tiles) -> None:
     from descape.viewer_common import clamp_group_delta
     from testkit import fakes
 
-    stray = fakes.SyntheticUnit(x=-2.0, y=5.5, unit_const=_PLACE_CONST)
+    stray = fakes.SyntheticUnit(x=stray_xy[0], y=stray_xy[1], unit_const=_PLACE_CONST)
     villager = fakes.SyntheticUnit(x=5.5, y=5.5, unit_const=_PLACE_CONST)
-    assert clamp_group_delta([stray, villager], -4, 0, 20, 20, whole_tiles=True) == (-4, 0, False)
+    assert clamp_group_delta([stray, villager], *delta, 20, 20, whole_tiles=whole_tiles) == (*delta, False)

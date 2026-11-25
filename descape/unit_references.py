@@ -27,7 +27,7 @@ Rules, each with its reason:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
@@ -198,3 +198,12 @@ def describe(index: ReferenceIndex, ref_id: Any) -> str:
     if ref.reference_id in index.duplicates:
         text += " (id placed more than once)"
     return text
+
+
+def marquee_ids(current: Sequence[int], covered: Iterable[int], toggle: bool) -> list[int]:
+    """A Set Objects box's new list (TASK-168): `current` keeps its order; add mode
+    appends each covered id not already present, toggle mode also drops the covered
+    ids that are. New ids are appended ascending, duplicates in `covered` collapse."""
+    box = set(covered)
+    kept = [i for i in current if not (toggle and i in box)]
+    return kept + sorted(box - set(current))

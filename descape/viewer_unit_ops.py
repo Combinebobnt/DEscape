@@ -9,16 +9,19 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
+    cliff_chain,
     debug_log,
     find_objects,
     find_triggers,
     gate_orientation,
     move_turn,
+    placement_rules,
     region_transform,
     unit_kind,
     unit_pick,
     unit_references,
     unit_rotation,
+    unit_sprites,
     unit_variant,
     wall_run,
 )
@@ -39,6 +42,7 @@ from descape.viewer_common import (
 
 # _report_delete()'s past tense for each verb that removes units.
 _REMOVE_VERB_PAST = {"Delete": "Deleted", "Cut": "Cut"}
+_REMOVE_VERB_TAIL = {"Delete": "", "Cut": " to the clipboard"}
 
 
 # GH #32: Find and Replace's reason for a player's unit and a GAIA-only new type.
@@ -145,7 +149,7 @@ class _ViewerUnitOpsMixin:
         if variant_steps is None:
             def variant_steps(_count: int) -> int:
                 return steps
-        entries = [e for e in (index.entry_for_key(k) for k in self._selection) if e is not None]
+        entries = self._without_carried_pieces([e for e in (index.entry_for_key(k) for k in self._selection) if e is not None])
         rotatable = [e for e in entries if unit_rotation.rotation_is_angle(e.unit.unit_const)]
         gates = [e for e in entries if gate_orientation.is_gate(e.unit.unit_const)]
         turned_gates = [e for e in gates if self._gate_cycle_fits(e.unit, gate_steps)]
@@ -167,6 +171,7 @@ class _ViewerUnitOpsMixin:
         touched = rotatable + turned_gates + variants
         label = "Rotate unit" if len(touched) == 1 else f"Rotate {len(touched)} units"
         players = {e.player_id for e in touched}
+        gate_rows = self._gate_turn_rows(turned_gates, lambda _unit: gate_steps)
 
         def next_variant(unit) -> float:
             angle_count = unit_rotation.angle_count_for(unit.unit_const)
@@ -180,9 +185,9 @@ class _ViewerUnitOpsMixin:
                 facings.append((entry, unit_rotation.rotate_step(entry.unit.rotation, angle_count, steps)))
             self._write_facings(model, facings, splices)
             self._write_variants(model, variants, next_variant, splices)
-            self._write_gate_consts(model, turned_gates, lambda _unit: gate_steps, splices)
+            self._write_gate_consts(model, gate_rows, splices)
 
-        gate_plan = self._gate_cycle_plan(model, turned_gates, lambda _unit: gate_steps)
+        gate_plan = self._gate_cycle_plan(model, gate_rows)
         if gate_plan:
             # GH #339: removals shift list indices, so no splice; one wholesale record.
             with self._unit_edit(model, label, sorted(players | wall_run.gate_move_players(gate_plan))):
@@ -219,20 +224,37 @@ class _ViewerUnitOpsMixin:
             new_own, new_tiles = self._unit_footprint(unit)
             splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
 
-    def _gate_cycle_plan(self, model, entries, steps_for) -> wall_run.GateMovePlan | None:
-        """_gate_change_plan() for cycling each gate entry `steps_for(unit)`
-        orientations along, at the position set_unit_const() re-anchors it to
-        (reanchored()). Planned before the edit opens, so a truthy plan can
-        take the wholesale path (GH #339)."""
-        changes = []
+    def _gate_turn_rows(self, entries, steps_for) -> list:
+        """[(entry, new_const, x, y)]: each gate entry cycled `steps_for(unit)`
+        orientations along at set_unit_const()'s re-anchor (reanchored()), plus
+        its corner pieces at placement_rules.companion_landing() (TASK-532).
+        Computed once, before the edit opens, since a landing reads the gate's old footprint."""
+        pieces = self._gate_companion_entries(entries)
+        rows = []
         for entry in entries:
-            new_const = gate_orientation.cycle_const(entry.unit.unit_const, steps_for(entry.unit))
-            changes.append((entry.unit, new_const, *reanchored(entry.unit, new_const)))
+            gate = entry.unit
+            new_const = gate_orientation.cycle_const(gate.unit_const, steps_for(gate))
+            x, y = reanchored(gate, new_const)
+            rows.append((entry, new_const, x, y))
+            rows += [(p, *placement_rules.companion_landing(gate, new_const, x, y, p.unit)) for p in pieces.get(id(gate), ())]
+        return rows
+
+    def _without_carried_pieces(self, entries) -> list:
+        """`entries` minus each corner piece whose gate is among them (TASK-532): it rides with its gate."""
+        riding = {id(p.unit) for rows in self._gate_companion_entries(entries).values() for p in rows}
+        return [e for e in entries if id(e.unit) not in riding] if riding else list(entries)
+
+    def _gate_cycle_plan(self, model, rows) -> wall_run.GateMovePlan | None:
+        """_gate_change_plan() for _gate_turn_rows()' `rows`. Planned before
+        the edit opens, so a truthy plan can take the wholesale path (GH #339)."""
+        changes = [(entry.unit, new_const, x, y) for entry, new_const, x, y in rows]
         return self._gate_change_plan(model, changes) if changes else None
 
-    def _write_gate_consts(self, model, entries, steps_for, splices: list[UnitSplice] | None) -> None:
-        """set_unit_const() to each gate's sibling `steps_for(unit)` along, recording
-        its splice. Shared by Rotate and the Rotation field (GH #61). Caller holds _unit_edit.
+    def _write_gate_consts(self, model, rows, splices: list[UnitSplice] | None) -> None:
+        """set_unit_const() to each row's const, then its position where the
+        re-anchor differs (a carried corner piece's offset), recording its
+        splice. `rows` are _gate_turn_rows()'. Shared by Rotate and the
+        Rotation field (GH #61). Caller holds _unit_edit.
 
         set_unit_const() changes span, which unit_pick.patch_index_for_move()
         is explicitly not scoped to (see its own docstring). One full rebuild
@@ -243,18 +265,18 @@ class _ViewerUnitOpsMixin:
         walls (GH #339); nothing is recorded and the wholesale refresh
         rebuilds the index instead.
         """
-        for entry in entries:
+        for entry, new_const, x, y in rows:
             unit = entry.unit
-            new_const = gate_orientation.cycle_const(unit.unit_const, steps_for(unit))
-            if splices is None:
-                model.set_unit_const(unit, new_const)
-                continue
-            old_own, old_tiles = self._unit_footprint(unit)
-            idx = self._unit_list_index(entry.player_id, unit)
+            if splices is not None:
+                old_own, old_tiles = self._unit_footprint(unit)
+                idx = self._unit_list_index(entry.player_id, unit)
             model.set_unit_const(unit, new_const)
-            new_own, new_tiles = self._unit_footprint(unit)
-            splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
-        if entries and splices is not None:
+            if (unit.x, unit.y) != (x, y):
+                model.set_position(unit, x, y, unit.z)
+            if splices is not None:
+                new_own, new_tiles = self._unit_footprint(unit)
+                splices.append(UnitSplice(entry.player_id, idx, unit, old_own, new_own, old_tiles, new_tiles))
+        if rows and splices is not None:
             self._rebuild_unit_index()
 
     def _write_variants(self, model, entries, value_for, splices: list[UnitSplice] | None) -> None:
@@ -488,12 +510,13 @@ class _ViewerUnitOpsMixin:
         model = self._ensure_unit_edits()
         if model is None:
             return
-        entries, removable, cascaded_ids = self._delete_preflight(model, entries)
+        pieces: set[int] = set()
+        entries, removable, cascaded_ids = self._delete_preflight(model, entries, carried=pieces)
         if not removable:
             self._report_delete(entries, removable, cascaded_ids)
             return
-        reshaped = self._remove_units(model, removable, "Delete")
-        self._report_delete(entries, removable, cascaded_ids, reshaped=reshaped)
+        reshaped, ends = self._remove_units(model, removable, "Delete", carried_ids=pieces)
+        self._report_delete(entries, removable, cascaded_ids, reshaped=reshaped, ends=ends, carried_ids=pieces)
 
     def cut_units(self) -> None:
         """Cut Units (GH #192): Copy Units, then Delete's exact rules (the
@@ -507,14 +530,15 @@ class _ViewerUnitOpsMixin:
         if model is None:
             self._log_status("Cut Units: units are read-only for this file", level=debug_log.WARNING)
             return
-        entries, removable, cascaded_ids = self._delete_preflight(model, entries)
+        pieces: set[int] = set()
+        entries, removable, cascaded_ids = self._delete_preflight(model, entries, carried=pieces)
         if not removable:
             self._report_delete(entries, removable, cascaded_ids, "Cut")
             return
-        # Without the cascade: the copy's own garrison closure finds those again.
-        self.copy_units([e for e in removable if id(e.unit) not in cascaded_ids], quiet=True)
-        reshaped = self._remove_units(model, removable, "Cut")
-        self._report_delete(entries, removable, cascaded_ids, "Cut", reshaped=reshaped)
+        # Without the cascade: the copy's own garrison closure finds those again. A gate's pieces stay in.
+        self.copy_units([e for e in removable if id(e.unit) not in cascaded_ids], quiet=True, cut=True)
+        reshaped, ends = self._remove_units(model, removable, "Cut", carried_ids=pieces)
+        self._report_delete(entries, removable, cascaded_ids, "Cut", reshaped=reshaped, ends=ends, carried_ids=pieces)
 
     def _replace_wall_plan(self, changes) -> wall_run.ReplacePlan | None:
         """wall_run.scenario_replace_rewrites() for a Replace into a non-gate
@@ -529,21 +553,64 @@ class _ViewerUnitOpsMixin:
         mm = self.scenario.map_manager
         return wall_run.scenario_removal_rewrites(self.scenario, mm.map_width, mm.map_height, units)
 
-    def _remove_units(self, model, removable, verb: str) -> int:
+    def _cliff_end_plan(self, units) -> tuple[list, int, str | None]:
+        """(cliff end rewrites, left alone, note) for removing `units` (GH
+        #286): cliff_chain.erase_rewrites_for_units() on the live map, read
+        before the removal. ([], 0, None) with no cliff among them, before
+        any scan; a raise plans nothing and says so in the note."""
+        consts = unit_sprites.cliff_consts()
+        if not any(u.unit_const in consts for u in units):
+            return [], 0, None
+        try:
+            existing, index = self._cliff_existing()
+            rewrites, left = cliff_chain.erase_rewrites_for_units(existing, index, {id(u) for u in units})
+        except Exception as e:  # noqa: BLE001
+            return [], 0, f"reshaping the cliff ends stopped: {type(e).__name__}: {e}"
+        return rewrites, left, None
+
+    def _apply_cliff_end_rewrites(self, model, rewrites) -> tuple[int, str | None]:
+        """Writes `rewrites` [(ExistingCliff, frame)] in order inside the
+        caller's open unit edit (docs/WRITE_RULES.md's Cliff drag exception,
+        erase trigger). Returns (written, note): a raise stops the rest and
+        is noted, never raised, so the caller's record still commits."""
+        written = 0
+        try:
+            for cliff, frame in rewrites:
+                model.set_cliff_frame(cliff.unit, frame)
+                written += 1
+        except Exception as e:  # noqa: BLE001
+            return written, f"reshaping the cliff ends stopped: {type(e).__name__}: {e}"
+        return written, None
+
+    def _remove_units(
+        self, model, removable, verb: str, spliceable: bool = True, carried_ids=frozenset()
+    ) -> tuple[int, tuple[int, int, str | None]]:
         """Removes `removable` (a non-empty _delete_preflight() result) as one
-        undo record labelled with `verb`: Delete's and Cut's shared write.
-        Returns how many walls beside a removed wall or gate were reshaped
-        (GH #340); any reshape makes the record wholesale."""
-        rewrites = self._removal_rewrites([e.unit for e in removable])
-        players = sorted({e.player_id for e in removable} | {player_id for player_id, _u, _v in rewrites})
-        label = f"{verb} unit" if len(removable) == 1 else f"{verb} {len(removable)} units"
-        if rewrites:
+        undo record labelled with `verb`: Delete's, Cut's and Find's shared
+        write. Returns (walls, ends): how many walls beside a removed wall
+        or gate were reshaped (GH #340), and (cliffs reshaped to end caps,
+        cliffs left alone, note) for the cliff runs it leaves (GH #286),
+        both planned before the removal. Any rewrite makes the record
+        wholesale, and so does `spliceable` False (Find's Delete). The label
+        leaves out `carried_ids`, a gate's corner pieces (TASK-532)."""
+        units = [e.unit for e in removable]
+        walls = self._removal_rewrites(units)
+        cliffs, left, note = self._cliff_end_plan(units)
+        players = {e.player_id for e in removable} | {player_id for player_id, _u, _v in walls}
+        # Declared, or a rewrite on another owner's cliff would never be undone.
+        players = sorted(players | {cliff.player for cliff, _frame in cliffs})
+        count = sum(1 for e in removable if id(e.unit) not in carried_ids)
+        label = f"{verb} unit" if count == 1 else f"{verb} {count} units"
+        reshaped = 0
+        if walls or cliffs:
             # The reshaped neighbours have no removal splice: wholesale, for any count.
             with self._unit_edit(model, label, players):
-                model.remove_many([e.unit for e in removable])
-                wall_run.apply_rewrites(model, rewrites)
-        elif len(removable) == 1:
-            # Splice-eligible (Batch D's D5's "single Delete", with no wall to reshape): a batch of
+                model.remove_many(units)
+                wall_run.apply_rewrites(model, walls)
+                reshaped, write_note = self._apply_cliff_end_rewrites(model, cliffs)
+            note = note or write_note
+        elif len(removable) == 1 and spliceable:
+            # Splice-eligible (Batch D's D5's "single Delete", with nothing to reshape): a batch of
             # 2+ removals keeps the wholesale path below instead, since each
             # unit's own list index (render_cache_splice.UnitSplice.index, needed
             # for wall_variant_rotation_overrides' key) shifts under a
@@ -563,10 +630,10 @@ class _ViewerUnitOpsMixin:
                 self._rebuild_unit_index()
         else:
             with self._unit_edit(model, label, players):
-                model.remove_many([e.unit for e in removable])
-        return len(rewrites)
+                model.remove_many(units)
+        return len(walls), (reshaped, left, note)
 
-    def _delete_preflight(self, model, entries) -> tuple[list, list, set[int]]:
+    def _delete_preflight(self, model, entries, carried: set[int] | None = None) -> tuple[list, list, set[int]]:
         """(entries plus their garrison cascade, the removable ones, the
         cascaded units' ids): on_unit_delete's and Find's shared pre-flight.
 
@@ -574,13 +641,22 @@ class _ViewerUnitOpsMixin:
         #42): occupants are hidden by default, so they can't be selected
         alongside it, and leaving them would dangle their link. The refusal
         therefore only survives for a unit whose holder is NOT in the batch,
-        a dangling reference or an unselected host."""
+        a dangling reference or an unselected host.
+
+        A `carried` set opts in to a gate's corner pieces (TASK-532: Delete,
+        Cut and Find's Delete, not the Eraser): they join the batch, and
+        their ids, selected or not, go into the set. They are not in the cascade."""
         # One garrison reverse-map walk for the whole pre-flight, instead of
         # leaving the first referencing() call to find it cold.
         model.warm_garrison_map()
         occupants = self._garrison_occupant_entries(model, entries)
         cascaded_ids = {id(e.unit) for e in occupants}
         entries = list(entries) + occupants
+        if carried is not None:
+            seen = {id(e.unit) for e in entries}
+            for pieces in self._gate_companion_entries(entries).values():
+                carried.update(id(p.unit) for p in pieces)
+                entries += [p for p in pieces if id(p.unit) not in seen]
         batch = {id(e.unit) for e in entries}
         # model.referencing(), not _garrison_referrers(): this decides what
         # remove_many() will accept, and the model keeps the -1 bucket. So a
@@ -590,13 +666,16 @@ class _ViewerUnitOpsMixin:
         return entries, removable, cascaded_ids
 
     def _report_delete(
-        self, entries, removable, cascaded_ids, verb: str = "Delete", reshaped: int = 0
+        self, entries, removable, cascaded_ids, verb: str = "Delete", reshaped: int = 0,
+        ends: tuple[int, int, str | None] = (0, 0, None), carried_ids=frozenset(),
     ) -> tuple[int, int, int]:
         """The status line and refusal warning for a delete that already ran
         (or was wholly refused); returns (removed, cascaded, blocked). `verb`
         is "Delete", or "Cut" for Cut Units, which words the same report.
         `reshaped` counts the walls left beside a removed wall or gate that
-        took a new shape (GH #340), in _gate_move_clauses()' wording."""
+        took a new shape (GH #340), in _gate_move_clauses()' wording; `ends`
+        is _remove_units()' cliff end result (GH #286). A gate's corner pieces
+        (`carried_ids`, TASK-532) are counted apart, like the cascade."""
         done = _REMOVE_VERB_PAST[verb]
         blocked = len(entries) - len(removable)
         if not removable:
@@ -610,20 +689,35 @@ class _ViewerUnitOpsMixin:
         # Only the cascade that actually ran, not every occupant found: a
         # host whose own removal was refused takes its occupants with it.
         cascaded = sum(1 for e in removable if id(e.unit) in cascaded_ids)
-        carried = f" ({cascaded} garrisoned)" if cascaded else ""
+        pieces = sum(1 for e in removable if id(e.unit) in carried_ids)
+        parts = [f"{cascaded} garrisoned"] if cascaded else []
+        if pieces:
+            parts.append(f"{pieces} corner piece{'s' * (pieces != 1)}")
+        carried = f" ({', '.join(parts)})" if parts else ""
+        carried += _REMOVE_VERB_TAIL[verb]
         if reshaped:
             carried += f", reshaping {reshaped} adjacent"
+        capped, left, note = ends
+        tail = f"; {capped} cliff(s) reshaped to end caps" if capped else ""
+        if left:
+            tail += f"; {left} cliff(s) left as they were (a corner there needs a different-size piece)"
+        if note:
+            tail += f"; {note}"
         if blocked:
-            self._log_status(f"{done} {len(removable)}{carried}; {blocked} refused (garrison reference)", level=debug_log.WARNING)
+            self._log_status(
+                f"{done} {len(removable) - cascaded - pieces}{carried}; {blocked} refused (garrison reference){tail}",
+                level=debug_log.WARNING,
+            )
             self._warn(
                 f"Some units not {done.lower()}",
                 f"{blocked} unit(s) are referenced by another unit's garrison and were not {done.lower()}.",
             )
-        elif len(removable) - cascaded == 1:
-            name = next(_unit_name(e.unit.unit_const) for e in removable if id(e.unit) not in cascaded_ids)
-            self._log_status(f"{done} {name}{carried}")
+        elif len(removable) - cascaded - pieces == 1:
+            counted = [e for e in removable if id(e.unit) not in cascaded_ids and id(e.unit) not in carried_ids]
+            name = _unit_name(counted[0].unit.unit_const)
+            self._log_status(f"{done} {name}{carried}{tail}")
         else:
-            self._log_status(f"{done} {len(removable) - cascaded} units{carried}")
+            self._log_status(f"{done} {len(removable) - cascaded - pieces} units{carried}{tail}")
         return len(removable), cascaded, blocked
 
     def _delete_units(self, entries) -> tuple[int, int, int]:
@@ -636,17 +730,12 @@ class _ViewerUnitOpsMixin:
         model = self._ensure_unit_edits()
         if model is None:
             return 0, 0, 0
-        entries, removable, cascaded_ids = self._delete_preflight(model, entries)
-        rewrites = []
+        pieces: set[int] = set()
+        entries, removable, cascaded_ids = self._delete_preflight(model, entries, carried=pieces)
+        reshaped, ends = 0, (0, 0, None)
         if removable:
-            rewrites = self._removal_rewrites([e.unit for e in removable])
-            players = {e.player_id for e in removable} | {player_id for player_id, _u, _v in rewrites}
-            label = "Delete unit" if len(removable) == 1 else f"Delete {len(removable)} units"
-            with self._unit_edit(model, label, sorted(players)):
-                model.remove_many([e.unit for e in removable])
-                # GH #340: the walls left beside a removed wall or gate re-derive.
-                wall_run.apply_rewrites(model, rewrites)
-        return self._report_delete(entries, removable, cascaded_ids, reshaped=len(rewrites))
+            reshaped, ends = self._remove_units(model, removable, "Delete", spliceable=False, carried_ids=pieces)
+        return self._report_delete(entries, removable, cascaded_ids, reshaped=reshaped, ends=ends, carried_ids=pieces)
 
     def _reassign_units(
         self, entries, new_player: int, on_applied=None, skip_orphan_occupants: bool = False

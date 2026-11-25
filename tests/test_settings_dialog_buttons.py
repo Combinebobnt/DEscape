@@ -589,6 +589,17 @@ def test_reset_general_keeps_the_install_path(dialog_window, tmp_path) -> None:
     assert "install path is not reset" in _button(dialog, "Reset").toolTip()
 
 
+def test_the_double_click_rename_box_writes_its_setting_and_resets_on(dialog_window) -> None:
+    dialog, _window = dialog_window
+    assert dialog.trigger_rename_double_click_check.isChecked()
+    dialog.trigger_rename_double_click_check.setChecked(False)
+    assert settings.get_trigger_rename_double_click() is False
+    _tab(dialog, "General")
+    _button(dialog, "Reset").click()
+    assert settings.get_trigger_rename_double_click() is True
+    assert dialog.trigger_rename_double_click_check.isChecked()
+
+
 def test_reset_mods_keeps_the_profile_folder(dialog_window, tmp_path) -> None:
     import yaml
 

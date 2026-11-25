@@ -145,6 +145,7 @@ from descape import (
     tool_option_bindings,
     trigger_clipboard,
     trigger_geometry,
+    trigger_organize,
     ui_icons,
     unit_brush,
     unit_references,
@@ -434,6 +435,7 @@ class ViewerWindow(
         mod_graphics.set_enabled(settings.get_view_layers().mod_art)
         mod_graphics.set_excluded(settings.get_mod_art_excluded())
         mod_graphics.set_included(settings.get_mod_art_included())
+        trigger_organize.set_divider_rule(settings.get_trigger_section_headers())  # TASK-486: before any show_scenario()
         # GH #241: Enhanced draws the game's x2 unit art where x1 would be enlarged.
         _sync_hi_res()
         # GH #272: a mod's reach is walked off the GUI thread; an edit repaints the whole map until it lands.
@@ -647,6 +649,7 @@ class ViewerWindow(
         self._doc_id = uuid4().hex
         # File > Recover from Autosave…, modeless and reused.
         self._recover_dialog: RecoverAutosaveDialog | None = None
+        self._scenario_browser_dialog = None
         # Phase 4b's trigger edit state, on the same history as terrain edits.
         # Created lazily by the editing UI, never at file-open time: parsing
         # triggers costs 3.5s on the worst corpus file and 4a deliberately kept
@@ -781,6 +784,10 @@ class ViewerWindow(
         # and each member's stand-in under it, (turn, unit_gen, id(unit), group) -> unit or stand-in.
         self._drag_turn = move_turn.MoveTurn()
         self._drag_stand_in_memo: dict[tuple, object] = {}
+        # TASK-523, reset with the rule memos: the drag's wall scene, (scenario, key, MoveScene, gate
+        # companions), and its last reshape plan, (scene, point or delta, turn, plan); scene compared with `is`.
+        self._drag_scene_memo: tuple | None = None
+        self._drag_plan_memo: tuple | None = None
         # Convert brush: the model whose edit is open for the current drag
         # (None outside a stroke), and the timer coalescing its live repaint.
         self._convert_model: UnitEditModel | None = None
@@ -1010,6 +1017,8 @@ class ViewerWindow(
             on_favorites_changed=self._refresh_unit_favorites,
             on_placing_art=self._on_favorites_placing_art,
         )
+        # After the panel's own hook, so the Edit actions read the row buttons it just set (TASK-341).
+        self.units_panel.garrison_tree.itemSelectionChanged.connect(self._update_clipboard_actions)
         self.terrain_panel = TerrainPanel(
             display_mode=settings.get_terrain_picker_mode(), swatch_px=settings.get_terrain_grid_swatch_px()
         )
@@ -1053,8 +1062,10 @@ class ViewerWindow(
         )
         # GH #98: a wall const picked in the catalog makes Place Unit a drag.
         self.map_view.set_place_shape_query(self._place_shape)
-        # GH #124: the wall drag preview leaves occupied tiles out.
-        self.map_view.set_place_blocked_query(self._blocked_for_walls)
+        # TASK-086: Create Objects' hover highlight steps a multi-tile template by its footprint.
+        self.map_view.set_stamp_step_query(self._create_objects_step)
+        # GH #124, TASK-328: the wall drag preview leaves occupied and refused-terrain tiles out.
+        self.map_view.set_place_blocked_query(self._wall_drag_gaps)
         # GH #365: Unit Line and Unit Shape read the pick and options once, at the press.
         self.map_view.set_shape_press_query(self._shape_press)
         # GH #128: Place Unit's hover ghost.
@@ -1161,6 +1172,7 @@ class ViewerWindow(
         self._pan_hint_logged = False
         self.map_view.on_pan_click = self._on_pan_click
         self.map_view.on_unit_pick = self._on_map_unit_picked
+        self.map_view.on_unit_marquee_pick = self._on_unit_marquee_picked
         self.map_view.on_unit_picker_cancel = self._on_unit_picker_cancel
         self.map_view.on_tile_pick = self._on_tile_picked
         self.map_view.on_rect_pick = self._on_rect_picked
@@ -1701,8 +1713,10 @@ def main() -> None:
     ready_file = os.environ.get("DESCAPE_READY_FILE")
     if ready_file:
         Path(ready_file).touch()
-    if len(sys.argv) > 1:
-        window.load_scenario(Path(sys.argv[1]))
+    # The first argument that is not --no-addons, which may come before or after it.
+    paths = [arg for arg in sys.argv[1:] if arg != settings.NO_ADDONS_FLAG]
+    if paths:
+        window.load_scenario(Path(paths[0]))
     # After the ready-file touch, not before: bootstrap.py blocks on that
     # touch to know the app is up, and a modal sweep dialog inserted earlier
     # would hold it up until READY_TIMEOUT fires -- on exactly the launch

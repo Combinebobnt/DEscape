@@ -88,6 +88,8 @@ from descape import (
     gate_orientation,
     library_compat,
     object_catalog,
+    object_orientation,
+    own_tile_index,
     render_units,
     scenario_io,
     terrain_palette,
@@ -707,6 +709,8 @@ class UnitEditModel:
         # each time. Removal paths set the stale flag below instead.
         self._highest_ref_id = _highest_reference_id(manager)
         self._highest_ref_id_stale = False
+        # Every live reference_id, built on first use; None wherever the flag above goes stale.
+        self._live_ref_ids: set[int] | None = None
         self._next_unit_id = _NEXT_UNIT_ID_STRUCT.unpack_from(loaded.decompressed_body, 0)[0]
         self._dirty = False
         self._has_added_units = False
@@ -856,15 +860,35 @@ class UnitEditModel:
         self._next_unit_id = candidate + 1
         return candidate
 
-    def _bump_unit_gen(self) -> None:
+    def reference_id_in_use(self, reference_id: int) -> bool:
+        """True while some live unit holds `reference_id`. The set behind it
+        is one walk on first use, kept by add()/add_many() and dropped by every
+        path that marks the highest id stale (a remove, restore, rollback)."""
+        if self._live_ref_ids is None:
+            self._live_ref_ids = {u.reference_id for units in self.loaded.unit_manager.units for u in units}
+        return reference_id in self._live_ref_ids
+
+    def _bump_unit_gen(self, index=None, delta=None) -> None:
         """Batch D's D1a: called by every public mutator below, model-side
         rather than from ViewerWindow, so it covers the two call sites that
         drive begin_unit_edit()/commit_unit_edit() by hand (the terrain-unit
         record and paste region) and a batch-edit script with no viewer at
         all. render_units.py's memoized functions read scenario.unit_gen to decide
         whether their cached answer is still valid -- see LoadedScenario.
-        unit_gen's own docstring for the contract this counter carries."""
+        unit_gen's own docstring for the contract this counter carries.
+
+        `index` is the own-tile index as it was current before the mutation
+        (_own_index()), stamped current again once `delta(index)` applied the
+        mutation's own-tile change. A mutator that moves no own tile and no
+        membership passes no delta; restore() passes no index, so it rebuilds."""
         self.loaded.unit_gen += 1
+        if index is not None:
+            if delta is not None:
+                delta(index)
+            index.stamp(self.loaded.unit_gen, self._locate)
+
+    def _own_index(self):
+        return render_units.live_own_tile_index(self.loaded)
 
     def _maybe_capture_field_delta(self, player: int, index: int, unit: Unit) -> None:
         """Batch D's D6 capture-on-first-write: called by set_position/
@@ -910,10 +934,11 @@ class UnitEditModel:
         verbatim -- never derived from terrain elevation."""
         player, index = self._locate(unit)
         self._maybe_capture_field_delta(player, index, unit)
+        own, old = self._own_index(), own_tile_index.own_tile(unit)
         unit.x, unit.y, unit.z = x, y, z
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.moved(unit, old))
 
     def set_status(self, unit: Unit, value: int) -> None:
         """Assigns `status`, the in-game editor's Unit State (GH #186), and
@@ -928,7 +953,7 @@ class UnitEditModel:
         unit.status = int(value)
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_capture_flag(self, unit: Unit, value: int) -> None:
         """Assigns `capture_flag`, the in-game editor's Capture Flag (GH
@@ -952,7 +977,7 @@ class UnitEditModel:
         unit.capture_flag = int(value)
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_rotation(self, unit: Unit, rotation: float) -> None:
         """Assigns `rotation` (radians) and marks the unit's blob dirty.
@@ -982,7 +1007,7 @@ class UnitEditModel:
         unit.rotation = rotation
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_variant(self, unit: Unit, rotation: float) -> None:
         """Assigns a graphic-variant index to `rotation` and marks the blob dirty.
@@ -1012,7 +1037,7 @@ class UnitEditModel:
             unit.initial_animation_frame = int(rotation)
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_wall_variant(self, unit: Unit, index: int) -> None:
         """Writes a wall's neighbour-derived shape index to `rotation`, for
@@ -1093,7 +1118,7 @@ class UnitEditModel:
         unit.rotation = float(index)
         self._blobs[player][position] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_cliff_frame(self, unit: Unit, frame: int) -> None:
         """Writes a cliff's shape frame to `rotation` and
@@ -1101,8 +1126,10 @@ class UnitEditModel:
         an existing end cap or lone piece that gains a neighbour from the
         drag takes the frame the measured shape table gives its new
         neighbours at its own size (cliff_chain.ChainStroke.rewrites()); and
-        for a Cliff tool right-button erase's end rewrites (GH #247): a
-        survivor left joined to exactly one neighbour takes that arm's end
+        for the end rewrites of a removal (GH #247, GH #286: a Cliff tool
+        right-button stroke, an Eraser stroke with Cliffs ticked, or a
+        Delete, Cut Units or Find and Replace Delete that removes a cliff):
+        a survivor left joined to exactly one neighbour takes that arm's end
         cap at its own size (cliff_chain.erase_rewrites()).
 
         An exception to AGENTS.md's "verbatim" rule on set_wall_variant()'s
@@ -1131,21 +1158,23 @@ class UnitEditModel:
         unit.initial_animation_frame = int(frame)
         self._blobs[player][position] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_unit_const(self, unit: Unit, new_const: int) -> None:
-        """Swaps a gate's `unit_const` for one of its orientation siblings and
-        re-anchors x/y so the footprint keeps the low corner it had.
+        """Swaps a gate's or a non-square object's `unit_const` for one of its
+        orientation siblings and re-anchors x/y so the footprint keeps the low
+        corner it had.
 
         One of the two writers of a placed unit's const (replace_type() is the
         other, for Find and Replace only), and the guard below is what keeps
         AGENTS.md's gate rule enforced rather than merely documented: a const
-        that is not one of
-        gate_orientation.orientation_siblings()' four is refused loudly, the
-        same contract set_rotation() has for a non-ANGLE const.
+        that is not in gate_orientation.orientation_siblings()' or
+        object_orientation.orientation_siblings()' group (TASK-329) is refused
+        loudly, the same contract set_rotation() has for a non-ANGLE const.
 
         **Re-anchoring is not optional.** A gate's four orientations have four
-        different spans ((4, 1), (1, 4) and two 4x4 diagonals), and every
+        different spans ((4, 1), (1, 4) and two 4x4 diagonals), a bridge's two
+        axes (2, 3) and (3, 2), and every
         corpus placement sits at `tile + span/2` per axis, so passing x/y
         through verbatim would leave the gate half a footprint off its own
         tiles. span_low_corner() forward and render_units.span_anchor() back is that
@@ -1155,22 +1184,25 @@ class UnitEditModel:
         `rotation` and `z` pass through verbatim. A gate's stored rotation is
         0.0 or the junk sentinel 7.0 and every sibling has angle_count == 1,
         so normalizing it here would be exactly the violation the hard rule
-        names.
+        names. A longhouse's index is a roof style its two orientations share.
         """
         siblings = gate_orientation.orientation_siblings(unit.unit_const)
+        if siblings is None:
+            siblings = object_orientation.orientation_siblings(unit.unit_const)
         if siblings is None or new_const not in siblings:
             raise ValueError(
                 f"unit_const {unit.unit_const} cannot become {new_const}: a placed unit's const "
-                f"may only change among a gate's own orientation siblings "
-                f"({siblings if siblings is not None else 'this const is not a gate'})"
+                f"may only change among a gate's or a non-square object's own orientation siblings "
+                f"({siblings if siblings is not None else 'this const has none'})"
             )
         player, index = self._locate(unit)
         self._maybe_capture_field_delta(player, index, unit)
+        own, old = self._own_index(), own_tile_index.own_tile(unit)
         unit.x, unit.y = reanchored(unit, new_const)
         unit.unit_const = new_const
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.moved(unit, old))
 
     def replace_refusal(
         self,
@@ -1278,13 +1310,14 @@ class UnitEditModel:
         self._maybe_capture_field_delta(player, index, unit)
         x, y = replaced_position(unit, new_const)
         rotation, frame = replaced_rotation(unit.unit_const, new_const, unit.rotation, unit.initial_animation_frame)
+        own, old = self._own_index(), own_tile_index.own_tile(unit)
         unit.unit_const = new_const
         unit.x, unit.y = x, y
         unit.rotation = rotation
         unit.initial_animation_frame = frame
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.moved(unit, old))
 
     def reassign(self, unit: Unit, new_player: int) -> None:
         """Moves `unit` to `new_player`'s list. Zero re-serialization: the
@@ -1326,7 +1359,7 @@ class UnitEditModel:
         # is purely which list the unit lives in.
         self.loaded.unit_manager.update_unit_player_values()
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def swap_players(self, a: int, b: int) -> None:
         """Exchanges players `a` and `b`'s whole unit lists (Swap Players, GH
@@ -1354,7 +1387,7 @@ class UnitEditModel:
         # The cached _player render_units.py reads for colour; never the banned `unit.player` setter.
         self.loaded.unit_manager.update_unit_player_values()
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def set_garrisoned_in(self, unit: Unit, host_reference_id: int) -> None:
         """Puts `unit` inside the live unit whose reference_id is
@@ -1385,7 +1418,7 @@ class UnitEditModel:
         unit.garrisoned_in_id = host_reference_id
         self._blobs[player][index] = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(self._own_index())
 
     def _check_garrison_link(self, unit: Unit, host_reference_id: int) -> None:
         """set_garrisoned_in()'s linking scope. One walk builds the
@@ -1430,6 +1463,7 @@ class UnitEditModel:
         caption_string_id: int = -1,
         caption_string: str = "",
         capture_flag: int = -1,
+        reference_id: int | None = None,
     ) -> Unit:
         """Places a new unit for `player`. `rotation` is a pass-through
         parameter, not an edit operation -- storing a caller-supplied value
@@ -1463,11 +1497,23 @@ class UnitEditModel:
         cheaply -- it's a walk of five classes -- rather than gating on
         whether it looks needed. Inside batch_adds() it is skipped: the block
         already ran it once and loads nothing that could re-poison.
+
+        `reference_id` None mints one. An int is a same-document paste of a
+        Unit Cut handing back the cut unit's own id (TASK-341), and raises
+        unless `0 <= reference_id < next_unit_id` and no live unit holds it.
+        The counter bound keeps every later mint above it (history is linear,
+        and restore() rewinds the lists and the counter together); the live
+        check keeps ids unique.
         """
         self._refuse_inside_field_delta("add")
         if not 0 <= player <= 8:
             raise ValueError(f"player must be 0 (GAIA)..8, got {player}")
-        reference_id = self._reserve_reference_id()
+        if reference_id is None:
+            reference_id = self._reserve_reference_id()
+        elif not 0 <= reference_id < self._next_unit_id or self.reference_id_in_use(reference_id):
+            raise ValueError(
+                f"reference_id {reference_id} is in use or outside 0..{self._next_unit_id - 1}, so it cannot be reused"
+            )
         unit = new_unit(
             self.loaded._scenario.uuid,
             player,
@@ -1485,18 +1531,21 @@ class UnitEditModel:
             capture_flag=capture_flag,
             depoison=not self._batch_depoisoned,
         )
+        own = self._own_index()
         self.loaded.unit_manager.units[player].append(unit)
         self._blobs[player].append(None)
         self._tracked[player].append(unit)
         self._pos[id(unit)] = (player, len(self._tracked[player]) - 1)
         self._highest_ref_id = max(self._highest_ref_id, reference_id)
+        if self._live_ref_ids is not None:
+            self._live_ref_ids.add(reference_id)
         if self._garrison is not None:
             # Its own reference_id bucket needs no work here: anything
             # already pointing there is already in the map.
             self._garrison.setdefault(unit.garrisoned_in_id, []).append(unit)
         self._dirty = True
         self._has_added_units = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.added((unit,)))
         return unit
 
     @contextmanager
@@ -1562,7 +1611,7 @@ class UnitEditModel:
                 )
             )
             next_id += 1
-        base = len(self._tracked[player])
+        base, own = len(self._tracked[player]), self._own_index()
         self.loaded.unit_manager.units[player].extend(units)
         self._blobs[player].extend([None] * len(units))
         self._tracked[player].extend(units)
@@ -1570,13 +1619,15 @@ class UnitEditModel:
             self._pos[id(unit)] = (player, base + offset)
         if units:
             self._highest_ref_id = max(self._highest_ref_id, next_id - 1)
+            if self._live_ref_ids is not None:
+                self._live_ref_ids.update(u.reference_id for u in units)
             if self._garrison is not None:
                 # Every spec fixes garrisoned_in_id=-1, so this is one bucket.
                 self._garrison.setdefault(-1, []).extend(units)
         self._next_unit_id = next_id
         self._dirty = True
         self._has_added_units = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.added(units))
         return units
 
     def remove_many(self, units: Sequence[Unit]) -> None:
@@ -1615,6 +1666,8 @@ class UnitEditModel:
             )
 
         by_index = self._removal_indices(units) if len(to_remove) <= _REMOVE_BY_INDEX_MAX else None
+        # The units that actually leave: the filter pass below quietly skips an untracked one.
+        own, gone = self._own_index(), list(units) if by_index is not None else []
         for unit in units:
             self._pos.pop(id(unit), None)
         if by_index is not None:
@@ -1632,6 +1685,7 @@ class UnitEditModel:
                 keep = [i for i, u in enumerate(tracked) if id(u) not in to_remove]
                 if len(keep) == len(tracked):
                     continue
+                gone.extend(u for u in tracked if id(u) in to_remove)
                 manager_units = self.loaded.unit_manager.units[player]
                 blobs = self._blobs[player]
                 manager_units[:] = [manager_units[i] for i in keep]
@@ -1643,8 +1697,9 @@ class UnitEditModel:
                 self._reindex_pos_tail(player, 0)
         self._drop_garrison_entries(units)
         self._highest_ref_id_stale = True
+        self._live_ref_ids = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.removed(gone))
 
     def _removal_indices(self, units: Sequence[Unit]) -> dict[int, set[int]] | None:
         """remove_many()'s del-by-index plan: player -> the batch's indices
@@ -1687,6 +1742,7 @@ class UnitEditModel:
                 f"Unit reference_id {unit.reference_id} is referenced by garrisoned_in_id "
                 f"on {len(referencing)} other unit(s) -- refusing to remove it"
             )
+        own = self._own_index()
         del self.loaded.unit_manager.units[player][index]
         del self._blobs[player][index]
         del self._tracked[player][index]
@@ -1694,8 +1750,9 @@ class UnitEditModel:
         self._reindex_pos_tail(player, index)
         self._drop_garrison_entries([unit])
         self._highest_ref_id_stale = True
+        self._live_ref_ids = None
         self._dirty = True
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: ix.removed((unit,)))
 
     # -- undo/redo support ---------------------------------------------------
 
@@ -1742,6 +1799,7 @@ class UnitEditModel:
         self._rebuild_pos()
         self._garrison = None
         self._highest_ref_id_stale = True
+        self._live_ref_ids = None
         self._next_unit_id = snapshot.next_unit_id
         self._dirty = snapshot.dirty
         self._bump_unit_gen()
@@ -1770,6 +1828,7 @@ class UnitEditModel:
         self._rebuild_pos()
         self._garrison = None
         self._highest_ref_id_stale = True
+        self._live_ref_ids = None
         self.restore(snapshot)
 
     def _restore_field_delta(self, snapshot: UnitFieldSnapshot) -> None:
@@ -1782,18 +1841,20 @@ class UnitEditModel:
         precondition, enforced by _refuse_inside_field_delta() on every
         membership mutator, is that no unit's membership, order or
         garrisoned_in_id ever moved while this snapshot was live."""
+        own, moves = self._own_index(), []
         for entry in snapshot.entries.values():
+            moves.append((entry.unit, own_tile_index.own_tile(entry.unit)))
             _set_unit_state(entry.unit, entry.state)
             self._blobs[entry.player][entry.index] = entry.blob
         self._dirty = snapshot.dirty
-        self._bump_unit_gen()
+        self._bump_unit_gen(own, lambda ix: [ix.moved(unit, old) for unit, old in moves])
 
     def begin_unit_edit(self, players: Sequence[int], fields_only: bool = False) -> None:
         """Snapshot before mutating. `players` is the caller's declaration of
         which player list(s) the upcoming edit will touch: one of
         set_position/set_rotation/set_unit_const/add/remove, or both of
         reassign's source and destination. Pairs with exactly one
-        commit_unit_edit() or abort_unit_edit().
+        commit_unit_edit(), abort_unit_edit() or rollback_unit_edit().
 
         Must be called *before* the mutation -- there is no way to recover
         the "before" state afterwards.
@@ -1814,8 +1875,19 @@ class UnitEditModel:
 
     def abort_unit_edit(self) -> None:
         """Discards the in-progress snapshot without recording. Does not roll
-        the document back -- call restore() for that."""
+        the document back: call rollback_unit_edit() for that."""
         self._pending = None
+
+    def rollback_unit_edit(self) -> None:
+        """Closes the open edit unrecorded and puts the document back to its
+        begin_unit_edit() snapshot: a one-shot tool edit that raised partway
+        (TASK-503). The edit is closed first, so a restore() its alignment
+        gate refuses (raising, changing nothing) cannot wedge the next one."""
+        snapshot = self._pending
+        if snapshot is None:
+            raise RuntimeError("rollback_unit_edit() called with no edit in progress")
+        self._pending = None
+        self.restore(snapshot)
 
     def commit_unit_edit(self, label: str, history: EditHistory, push: bool = True) -> UnitDiffRecord:
         """Closes the pair opened by begin_unit_edit() and, by default,
@@ -1954,6 +2026,13 @@ class UnitEditModel:
                     f"_highest_ref_id is {self._highest_ref_id} but the highest live "
                     f"reference_id is {actual}. An operation moved the maximum without raising "
                     f"the cache or marking it stale"
+                )
+        if self._live_ref_ids is not None:
+            fresh_ids = {u.reference_id for units in self.loaded.unit_manager.units for u in units}
+            if self._live_ref_ids != fresh_ids:
+                raise RuntimeError(
+                    "_live_ref_ids no longer matches a fresh walk of the unit lists. An operation "
+                    "changed which reference_ids are live without updating or dropping the set"
                 )
 
     def serialize(self) -> bytes:

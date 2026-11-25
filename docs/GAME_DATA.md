@@ -26,7 +26,7 @@ data, registered in `games.GAMES`. `games.py` imports nothing from
 | `variants` | none | `{2}` | The file header variants that are this game's |
 | `tables_dir` | `descape/` | `descape/ror/` | The folder of its generated tables |
 | `stamp_key` | none | `ror` | Its section of `tools/game_data_stamp.json` |
-| `strings_files` | `key-value-strings-utf8.txt` | `key-value-pompeii-strings-utf8.txt` | Its strings files |
+| `strings_files` | `key-value-strings-utf8.txt`, `key-value-paphos-strings-utf8.txt` | `key-value-pompeii-strings-utf8.txt` | Its strings files, read in this order |
 | `icon_materials` | none | `morematerials.json` | The materials file naming its own icons |
 | `library_enums` | yes | no | AoE2ScenarioParser's enums name its ids |
 | `data_mods` | yes | no | File > Data Mod applies |

@@ -78,6 +78,10 @@ from descape.unit_model import UnitEditModel  # re-exported too, see below
 # descape/library_compat.py exists to route around; see this module's own
 # docstring above for the read-side gotcha that still applies across
 # multiple open documents in one process.
+#
+# Keep to one UnitEditModel per scenario. A second model on the same scenario
+# goes stale once the other moves, adds or removes a unit, and the render's
+# own-tile index then raises RuntimeError rather than draw from it.
 save = write_scenario
 
 

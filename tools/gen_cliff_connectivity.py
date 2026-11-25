@@ -6,9 +6,18 @@ gen_unit_render_data.py).
 
 **Install-free, corpus-scan tool** in the scan_wall_rotation.py mould:
 `--scenario-dir` defaults to `examples/` and may be repeated. The shipped
-table pools `examples/` with a private, cliff-heavy corpus (288 scenario
-files, 23,313 cliff placements) -- re-run it against any richer corpus to
-reproduce or update.
+table pools `examples/` with a private, cliff-heavy corpus (the 157 DE
+scenario files there that load, 23,313 cliff placements) -- re-run it
+against any richer corpus to reproduce or update.
+
+**Pre-DE files (AoK, AoC and HD `.scn`/`.scx`) are skipped by design.** The
+table describes how DE scenarios place cliffs, for a DE write path; pre-DE
+files are read-only here and come from older editors that used a narrower
+piece set (they land on twin suffixes where DE files use both), so pooling
+them would shift classes toward a habit no DE map has. A legacy-only table,
+if one is ever needed, is `scan(..., include_legacy=True)` filtered to them.
+A file that fails to load is skipped too, silently in the table but counted
+in the printout, so a drift shows its file-set cause in one line.
 
 **Adjacency is tile-block, not centre-distance.** Two cliffs are neighbours
 when their `render_units.unit_tile_bounds()` footprints share an edge (cardinal)
@@ -159,19 +168,29 @@ class ScannedFile:
         return frozenset(d for _, d in self.adjacency[i] if d in _CARDINALS)
 
 
-def scan(scenario_dirs: list[Path]) -> list[ScannedFile]:
-    """Every cliff placement in every scenario file under `scenario_dirs`,
+def scan(
+    scenario_dirs: list[Path], skipped: Counter[str] | None = None, include_legacy: bool = False
+) -> list[ScannedFile]:
+    """Every cliff placement in every DE scenario file under `scenario_dirs`,
     per file, with its tile-block adjacency. Every projection below reads
     this one scan, so a new field can't disagree with the shipped ones on
-    which nodes or neighbours exist."""
+    which nodes or neighbours exist. Pre-DE files are left out unless
+    `include_legacy`; `skipped` (if given) counts them under "legacy" and
+    files that fail to load under "unloadable"."""
     consts = unit_sprites.cliff_consts()
     suffix_of = _suffix_map()
     files: list[ScannedFile] = []
+    if skipped is None:
+        skipped = Counter()
 
     for path in [p for d in scenario_dirs for p in _corpus_files(d)]:
         try:
             scenario = load_map_and_units(path)
         except Exception:
+            skipped["unloadable"] += 1
+            continue
+        if scenario.source_format.legacy and not include_legacy:
+            skipped["legacy"] += 1
             continue
         mm = scenario.map_manager
         tile_w, tile_h = mm.map_width, mm.map_height
@@ -539,11 +558,14 @@ def main() -> None:
             print(f"No such scenario directory: {scenario_dir}", file=sys.stderr)
             sys.exit(1)
 
-    doc = build_document(scan(scenario_dirs), args.min_n, args.min_suffix_n)
+    skipped: Counter[str] = Counter()
+    files = scan(scenario_dirs, skipped)
+    doc = build_document(files, args.min_n, args.min_suffix_n)
     args.output.write_text(dump_document(doc))
 
     metadata, entries, proj = doc["metadata"], doc["entries"], doc["projection_metadata"]
-    print(f"Scanned {scenario_dirs}: {metadata['total_records']} cliff records")
+    print(f"Scanned {scenario_dirs}: {len(files)} files, {metadata['total_records']} cliff records")
+    print(f"Skipped {skipped['legacy']} pre-DE (read-only) files and {skipped['unloadable']} that failed to load")
     print(f"Pinned {len(entries)} dirsets at n >= {args.min_n}, covering {metadata['coverage']:.1%} of records")
     print(
         f"Purity within that coverage: {metadata['purity_within_coverage']:.1%} "

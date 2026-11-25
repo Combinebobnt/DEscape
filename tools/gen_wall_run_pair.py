@@ -843,7 +843,7 @@ def _run_end_site(scenario, occupied: set, w: int, h: int):
 
 
 def _shape_wall(model, loaded, kind: str, anchor, end, shift: bool, w: int, h: int, history) -> str:
-    """One Unit Line / Unit Shape wall drag, as the viewer's _commit_wall_run() writes it."""
+    """One Unit Line / Unit Shape wall drag, as the viewer's _commit_wall_run() writes it on land (no terrain gaps)."""
     latch = unit_shape.latch_for(
         (STONE_WALL,), PLAYER, kind, filled=False, spacing=0, randomize=False, rules=True, pending=PlaceRotation()
     )

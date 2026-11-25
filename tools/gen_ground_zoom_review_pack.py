@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Review pack for ground textures at the near and far ends of the zoom ladder
 (GH #326): a texture enlarged past its source's detail at 128 and 192 px per
-tile (Ice Beach's 512 px source, the 1024 px forest floor), and grass shrunk
-to 16 and 32 px.
+tile (Ice Beach's 512 px source, the 1024 px forest floor), grass shrunk
+to 16 and 32 px, and grass at 192 px posed blind as an A/B against the same
+render with the angled prefilter off (TASK-691's softness question).
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md). Reuses
 that tool's ground_texture map and scene loader. Needs the examples/ corpus
@@ -21,6 +22,8 @@ Writes build/review_pack/ground_views/<opaque token>/, gitignored.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import sys
 from pathlib import Path
 
@@ -52,7 +55,12 @@ _FRAMES = {
     "grass_far_overhead": ("flat", 32, (384, 192), None),
     "grass_farthest": ("stepped", 16, (256, 128), None),
     "grass_farthest_overhead": ("flat", 16, (256, 128), None),
+    "grass_close_a": ("stepped", 192, (720, 360), None),
+    "grass_close_b": ("stepped", 192, (720, 360), None),
 }
+# One of the pair renders with asset_source.angled_prefilter off (_reference_frame()), no inject
+# reaches it, and the run key alone records which.
+_PAIR = ("grass_close_a", "grass_close_b")
 _CLOSE = ("ice_close", "ice_mid", "forest_close")
 _FAR = ("grass_far", "grass_farthest")
 # Same texture at the same zoom, blitted 1:1 with no resample: far_grain's clean twin, which
@@ -65,11 +73,17 @@ _ONE_CELL_FRAME = "ice_close"
 _FAR_MAX_SIZE = asset_source.terrain_texture_size(32)
 
 # Equal horizontal neighbours at 1:1 (measured 2026-11-21): clean close frames 0.002-0.037,
-# blocky 0.37-0.67. Speckle as grp._speckle_rate: clean far grass 0.04-0.10%, unfiltered ~11.6%.
+# blocky 0.37-0.67. Speckle as grp._speckle_rate: clean far grass 0.04-0.10%, unfiltered ~11.6%
+# (2026-11-24, angled prefilter: clean 0.00%).
 CLEAN_RUNS_MAX = 0.10
 BLOCKY_RUNS_MIN = 0.30
 FAR_SPECKLE_MAX = 0.015
 UNFILTERED_SPECKLE_MIN = 0.05
+# _edge_strength of the prefiltered pair frame over its reference (TASK-691 probe, grass 192 px):
+# [1,2,1] 0.84, soft's Gaussian 0.57. Clean must stay SAME-able, soft clearly softer.
+CLEAN_EDGE_MIN = 0.75
+SOFT_EDGE_MAX = 0.65
+SOFT_SIGMA = 1.5
 
 _REAL_TEXTURE_AT = asset_source.terrain_texture_at
 # Point-sampled at the size asked, enlarging or shrinking (grp's memo).
@@ -96,66 +110,103 @@ def _render(frame_id: str, scenario=None, elevations=None) -> np.ndarray:
     )
 
 
-def _nearest(terrain_id: int, size: int) -> np.ndarray:
-    """The real texture, except a source smaller than `size` is enlarged
-    nearest-neighbour instead of bicubic."""
+def _nearest(terrain_id: int, size: int, angled: bool = False) -> np.ndarray:
+    """The real texture (the variant asked for), except a source smaller than
+    `size` is enlarged nearest-neighbour instead of bicubic, unfiltered."""
     from PIL import Image
 
     with Image.open(asset_source.get_terrain_texture_path(terrain_id)) as img:
         enlarged = img.size[0] < size
-    return _UNFILTERED(terrain_id, size) if enlarged else _REAL_TEXTURE_AT(terrain_id, size)
+    return _UNFILTERED(terrain_id, size) if enlarged else _REAL_TEXTURE_AT(terrain_id, size, angled=angled)
 
 
-def _blocky_at(terrain_id: int, size: int):
+def _blocky_at(terrain_id: int, size: int, angled: bool = False):
     """COARSE. Every enlarged source point-sampled: the close frames only."""
     if asset_source.get_terrain_texture_path(terrain_id) is None:
-        return _REAL_TEXTURE_AT(terrain_id, size)
-    return _nearest(terrain_id, size)
+        return _REAL_TEXTURE_AT(terrain_id, size, angled=angled)
+    return _nearest(terrain_id, size, angled)
 
 
-def _one_cell_at(terrain_id: int, size: int):
+def _one_cell_at(terrain_id: int, size: int, angled: bool = False):
     """LOCALIZED. Only the centre cell's crop of Ice Beach at 192 px is
     point-sampled: one diamond in ice_close (its crop repeats every 10 tiles,
     outside the frame)."""
-    real = _REAL_TEXTURE_AT(terrain_id, size)
+    real = _REAL_TEXTURE_AT(terrain_id, size, angled=angled)
     tile_px = _FRAMES[_ONE_CELL_FRAME][1]
     if terrain_id != ICE_BEACH or size != asset_source.terrain_texture_size(tile_px):
         return real
     ox, oy = render_paint._crop_offset(*CENTRE, size, tile_px)
     arr = np.array(real)
-    arr[oy:oy + tile_px, ox:ox + tile_px] = _nearest(terrain_id, size)[oy:oy + tile_px, ox:ox + tile_px]
+    arr[oy:oy + tile_px, ox:ox + tile_px] = _nearest(terrain_id, size, angled)[oy:oy + tile_px, ox:ox + tile_px]
     arr.flags.writeable = False
     return arr
 
 
-def _unfiltered_at(terrain_id: int, size: int):
+def _unfiltered_at(terrain_id: int, size: int, angled: bool = False):
     """COARSE. A shrunk source point-sampled with no prefilter, at the far levels only."""
-    return _UNFILTERED(terrain_id, size) if size <= _FAR_MAX_SIZE else _REAL_TEXTURE_AT(terrain_id, size)
+    return _UNFILTERED(terrain_id, size) if size <= _FAR_MAX_SIZE else _REAL_TEXTURE_AT(terrain_id, size, angled=angled)
 
 
-INJECTS = {"blocky": _blocky_at, "one-cell": _one_cell_at, "unfiltered": _unfiltered_at}
+def _soft_prefilter(arr):
+    """MATCHING (the pair's softness check). A wrap-padded Gaussian, sigma
+    SOFT_SIGMA, in place of the angled prefilter: clearly softer patch edges."""
+    radius = int(np.ceil(3 * SOFT_SIGMA))
+    taps = np.exp(-(np.arange(-radius, radius + 1) ** 2) / (2 * SOFT_SIGMA**2))
+    taps /= taps.sum()
+    n = arr.shape[0]
+    pad = ((radius, radius), (radius, radius)) + ((0, 0),) * (arr.ndim - 2)
+    padded = np.pad(arr.astype(np.float32), pad, mode="wrap")
+    rows = sum(w * padded[i : i + n] for i, w in enumerate(taps))
+    both = sum(w * rows[:, i : i + n] for i, w in enumerate(taps))
+    out = np.clip(np.rint(both), 0, 255).astype(np.uint8)
+    out.flags.writeable = False
+    return out
+
+
+TEXTURE_INJECTS = {"blocky": _blocky_at, "one-cell": _one_cell_at, "unfiltered": _unfiltered_at}
+# Replaces asset_source.angled_prefilter on the pair's prefiltered frame only.
+PREFILTER_INJECTS = {"soft": _soft_prefilter}
+INJECTS = (*TEXTURE_INJECTS, *PREFILTER_INJECTS)
 COARSE_INJECT = "blocky"
 
 
+def _reference_frame(token: str, replica: int = 0) -> str:
+    """The pair frame rendered with the prefilter off: blind (from the run token), and flipped on
+    odd replicas so the clean copies do not all share one order (a position bias would replicate)."""
+    return _PAIR[(int(hashlib.sha256(token.encode()).hexdigest(), 16) + replica) % 2]
+
+
 def _clear_caches() -> None:
-    """grp's texture-derived memos plus blended blocks, which are keyed without the inject."""
+    """grp's texture-derived memos, blended blocks (keyed without the inject) and the
+    loaded textures (a patched prefilter is baked into them)."""
     grp._clear_texture_caches()
     terrain_blend.clear_caches()
+    asset_source._forget_prefetches()
 
 
-def _frame_images(inject: str | None) -> dict[str, np.ndarray]:
+@contextlib.contextmanager
+def _patched(frame_id: str, inject: str | None, reference: str):
     import pytest
 
-    images = {}
-    for frame_id in _FRAMES:
+    with pytest.MonkeyPatch.context() as mp:
+        if frame_id == reference:
+            mp.setattr(asset_source, "angled_prefilter", lambda arr: arr)
+        elif inject in TEXTURE_INJECTS and frame_id not in _OVERHEAD:
+            mp.setattr(asset_source, "terrain_texture_at", TEXTURE_INJECTS[inject])
+        elif inject in PREFILTER_INJECTS and frame_id in _PAIR:
+            mp.setattr(asset_source, "angled_prefilter", PREFILTER_INJECTS[inject])
+        _clear_caches()
         try:
-            with pytest.MonkeyPatch.context() as mp:
-                if inject and frame_id not in _OVERHEAD:
-                    mp.setattr(asset_source, "terrain_texture_at", INJECTS[inject])
-                _clear_caches()
-                images[frame_id] = _render(frame_id)
+            yield
         finally:
             _clear_caches()
+
+
+def _frame_images(inject: str | None, reference: str) -> dict[str, np.ndarray]:
+    images = {}
+    for frame_id in _FRAMES:
+        with _patched(frame_id, inject, reference):
+            images[frame_id] = _render(frame_id)
     return images
 
 
@@ -179,8 +230,9 @@ def _blocks_question(frames: str) -> str:
 def _spec() -> rp.PackSpec:
     """Each check's options are written against the injects' measured masks:
     blocky makes runs of equal neighbours (0.37-0.67 of pairs, against
-    0.04 at most clean), one-cell does that in one diamond, and unfiltered
-    is the isolated-pixel rate --check measures."""
+    0.04 at most clean), one-cell does that in one diamond, unfiltered
+    is the isolated-pixel rate --check measures, and soft is the pair's
+    edge-strength ratio (_edge_strength(), speckle excluded as the question does)."""
     captions = {
         "ice_close": "Icy shoreline ground on level ground, angled view, zoomed in close.",
         "ice_mid": "The same icy ground, angled view, zoomed in a step less.",
@@ -196,6 +248,8 @@ def _spec() -> rp.PackSpec:
             "The same grassland seen straight from above, at the same zoom as the further zoomed-out angled "
             "frame. Here each map cell is a square."
         ),
+        "grass_close_a": "Frame A: grassland on level ground, angled view, zoomed in close.",
+        "grass_close_b": "Frame B: the same grassland at the same place and zoom as frame A.",
     }
     frames = tuple(rp.Frame(fid, f"{fid}.png", "raw", caption=captions[fid]) for fid in _FRAMES)
     checks = (
@@ -231,6 +285,27 @@ def _spec() -> rp.PackSpec:
             frames=(_SPECIFICITY,),
             answers=("BLOCKY", "SMOOTH", "CANNOT-TELL"),
         ),
+        rp.Check(
+            id="close_pair",
+            question=(
+                "Look at the two close grassland frames, A and B. They show the same patch of ground at the "
+                "same zoom, drawn two slightly different ways. First, in your own words, describe the edges "
+                "of the larger light and dark patches in each frame: how crisp they are, and how wide the "
+                "band of in-between shades across an edge is.\n\n"
+                "Then the closed question. Judge only the edges of the larger light and dark patches, several "
+                "pixels across or more. Is one frame's ground clearly softer than the other's: those edges "
+                "spread over a wider band of in-between shades, so its patches look slightly out of focus "
+                "next to the other frame's?\n"
+                "- NOT this: (1) isolated single bright or dark pixels, glitter or salt-and-pepper sprinkled "
+                "over the texture: ignore them completely in both frames, even if one frame has more of "
+                "them; (2) the frame's own whole-number enlargement; (3) a small overall difference in "
+                "brightness or contrast with the patch edges equally crisp.\n\n"
+                "Answer A-SOFTER if frame A's patch edges are clearly softer, B-SOFTER if frame B's are, "
+                "SAME if neither is clearly softer."
+            ),
+            frames=_PAIR,
+            answers=("A-SOFTER", "B-SOFTER", "SAME", "CANNOT-TELL"),
+        ),
     )
     return rp.PackSpec(
         id=PACK_ID,
@@ -249,9 +324,10 @@ def _spec() -> rp.PackSpec:
 def generate(out_dir: Path, inject: str | None, replica: int = 0) -> list[Path]:
     spec = _spec()
     rp.validate_spec(spec)
-    pack_dir = out_dir / PACK_ID / grp._run_token(PACK_ID, inject, replica)
+    token = grp._run_token(PACK_ID, inject, replica)
+    pack_dir = out_dir / PACK_ID / token
     pack_dir.mkdir(parents=True, exist_ok=True)
-    images = _frame_images(inject)
+    images = _frame_images(inject, _reference_frame(token, replica))
     written, rendered = [], {}
     for frame in spec.frames:
         scaled, factor = rp.frame_to_band(images[frame.id])
@@ -270,7 +346,17 @@ def _equal_runs(img: np.ndarray) -> float:
     return float(np.all(img[:, 1:] == img[:, :-1], axis=-1).mean())
 
 
-def _purity_failures(clean: dict[str, np.ndarray]) -> list[str]:
+def _edge_strength(img: np.ndarray) -> float:
+    """Mean |luma step| over both axes after a 3x3 median: patch-edge sharpness
+    with isolated-pixel speckle removed, which would otherwise read as crispness."""
+    luma = img[..., :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    h, w = luma.shape
+    padded = np.pad(luma, 1, mode="edge")
+    med = np.median(np.stack([padded[dy : dy + h, dx : dx + w] for dy in range(3) for dx in range(3)]), axis=0)
+    return float((np.abs(np.diff(med, axis=0)).mean() + np.abs(np.diff(med, axis=1)).mean()) / 2)
+
+
+def _purity_failures(clean: dict[str, np.ndarray], reference: str) -> list[str]:
     failures = []
     for frame_id, (_style, _tile_px, _crop, repaint) in _FRAMES.items():
         base_scn, base_elev = grp._ground_scene(repaint)
@@ -279,10 +365,13 @@ def _purity_failures(clean: dict[str, np.ndarray]) -> list[str]:
         for tile in scn.map_manager.terrain:
             if tile.terrain_id != own:
                 tile.terrain_id = 6 if tile.terrain_id != 6 else 14
-        if not np.array_equal(_render(frame_id, scn, base_elev), clean[frame_id]):
-            failures.append(f"frame {frame_id}: a terrain other than {own} reaches the crop")
         level = np.full_like(base_elev, base_elev[CENTRE[1], CENTRE[0]])
-        if not np.array_equal(_render(frame_id, base_scn, level), clean[frame_id]):
+        with _patched(frame_id, None, reference):
+            other_terrain = _render(frame_id, scn, base_elev)
+            levelled = _render(frame_id, base_scn, level)
+        if not np.array_equal(other_terrain, clean[frame_id]):
+            failures.append(f"frame {frame_id}: a terrain other than {own} reaches the crop")
+        if not np.array_equal(levelled, clean[frame_id]):
             failures.append(f"frame {frame_id}: an elevation feature reaches the crop")
     return failures
 
@@ -302,7 +391,9 @@ def check() -> None:
     except rp.PackError as exc:
         failures.append(f"spec: {exc}")
     failures += [f"leak: {leak}" for leak in rp.leaks(spec)]
-    clean = _frame_images(None)
+    # Either order measures the same; generate() picks it per run token.
+    filtered, reference = _PAIR
+    clean = _frame_images(None, reference)
     for frame in spec.frames:
         try:
             scaled, factor = rp.frame_to_band(clean[frame.id])
@@ -313,14 +404,14 @@ def check() -> None:
         # The blocks question says "2x2 frame pixels".
         if frame.id in (*_CLOSE, _SPECIFICITY) and factor != 2:
             failures.append(f"frame {frame.id}: enlarged {factor}x, the question says 2x2")
-    failures += _purity_failures(clean)
+    failures += _purity_failures(clean, reference)
 
-    scopes = {"blocky": _CLOSE, "one-cell": (_ONE_CELL_FRAME,), "unfiltered": _FAR}
+    scopes = {"blocky": _CLOSE, "one-cell": (_ONE_CELL_FRAME,), "unfiltered": _FAR, "soft": (filtered,)}
     diamond = ig.diamond_indices(_FRAMES[_ONE_CELL_FRAME][1])[0].size
     one_cell = rp.LocalizedBound(max_changed_fraction=0.05, max_component_px=diamond)
     injected, reach = {}, {}
     for name in INJECTS:
-        images = injected[name] = _frame_images(name)
+        images = injected[name] = _frame_images(name, reference)
         touched = {}
         for frame_id in _FRAMES:
             mask = rp.changed_pixels(clean[frame_id], images[frame_id])
@@ -368,6 +459,16 @@ def check() -> None:
         if u < UNFILTERED_SPECKLE_MIN:
             failures.append(f"{frame_id}: unfiltered speckle {u:.2%} under {UNFILTERED_SPECKLE_MIN:.0%}")
     print(f"speckle (clean/unfiltered): {', '.join(rates)}")
+    if np.array_equal(clean[filtered], clean[reference]):
+        failures.append(f"{filtered} and {reference} are identical: the prefilter does not reach the pair")
+    base = _edge_strength(clean[reference])
+    clean_ratio = _edge_strength(clean[filtered]) / base
+    soft_ratio = _edge_strength(injected["soft"][filtered]) / base
+    print(f"pair edge strength over the reference (clean/soft): {clean_ratio:.2f}/{soft_ratio:.2f}")
+    if clean_ratio < CLEAN_EDGE_MIN:
+        failures.append(f"{filtered}: clean edge ratio {clean_ratio:.2f} under {CLEAN_EDGE_MIN}")
+    if soft_ratio > SOFT_EDGE_MAX:
+        failures.append(f"{filtered}: soft edge ratio {soft_ratio:.2f} over {SOFT_EDGE_MAX}")
 
     if failures:
         for failure in failures:
@@ -393,7 +494,8 @@ def main() -> None:
         raise SystemExit(f"{PACK_ID}: {reason}")
     for path in generate(args.out_dir, args.inject, args.replica):
         print(f"wrote {path}")
-    print(f"\nrun `{args.inject or 'clean'}` is directory {grp._run_token(PACK_ID, args.inject, args.replica)}")
+    token = grp._run_token(PACK_ID, args.inject, args.replica)
+    print(f"\nrun `{args.inject or 'clean'}` is directory {token}; prefilter off in {_reference_frame(token, args.replica)}")
 
 
 if __name__ == "__main__":

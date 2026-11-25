@@ -1,5 +1,6 @@
-"""GH #372: tools/gen_object_catalog.py's sparse `civ_icons` key, from
-stand-ins shaped like genieutils' units. Install-free."""
+"""GH #372: tools/gen_object_catalog.py's sparse `civ_icons` and `civ_string_ids` keys, from
+stand-ins shaped like genieutils' units. Install-free, except the corpus
+test at the end, which checks the committed pairs against a real install."""
 
 from __future__ import annotations
 
@@ -8,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
+
+from descape import asset_source, object_catalog
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 
@@ -18,9 +21,9 @@ def gen(monkeypatch):
     return importlib.import_module("gen_object_catalog")
 
 
-def unit(icon: int, enabled: bool = True) -> NS:
+def unit(icon: int, enabled: bool = True, string_id: int = 5000) -> NS:
     return NS(
-        name="MONKX", language_dll_name=5000, class_=18, type=70, hide_in_editor=0, icon_id=icon,
+        name="MONKX", language_dll_name=string_id, class_=18, type=70, hide_in_editor=0, icon_id=icon,
         creatable=None, standing_graphic=(10, -1), resource_storages=(), obstruction_type=0,
         combat_level=0, terrain_restriction=0, clearance_size=(0, 0), placement_side_terrain=(),
         enabled=enabled,
@@ -58,3 +61,48 @@ def test_an_override_of_minus_one_is_kept(gen):
     gaia = [unit(33)]
     entries = gen._object_entries(gaia, frozenset(), civs(gaia, [unit(-1)]))
     assert entries["0"]["civ_icons"] == {"1": -1}
+
+
+def test_only_a_civ_whose_name_id_differs_gets_a_civ_string_id(gen):
+    gaia = [unit(33, string_id=5083), unit(17, string_id=5084)]
+    table = civs(
+        gaia,
+        [unit(33, string_id=5083), unit(17, string_id=5084)],
+        [unit(33, enabled=False, string_id=405052), unit(17, string_id=5084)],
+        [unit(33, string_id=405052)],
+    )
+    entries = gen._object_entries(gaia, frozenset(), table)
+    assert entries["0"]["civ_string_ids"] == {"2": 405052, "3": 405052}, "a disabled copy counts"
+    assert "civ_string_ids" not in entries["1"], "civ 3's list stops before const 1, the rest are equal"
+    assert entries["0"]["string_id"] == 5083, "GAIA's id stays the row's own"
+    assert "civ_icons" not in entries["0"], "a name difference is no icon difference"
+
+
+def test_no_civ_name_difference_leaves_the_key_out(gen):
+    gaia = [unit(33)]
+    assert "civ_string_ids" not in gen._object_entries(gaia, frozenset(), civs(gaia, [unit(33)], [unit(40)]))["0"]
+    assert "civ_string_ids" not in gen._object_entries(gaia, frozenset())["0"], "no civs passed"
+
+
+@pytest.mark.corpus
+def test_every_committed_civ_icon_resolves_to_a_file_the_install_ships() -> None:
+    """Needs AOE2DE_INSTALL_PATH. Each committed civ_icons pair goes through
+    portrait_for() (icon_for() plus the building flag) to unit_icon_path(), the
+    portrait's own lookup; every pair that finds no file is listed. A -1 pair
+    means "no portrait" by design (icon_for() returns None) and is skipped."""
+    if asset_source.get_install_path() is None:
+        pytest.skip("no AoE2:DE install visible: set AOE2DE_INSTALL_PATH (conftest hides config.yaml)")
+    pairs = [
+        (int(const), int(civ), icon)
+        for const, row in object_catalog._dat_table()["objects"].items()
+        for civ, icon in row.get("civ_icons", {}).items()
+        if icon >= 0
+    ]
+    assert len(pairs) > 500, f"only {len(pairs)} civ_icons pairs; is the committed catalog complete?"
+    missing = []
+    for const, civ, icon in pairs:
+        found, building = object_catalog.portrait_for(const, civ)
+        path = asset_source.unit_icon_path(found, building)
+        if found != icon or path is None or not path.is_file():
+            missing.append((const, civ, icon, found, building))
+    assert not missing, f"{len(missing)} of {len(pairs)} pairs ship no file (const, civ, icon, looked up, building): {missing}"

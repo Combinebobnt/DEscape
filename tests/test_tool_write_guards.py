@@ -80,6 +80,29 @@ def test_gen_resize_pair_refuses_a_linked_subscribed_folder(tmp_path, monkeypatc
     assert list(real.iterdir()) == []
 
 
+@conftest.requires_symlinks
+def test_gen_convert_pair_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
+    real, link = _linked_subscribed_dir(tmp_path)
+    module = conftest.load_verify_module("gen_convert_pair")
+    source = conftest.ROOT / "tests" / "fixtures" / "blank_120x120_v158.aoe2scenario"
+    monkeypatch.setattr(sys, "argv", ["gen_convert_pair", "--source", str(source), "--out", str(link / "out")])
+
+    with pytest.raises(WriteBlockedError):
+        module.main()
+    assert list(real.iterdir()) == []
+
+
+@conftest.requires_symlinks
+def test_gen_unit_state_pair_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
+    real, link = _linked_subscribed_dir(tmp_path)
+    module = conftest.load_verify_module("gen_unit_state_pair")
+    monkeypatch.setattr(sys, "argv", ["gen_unit_state_pair", "--out", str(link / "out")])
+
+    with pytest.raises(WriteBlockedError):
+        module.main()
+    assert list(real.iterdir()) == []
+
+
 def test_a_fixture_generator_writes_into_a_compatdata_folder(tmp_path, monkeypatch) -> None:
     profile = tmp_path / "compatdata" / "813780"
     module = conftest.load_verify_module("gen_units_fixture")
@@ -96,7 +119,11 @@ def test_a_fixture_generator_writes_into_a_compatdata_folder(tmp_path, monkeypat
         "gen_gh206_pair",
         "gen_gh152_pair",
         "gen_gh187_pair",
+        "gen_gh330_pair",
         "gen_ship_sails_pair",
+        "gen_task531_pair",
+        "gen_unit_art_probe",
+        "gen_task532_pair",
         "gen_team_tint_pair",
         "gen_layer_passability_probe",
     ],

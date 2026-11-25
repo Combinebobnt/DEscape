@@ -359,3 +359,29 @@ def test_square_stays_first_in_the_shape_order() -> None:
         BRUSH_SHAPE_SQUARE, BRUSH_SHAPE_CIRCLE, BRUSH_SHAPE_ROUNDED, BRUSH_SHAPE_SQUARE_OUTLINE,
         BRUSH_SHAPE_CIRCLE_OUTLINE, BRUSH_SHAPE_PLUS, BRUSH_SHAPE_LINE_X, BRUSH_SHAPE_LINE_Y,
     )
+
+
+# -- TASK-086: lattice_tiles(), Create Objects' footprint step --
+
+
+def test_lattice_tiles_is_the_identity_at_step_one() -> None:
+    from descape.brush import lattice_tiles
+
+    tiles = brush_tiles(50, 50, 5, BRUSH_SHAPE_CIRCLE, 120, 120)
+    assert lattice_tiles(tiles, (50, 50), (1, 1)) == tiles
+
+
+def test_lattice_tiles_keeps_the_lattice_through_the_origin_in_input_order() -> None:
+    from descape.brush import lattice_tiles
+
+    # Size 5 square at (10, 10): tiles 8..12 on both axes, two of them left of and above the origin.
+    tiles = brush_tiles(10, 10, 5, BRUSH_SHAPE_SQUARE, 120, 120)
+    assert lattice_tiles(tiles, (10, 10), (2, 2)) == [
+        (8, 8), (10, 8), (12, 8), (8, 10), (10, 10), (12, 10), (8, 12), (10, 12), (12, 12),
+    ]
+    # Non-square: a size-9 square spans 6..14, so a step of 4 keeps 6, 10 and 14 on that axis only.
+    wide = brush_tiles(10, 10, 9, BRUSH_SHAPE_SQUARE, 120, 120)
+    assert lattice_tiles(wide, (10, 10), (4, 1)) == [(x, y) for y in range(6, 15) for x in (6, 10, 14)]
+    assert lattice_tiles(wide, (10, 10), (1, 4)) == [(x, y) for y in (6, 10, 14) for x in range(6, 15)]
+    # The origin need not be a brush tile's centre: the lattice is anchored, not the footprint.
+    assert lattice_tiles(tiles, (9, 9), (2, 2)) == [(9, 9), (11, 9), (9, 11), (11, 11)]

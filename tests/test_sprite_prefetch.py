@@ -133,21 +133,47 @@ class _HeldExecutor:
         return future
 
 
-class _SlowExecutor:
-    """Marks each job running at submit and finishes it on a timer thread, so
-    a consumer finds it running and has to wait."""
+class _GatedFuture(Future):
+    """Opens its gate when a consumer asks for its result."""
 
-    def __init__(self, delay: float = 0.03):
-        self.delay = delay
-        self.timers = []
+    def __init__(self):
+        super().__init__()
+        self.gate = threading.Event()
+
+    def result(self, timeout=None):
+        self.gate.set()
+        return super().result(timeout)
+
+
+class _GatedExecutor:
+    """Marks each job running at submit and runs it only once a consumer calls
+    result(), so the consumer finds it running and waits however late it arrives."""
+
+    def __init__(self):
+        self.futures, self.threads = [], []
 
     def submit(self, fn, *args):
-        future = Future()
+        future = _GatedFuture()
         future.set_running_or_notify_cancel()
-        timer = threading.Timer(self.delay, lambda: future.set_result(fn(*args)))
-        timer.start()
-        self.timers.append(timer)
+
+        def run():
+            future.gate.wait(60)  # a fallback so a consumer that never calls result() fails instead of hanging
+            try:
+                future.set_result(fn(*args))
+            except BaseException as exc:  # noqa: BLE001
+                future.set_exception(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.futures.append(future)
+        self.threads.append(thread)
         return future
+
+    def shutdown(self):
+        for future in self.futures:
+            future.gate.set()
+        for thread in self.threads:
+            thread.join()
 
 
 @pytest.fixture(params=["inline", "threads"])
@@ -203,7 +229,7 @@ def _build(scenario, enabled: bool, unit_filter=SHOWN, wall_alpha=1.0, before=No
         sprite_prefetch.ENABLED = True
     if isinstance(sprite_prefetch._executor, ThreadPoolExecutor):
         # Real threads, finished first, so served counts are exact: a job still queued when the
-        # walk reaches it is cancelled (D3), which the held and slow executors pin.
+        # walk reaches it is cancelled (D3), which the held and gated executors pin.
         futures_wait([future for _gen, future in unit_sprites._prefetch_pending.values()])
     layer = _walk(scenario, unit_filter, wall_alpha)
     return _normalized(layer), _state(), submitted
@@ -296,14 +322,15 @@ def test_a_queued_job_is_cancelled_and_its_file_walked_synchronously(install, na
 def test_a_running_job_is_waited_on_and_served(install, native, monkeypatch):
     scenario = _scenario()
     want_layer, want_state, _ = _build(scenario, False)
-    executor = _SlowExecutor()
+    executor = _GatedExecutor()
     monkeypatch.setattr(sprite_prefetch, "_executor", executor)
-    got_layer, got_state, submitted = _build(scenario, True)
+    try:
+        got_layer, got_state, submitted = _build(scenario, True)
+    finally:
+        executor.shutdown()
     assert got_layer == want_layer and got_state == want_state
     stats = sprite_prefetch.stats()
-    assert stats["files_served"] == submitted and stats["wait_ms"] > 0
-    for timer in executor.timers:
-        timer.join()
+    assert submitted and stats["files_served"] == submitted and stats["wait_ms"] > 0
 
 
 def _log_lines() -> list[str]:

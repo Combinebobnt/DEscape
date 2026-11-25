@@ -22,6 +22,7 @@ from trigger_panel_helpers import (
     _roomy_tree,
     _saved_body,
     _sectioned_window,
+    _tagged_window,
     _trigger_row_count,
     _triggers_window,
 )
@@ -949,6 +950,102 @@ def test_task225_duplicating_a_bare_ruler_leaves_the_later_rulers_their_own_stat
         panel.trigger_copy_button.click()
         assert [s.member_indices == () for s in panel._sections] == [False, True, False], "the copy splits nothing"
         assert _collapsed_by_member(window) == expected
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+# -- TASK-486: the user's section-header rule -----------------------------------
+
+
+def _rule_window(tmp_path: Path):
+    """The trigger fixture saved as --- A --- 0: 1 | ----- B 2: 3, so every trigger
+    is clean against the file and its status comes from the memo unless it is dropped."""
+    window = _tagged_window(tmp_path, ["--- A ---", "a1", "----- B", "b1"])
+    panel = window.trigger_panel
+    assert [s.header_index for s in panel._sections] == [0, 2], "fixture assumption"
+    panel.select_trigger(1)
+    return window
+
+
+def test_a_rule_change_regroups_the_open_scenario_and_drops_stale_statuses(tmp_path: Path) -> None:
+    from descape import trigger_organize
+
+    rule = trigger_organize.DividerRule
+    window = _rule_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        assert panel.status_of(2).divider
+        window.set_divider_rule(rule(leading_rule=False))
+        assert [s.header_index for s in panel._sections] == [0]
+        assert not panel.status_of(2).divider, "the status memo was dropped"
+        assert panel.current_trigger_index() == 1, "selection kept"
+        window.set_divider_rule(rule())
+        assert [s.header_index for s in panel._sections] == [0, 2]
+        assert panel.status_of(2).divider
+
+        _rename(panel, 1, ">> C")
+        panel.select_trigger(3)
+        window.set_divider_rule(rule.with_prefixes((">>",)))
+        assert [s.header_index for s in panel._sections] == [0, 1, 2]
+        assert panel.status_of(1).divider
+        window.set_divider_rule(rule())
+        assert [s.header_index for s in panel._sections] == [0, 2]
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_same_rule_again_neither_saves_nor_repopulates(monkeypatch, tmp_path: Path) -> None:
+    from descape import settings, trigger_organize
+
+    window = _rule_window(tmp_path)
+    saves = []
+    settings.add_save_listener(saves.append)
+    try:
+        calls = []
+        monkeypatch.setattr(window, "_show_triggers", lambda: calls.append(1))
+        window.set_divider_rule(trigger_organize.DividerRule())
+        assert calls == [] and saves == []
+    finally:
+        settings.remove_save_listener(saves.append)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_rule_change_in_another_mode_parses_nothing_and_expands_on_return(monkeypatch, tmp_path: Path) -> None:
+    from descape import scenario_io, trigger_organize
+    from testkit.viewer_family import set_viewer_global
+
+    window = _rule_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        panel.collapse_all_sections()
+        window.mode_combo.setCurrentText("Units")
+        parsed = []
+        real = scenario_io.parse_triggers
+        set_viewer_global(monkeypatch, "parse_triggers", lambda s: parsed.append(1) or real(s))
+        window.set_divider_rule(trigger_organize.DividerRule(leading_rule=False))
+        assert parsed == []
+        window.mode_combo.setCurrentText("Triggers")
+        assert [s.header_index for s in panel._sections] == [0]
+        assert not panel.status_of(2).divider
+        assert all(_expanded(panel)), "no rows hidden in a collapsed section"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_rule_change_expands_every_section(tmp_path: Path) -> None:
+    from descape import trigger_organize
+
+    window = _rule_window(tmp_path)
+    try:
+        panel = window.trigger_panel
+        panel.collapse_all_sections()
+        assert not any(_expanded(panel))
+        window.set_divider_rule(trigger_organize.DividerRule.with_prefixes((">>",)))
+        assert all(_expanded(panel))
     finally:
         window.edit_history.mark_saved()
         window.close()

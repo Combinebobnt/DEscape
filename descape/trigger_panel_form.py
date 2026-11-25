@@ -418,7 +418,7 @@ class _TriggerPanelFormMixin:
     _CREATE_OBJECTS_HINT = "Tip: stamp it with Create Objects."
     _CREATE_OBJECTS_HINT_TIP = (
         "Create Objects is on the toolbar. With this effect selected, each click on the map adds "
-        "one copy of it per tile under the brush, as one undo step."
+        "one copy of it per tile under the brush (one per footprint for a bigger object), as one undo step."
     )
 
     @staticmethod

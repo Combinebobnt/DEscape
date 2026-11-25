@@ -902,3 +902,274 @@ def test_the_keybind_row_ships_unbound() -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+# --- Settings > Appearance: behind elevated terrain -------------------------
+
+_OV = 24
+
+
+def _overhang_scene(sloped: bool, raised: bool = True):
+    """A bare scene: one iso EdgeTickItem on a 24x24 map whose y0-edge tiles
+    17..22 (two rows deep) stand 6 levels up, round the major at 20, with
+    the overhang of that terrain pushed and the option still off."""
+    conftest.ensure_qapp()
+    from PyQt5.QtCore import QRectF
+    from PyQt5.QtWidgets import QGraphicsScene
+
+    from descape import iso_geometry, qt_points
+    from descape.viewer_canvas import EdgeTickItem
+
+    proj = iso_geometry.canvas_size_and_origin(_OV, _OV, 32, 0, 8)
+    elevations = np.zeros((_OV, _OV), dtype=np.int64)
+    if raised:
+        elevations[0:2, 17:23] = 6
+    if sloped:
+        rise = iso_geometry.corner_rise_px(elevations, proj, rule="max")
+    else:
+        rise = edge_ticks.stepped_corner_rise(elevations, proj)
+    polys = [qt_points.polygon_from_points(p) for p in edge_ticks.terrain_overhang(rise, proj, sloped=sloped)]
+    item = EdgeTickItem(_OV, _OV, edge_ticks.TICK_INTERVAL_DEFAULT, QRectF(0, 0, proj.canvas_w, proj.canvas_h), proj=proj)
+    item.set_min_view_scale(1.0)
+    item.set_overhang(polys)
+    scene = QGraphicsScene()
+    scene.addItem(item)
+    return scene, item, polys
+
+
+def _upper_edge_rect():
+    """Integer scene rect round the y0 edge from tile 12 to the top tip, with label room."""
+    from PyQt5.QtCore import QRectF
+
+    from descape import iso_geometry
+
+    proj = iso_geometry.canvas_size_and_origin(_OV, _OV, 32, 0, 8)
+    x0, y_low = edge_ticks.iso_corner(12, 0, proj)
+    x1, y_high = edge_ticks.iso_corner(_OV, 0, proj)
+    return QRectF(x0 - 60, y_high - 80, x1 - x0 + 70, y_low - y_high + 100)
+
+
+def _hole_mask(polys, rect) -> np.ndarray:
+    """Pixels whose centres fall in an overhang polygon, by the same non-AA fill rule a clip uses."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QColor, QImage, QPainter
+
+    from testkit.qt_capture import qimage_rgb888_to_array
+
+    image = QImage(int(rect.width()), int(rect.height()), QImage.Format_RGB888)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.translate(-rect.x(), -rect.y())
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(255, 255, 255))
+    for poly in polys:
+        painter.drawPolygon(poly)
+    painter.end()
+    return qimage_rgb888_to_array(image)[..., 0] > 0
+
+
+@pytest.mark.parametrize("sloped", [False, True], ids=["stepped", "sloped"])
+def test_behind_terrain_clears_the_ruler_from_the_overhang_and_nothing_else(sloped: bool) -> None:
+    """Off is the control: the ruler really paints inside the overhang, and
+    pushing an overhang alone changes no pixel. On, nothing of it is left
+    there and every pixel outside is as it was."""
+    from testkit.qt_capture import scene_rect_to_array
+
+    scene, item, polys = _overhang_scene(sloped)
+    rect = _upper_edge_rect()
+    mask = _hole_mask(polys, rect)
+    assert mask.any()
+
+    off = scene_rect_to_array(scene, rect)
+    assert not item.stats.overhang_clipped
+    bare_scene, _bare, _polys = _overhang_scene(sloped)
+    _bare.set_overhang(())
+    assert np.array_equal(off, scene_rect_to_array(bare_scene, rect)), "an unused overhang changed the paint"
+    assert off.any(axis=-1)[mask].sum() > 20, "vacuous: the ruler never reached the overhang"
+
+    item.set_behind_terrain(True)
+    on = scene_rect_to_array(scene, rect)
+    assert item.stats.overhang_clipped
+    assert on.any(axis=-1)[mask].sum() == 0
+    assert np.array_equal(on[~mask], off[~mask])
+
+
+@pytest.mark.parametrize("sloped", [False, True], ids=["stepped", "sloped"])
+def test_behind_terrain_hides_a_ticks_root_pixel_inside_the_map(sloped: bool) -> None:
+    """A tick's first pixel has its centre just past the border, over the
+    map's own terrain. Under a hole it goes too (edge_ticks.ROOT_PX), or it
+    is left as a stray dot."""
+    from descape import iso_geometry
+    from testkit.qt_capture import scene_rect_to_array
+
+    scene, item, polys = _overhang_scene(sloped)
+    proj = iso_geometry.canvas_size_and_origin(_OV, _OV, 32, 0, 8)
+    rect = _upper_edge_rect()
+    cy, cx = np.mgrid[0 : int(rect.height()), 0 : int(rect.width())] + 0.5
+    sx, sy = cx + rect.x(), cy + rect.y()
+    k = sx / proj.half_w  # the y0 edge up to the top tip, then the x1 edge
+    border = proj.origin_y + proj.half_h - proj.half_h * np.minimum(k, 2 * _OV - k)
+    lo = min(p.boundingRect().left() for p in polys)
+    hi = max(p.boundingRect().right() for p in polys)
+    inside_map = (sy > border) & (sx > lo) & (sx < hi)
+    off = scene_rect_to_array(scene, rect).any(axis=-1)
+    assert (off & inside_map).any(), "vacuous: no root pixel inside the map"
+    item.set_behind_terrain(True)
+    assert not (scene_rect_to_array(scene, rect).any(axis=-1) & inside_map).any()
+
+
+@pytest.mark.parametrize("sloped", [False, True], ids=["stepped", "sloped"])
+def test_behind_terrain_with_nothing_raised_paints_exactly_as_off(sloped: bool) -> None:
+    from testkit.qt_capture import scene_rect_to_array
+
+    scene, item, polys = _overhang_scene(sloped, raised=False)
+    assert polys == []
+    rect = _upper_edge_rect()
+    off = scene_rect_to_array(scene, rect)
+    item.set_behind_terrain(True)
+    assert np.array_equal(scene_rect_to_array(scene, rect), off)
+    assert not item.stats.overhang_clipped
+
+
+def test_a_repaint_that_exposes_no_overhang_sets_no_clip() -> None:
+    """The lower edges never overhang, so a repaint there keeps today's
+    unclipped paint path. paint() is driven directly: scene.render() reports
+    the whole bounding rect as exposed."""
+    from PyQt5.QtCore import QRectF
+    from PyQt5.QtGui import QImage, QPainter, QTransform
+    from PyQt5.QtWidgets import QStyleOptionGraphicsItem
+
+    from descape import iso_geometry
+
+    _scene, item, _polys = _overhang_scene(False)
+    item.set_behind_terrain(True)
+    proj = iso_geometry.canvas_size_and_origin(_OV, _OV, 32, 0, 8)
+
+    def paint_exposing(rect: QRectF) -> None:
+        option = QStyleOptionGraphicsItem()
+        option.exposedRect = rect
+        image = QImage(int(rect.width()), int(rect.height()), QImage.Format_RGB888)
+        painter = QPainter(image)
+        painter.setWorldTransform(QTransform.fromTranslate(-rect.x(), -rect.y()))
+        item.paint(painter, option)
+        painter.end()
+
+    x, y = edge_ticks.iso_corner(0, _OV, proj)
+    paint_exposing(QRectF(x - 40, y - 40, 120, 80))
+    assert item.stats.ticks_drawn > 0
+    assert not item.stats.overhang_clipped
+    paint_exposing(_upper_edge_rect())
+    assert item.stats.overhang_clipped, "control: the upper edge does clip"
+
+
+def _behind_window(style: str):
+    from PyQt5.QtWidgets import QApplication
+
+    settings.set_distance_ticks_behind_terrain(True)
+    window = _window()
+    window.terrain_style_combo.setCurrentText(style)
+    QApplication.processEvents()
+    return window
+
+
+def _set_border_elevation(window, level: int) -> None:
+    """A real Set Level stroke on y0-edge tile (60, 0), through refresh_elevation_overlays()."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    window.mode_combo.setCurrentText("Terrain")
+    window._on_tool_selected("set_level")
+    window.elevation_level_spin.setValue(level)
+    window.on_edit_stroke_start()
+    window.on_edit_stroke_tile(60, 0, Qt.NoModifier)
+    window.on_edit_stroke_end()
+    QApplication.processEvents()
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_the_clip_follows_an_elevation_edit_on_the_border(style: str) -> None:
+    window = _behind_window(style)
+    try:
+        item = window.map_view._edge_tick_item
+        proj = window.map_view._iso_proj
+        assert item._behind_terrain
+        assert item._overhang == (), "the blank template is flat"
+        _set_border_elevation(window, 1)
+        assert window.scenario.map_manager.get_tile(60, 0).elevation == 1, "the stroke wrote nothing"
+        assert item._overhang, "raising a border tile made no hole"
+        span = [(r.left(), r.right()) for r in item._overhang_rects]
+        assert any(lo <= 61 * proj.half_w and hi >= 61 * proj.half_w for lo, hi in span)
+        _set_border_elevation(window, 0)
+        assert window.scenario.map_manager.get_tile(60, 0).elevation == 0
+        assert item._overhang == (), "lowering the tile left its hole"
+        window.undo()
+        assert window.scenario.map_manager.get_tile(60, 0).elevation == 1
+        assert item._overhang, "undoing the lowering did not bring the hole back"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
+def test_every_raised_terrain_pixel_past_the_border_is_inside_a_hole(style: str) -> None:
+    """Against the real composite, not the polygons' own formulas: the pixels
+    raising a border tile adds above the elevation-0 border all fall inside
+    the overhang MapView computes for it."""
+    from PyQt5.QtCore import QRectF
+
+    from testkit.qt_capture import scene_rect_to_array
+
+    window = _behind_window(style)
+    try:
+        view = window.map_view
+        view.set_edge_ticks(False)
+        proj = view._iso_proj
+        x0, y0 = edge_ticks.iso_corner(58, 0, proj)
+        x1, y1 = edge_ticks.iso_corner(64, 0, proj)
+        rect = QRectF(x0, y1 - 48, x1 - x0, y0 - y1 + 64)
+        flat = scene_rect_to_array(view.scene(), rect)
+        _set_border_elevation(window, 1)
+        raised = scene_rect_to_array(view.scene(), rect)
+        cy, cx = np.mgrid[0 : int(rect.height()), 0 : int(rect.width())] + 0.5
+        border = proj.origin_y + proj.half_h - proj.half_h * (cx + rect.x()) / proj.half_w
+        changed = (raised != flat).any(axis=-1) & (cy + rect.y() < border)
+        assert changed.any(), "vacuous: raising the tile drew nothing past the border"
+        holes = _hole_mask(view._edge_tick_overhang(), rect)
+        assert not (changed & ~holes).any(), f"{int((changed & ~holes).sum())} terrain px outside every hole"
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_overhang_is_computed_only_once_the_ruler_is_shown() -> None:
+    """Skipped while the ticks are off, and computed when they come on."""
+    window = _behind_window("Stepped")
+    try:
+        view = window.map_view
+        view.set_edge_ticks(False)
+        _set_border_elevation(window, 1)
+        assert view._edge_tick_item._overhang == ()
+        view.set_edge_ticks(True)
+        assert view._edge_tick_item._overhang
+    finally:
+        conftest.close_window(window)
+
+
+def test_the_settings_checkbox_persists_reaches_the_ruler_and_cancels() -> None:
+    from descape.settings_dialog import SettingsDialog
+
+    window = _window()
+    dialog = SettingsDialog(window)
+    try:
+        item = window.map_view._edge_tick_item
+        check = dialog.distance_ticks_behind_check
+        assert check.text() == "Draw distance ticks behind elevated terrain"
+        assert check.toolTip()
+        assert not check.isChecked() and not item._behind_terrain
+        check.setChecked(True)
+        assert settings.get_distance_ticks_behind_terrain() is True
+        assert item._behind_terrain
+        dialog._cancel()
+        assert settings.get_distance_ticks_behind_terrain() is False
+        assert not item._behind_terrain
+    finally:
+        dialog.deleteLater()
+        conftest.close_window(window)

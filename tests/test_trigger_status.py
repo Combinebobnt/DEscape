@@ -590,3 +590,18 @@ def test_evaluate_with_references_keys_targets_on_the_type_even_when_the_vocabul
     statuses, unit_refs, targets = _with_references(trigger, _context(vocabulary=stripped))
     assert [s.status for s in statuses.effects] == [Status.UNCHECKED, Status.UNCHECKED]
     assert (unit_refs, targets) == (False, (9,))
+
+
+def test_the_active_section_header_rule_decides_what_reads_as_an_empty_divider() -> None:
+    """TASK-486: a shape switched off is an ordinary empty trigger; a user prefix header is EMPTY."""
+    from descape import trigger_organize
+
+    trigger_organize.set_divider_rule(trigger_organize.DividerRule(leading_rule=False))
+    leading = trigger_status.evaluate_trigger(_trigger("----- ambush-setup"), _context())
+    assert leading.divider is False and leading.trigger.status is Status.PROBLEM
+    unchecked = trigger_status.evaluate_trigger(_trigger("----- ambush-setup"), _context(vocabulary=None))
+    assert unchecked.trigger.status is Status.UNCHECKED
+
+    trigger_organize.set_divider_rule(trigger_organize.DividerRule.with_prefixes((">>",)))
+    prefixed = trigger_status.evaluate_trigger(_trigger(">> Setup"), _context())
+    assert prefixed.divider is True and prefixed.trigger == trigger_status.EntryStatus(Status.EMPTY)

@@ -202,7 +202,7 @@ _SPECS: tuple[PlayerFieldSpec, ...] = (
                 "duplicate copy in Units.player_data_4 instead. Confirmed "
                 "2026-08-30 by editing a real file in the AoE2:DE Scenario "
                 "Editor: this is the copy the game actually displays, "
-                "per-player -- not Units.player_data_4, despite "
+                "per-player, not Units.player_data_4, despite "
                 "AoE2ScenarioParser's own PlayerManager reading and writing "
                 "that copy on commit.",
     ),

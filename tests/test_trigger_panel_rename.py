@@ -261,6 +261,31 @@ def test_double_click_opens_no_editor_where_it_is_not_a_rename() -> None:
         window.close()
 
 
+def test_the_setting_off_turns_off_only_the_double_click_rename() -> None:
+    from descape import settings
+
+    window = _rename_window(_sectioned_window())
+    try:
+        panel = window.trigger_panel
+        settings.set_trigger_rename_double_click(False)
+        panel.select_trigger(0)
+        _double_click(panel, panel._item_for_index[0])
+        assert _name_editor(panel) is None
+
+        header = panel._item_for_index[2]
+        assert header.childCount() and header.isExpanded()
+        _double_click(panel, header)
+        assert not header.isExpanded(), "a header with members still collapses"
+
+        panel.select_trigger(0)
+        panel._open_name_editor(0)  # the context menu's Rename
+        assert _name_editor(panel) is not None
+    finally:
+        settings.set_trigger_rename_double_click(True)
+        window.edit_history.mark_saved()
+        window.close()
+
+
 def test_a_rename_across_the_divider_predicate_repartitions_by_enter_and_by_a_click_away() -> None:
     from PyQt5.QtCore import Qt
     from PyQt5.QtTest import QTest
@@ -620,6 +645,28 @@ def test_gh370_the_editor_survives_the_menu_closing() -> None:
         _type_into(editor, "After the menu")
         _editor_key(editor, Qt.Key_Return)
         assert _names(window)[0] == "After the menu"
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_menu_rename_of_a_prefix_header_edits_the_title_and_keeps_the_prefix() -> None:
+    """TASK-486: under a user prefix rule the inline Rename edits split_divider()'s title alone."""
+    from PyQt5.QtCore import Qt
+
+    from descape import trigger_organize
+
+    window = _rename_window(_divided_window(">> Setup"))
+    try:
+        window.set_divider_rule(trigger_organize.DividerRule.with_prefixes((">>",)))
+        panel = window.trigger_panel
+        panel.select_trigger(2)
+        _menu_rename(panel, 2)
+        editor = _name_editor(panel)
+        assert editor is not None and editor.text() == "Setup"
+        _type_into(editor, "Combat")
+        _editor_key(editor, Qt.Key_Return)
+        assert _names(window)[2] == ">> Combat"
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -1221,7 +1221,9 @@ def test_the_over_cap_check_names_the_one_stroke_whose_update_went_stale(
         window.close()
 
 
-# Flat 2D has no area-ratio patch-or-evict choice, so only "patch" applies to it.
+# Flat 2D's batch patch-or-evict choice is _FLAT_EVICT_RATIO, which its live-painted terrain steps read
+# too, so an "evict" case here could not tell the unit step's eviction from theirs: only "patch" runs,
+# and tests/test_flat_unit_splice_viewer.py pins the unit step's rule (TASK-442).
 WITHIN_CAP_CASES = [
     (style, repaint) for style in ("Stepped", "Sloped", "FlatIso", "Flat") for repaint in ("patch", "evict")
     if not (style == "Flat" and repaint == "evict")

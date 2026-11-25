@@ -6,7 +6,8 @@ DEscape opens, edits and saves Age of Empires II: Definitive Edition scenario fi
 
 ## Open a scenario
 
-- **File > Open Scenario…** opens a file from disk.
+- **File > Open Scenario…** opens a file from disk. With a saved scenario open it starts in that file's folder, and otherwise in the game's scenario folder in your profile.
+- **File > Browse Game Scenarios…** lists every scenario in the game's profile and mod folders in one list, newest first, with the profile or mod each comes from. Mods disabled in the game's mod list are included and marked. Type in the box to filter by name or source, and open one with Open or a double-click. Refresh rereads the folders.
 - **File > Open Recent** lists the scenarios you opened before. A file that has gone missing drops off the list until it is back.
 - Drop a `.aoe2scenario`, `.scn` or `.scx` file onto the window to open it. If you drop several, the first one opens.
 - Older scenarios from before the Definitive Edition (Age of Kings and The Conquerors `.scn`/`.scx`, and some HD Edition `.scx`; other HD Edition and UserPatch files aren't supported yet) open for viewing only: the map, units, players and messages show, triggers are not read, and nothing can be edited or saved. To edit one, open it in the game's own Scenario Editor and save it as `.aoe2scenario`, then open that copy here.
@@ -21,9 +22,11 @@ Opening another file, closing or quitting asks first when there are unsaved chan
 
 **File > Save** writes your changes back to the open file, and **File > Save As…** writes them to a new file. A new map, or a scenario recovered from an autosave, has no file yet, so Save asks for a name.
 
+**File > Convert to Version 1.59…** upgrades an open 1.58 scenario to the format the September 2026 game update saves, so it gains the Capture Flag and pastes triggers both ways with a new map. A 1.59 scenario does not open in an older game. The conversion clears the undo history and writes nothing until you save: Save then overwrites the file as 1.59, while Save As keeps the 1.58 original.
+
 Saving leaves a `.bak` and, on the first save of a given file, a one-time `.orig` snapshot beside it, so there is always something to fall back to. The `.bak` holds the file as it was just before the latest save. **Settings > Saving** can switch that pair off, except in the game's own profile folder, where Save always writes both.
 
-You can save straight into the game's scenario folder. A subscribed-mods `mods/subscribed/` folder is refused, because the game's mod manager re-syncs it and would silently undo the edit.
+You can save straight into the game's scenario folder. A subscribed-mods `mods/subscribed/` folder is refused, because the game's mod manager re-syncs it and would silently undo the edit. Save on a scenario opened from there asks for a new name instead, starting in the game's scenario folder. Save As on such a scenario, or on a new map, starts there too.
 
 ## Autosave
 
@@ -37,7 +40,7 @@ Snapshots go in an `autosave` folder beside DEscape's `config.yaml`, or a folder
 
 A Return of Rome scenario opens with Return of Rome's own units, names, art, civilizations and terrain, and the window title says `[Return of Rome]`. Without the Return of Rome DLC installed, a name the two games share shows Age of Empires II's, and the rest show the name in Return of Rome's game data. **Settings > Advanced** can show a file with the other game's data instead. A file shown that way is read-only, and the status bar says why. Set Game data back to Auto to edit it.
 
-**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. The Players tab lists the mod's civilizations and its age names, which the game shows in play while its own editor keeps the classic ones. DEscape remembers the choice for each saved scenario. A data mod read for the first time is parsed once, which takes 5 to 25 seconds, with its progress on the right of the status bar; the map stays usable meanwhile. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out, and the status log under the map lists them. Its own art draws once its art mod is installed and **View > Layers > Mod Art** is on. Unit and building portraits come from the mod's own files first, then from that art mod, then from the game.
+**File > Data Mod** shows an Age of Empires II scenario with a data mod's own units, stats and names. The Players tab lists the mod's civilizations and its age names, which the game shows in play while its own editor keeps the classic ones. DEscape remembers the choice for each saved scenario. A data mod read for the first time is parsed once, which takes 5 to 25 seconds, with its progress on the right of the status bar; the map stays usable meanwhile. A mod that differs from what DEscape measured on the game's own data still loads: those objects are drawn simplified or left out. The status log under the map says once what is drawn differently, with counts and example names, and what you can do about it where there is anything; your scenario is saved as usual. The technical list, for a bug report to the mod's author, is in DEscape's cache folder, at the path the status log names. Its own art draws once its art mod is installed and **View > Layers > Mod Art** is on. Unit and building portraits come from the mod's own files first, then from that art mod, then from the game.
 
 ## Move around the map
 

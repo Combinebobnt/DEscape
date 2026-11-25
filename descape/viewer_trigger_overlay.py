@@ -3,6 +3,8 @@ pickers and trigger overlay drawing."""
 
 from __future__ import annotations
 
+from PyQt5.QtCore import Qt
+
 from descape import (
     facet_preview,
     library_compat,
@@ -401,7 +403,8 @@ class _ViewerTriggerOverlayMixin:
         self._disarm_tile_picker()
         self.pan_action.setChecked(True)
         self._unit_picker = target
-        self.map_view.set_unit_picker(True)
+        multi = bool(target[4]) and target[5:] != (PICK_TYPE,)
+        self.map_view.set_unit_picker(True, multi=multi)
         if self.map_view._unit_index is None:
             self._rebuild_unit_index()
         self.trigger_panel.set_pick_armed(target)
@@ -409,9 +412,10 @@ class _ViewerTriggerOverlayMixin:
         self._focus_map_view()
         if target[5:] == (PICK_TYPE,):
             hint = f"Click a unit to copy its type into {self.trigger_panel.type_pick_caption(target)}; Esc to cancel"
+        elif multi:
+            hint = "Click a unit to add or remove it, or drag a box to add units (Ctrl toggles); Esc to finish"
         else:
-            verb = "add or remove units in" if target[4] else "set"
-            hint = f"Click a unit to {verb} {target[3].replace('_', ' ')}; Esc to finish"
+            hint = f"Click a unit to set {target[3].replace('_', ' ')}; Esc to finish"
         if self._unit_filter != UnitFilter():
             hint += " (units hidden by Filters can't be picked)"
         self._log_status(hint)
@@ -463,6 +467,23 @@ class _ViewerTriggerOverlayMixin:
             self._log_status(f"Picked {self._describe_unit_reference(ref_id)}")
         else:
             self.disarm_unit_picker()
+
+    def _on_unit_marquee_picked(self, keys, modifiers) -> None:
+        """TASK-168: a box dragged in an armed Unit[] pick, one undo record. Plain and
+        Shift add, Ctrl toggles; the picker stays armed."""
+        target = self._unit_picker
+        if target is None or not target[4] or target[5:] == (PICK_TYPE,):
+            return
+        toggle = bool(modifiers & Qt.ControlModifier)
+        result = self.trigger_panel.apply_picked_references(target, [key[1] for key in keys], toggle=toggle)
+        if self._unit_picker is None:
+            return
+        if result is None:
+            self.disarm_unit_picker()
+            return
+        self._refresh_picker_highlight()
+        added, removed = result
+        self._log_status(f"Box: added {added}, removed {removed}" if added or removed else "Box: no units added")
 
     def _on_unit_type_picked(self, target: tuple, key: tuple[int, int]) -> None:
         """GH #276's eyedropper, one-shot: the clicked unit's const, read before

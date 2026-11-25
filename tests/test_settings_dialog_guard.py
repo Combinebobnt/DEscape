@@ -149,6 +149,7 @@ def test_a_reset_page_still_edits_and_cancel_undoes_both(title, dialog_window) -
 # settings function the dialog calls -> the config keys it writes.
 _SETTER_KEYS: dict[str, tuple[str, ...]] = {
     "set_zoom_centered_on_cursor": ("zoom_centered_on_cursor",),
+    "set_trigger_rename_double_click": ("trigger_rename_double_click",),
     "set_xwayland_on_wayland": ("xwayland_on_wayland",),
     "set_mod_art_excluded": ("mod_art_excluded",),
     "set_mod_art_included": ("mod_art_included",),
@@ -171,6 +172,7 @@ _SETTER_KEYS: dict[str, tuple[str, ...]] = {
     "set_overlay_opacity": ("overlay_opacity",),
     "set_ruler_label_font_px": ("ruler_label_font_px",),
     "set_distance_tick_font_px": ("distance_tick_font_px",),
+    "set_distance_ticks_behind_terrain": ("distance_ticks_behind_terrain",),
     "set_stack_badge_position": ("stack_badge_position",),
     "set_favorite_star_style": ("favorite_star_style",),
     "set_units_catalog_right_click": ("units_catalog_right_click",),

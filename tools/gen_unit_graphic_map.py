@@ -26,6 +26,7 @@ resolves to a named graphic:
       "variant_count": int,  -- OPTIONAL, only beside rotation_is_variant:
                               -- the .sld's real frame count // frame_count,
                               -- omitted when the .sld is unreadable here.
+                              -- A particle entry's is its ImageAngles.
                               -- The edit path's install-free cycle modulus
                               -- (descape.unit_variant); render still reads
                               -- the file itself.
@@ -246,6 +247,14 @@ table and writes a second file, descape/building_art_map.json:
                      Satrapy TCs), whose annexes change with age while the
                      const does not (_age_art()); a civ only where it differs
                      from Gaia's at that age, and 6 is 5's. Absent when empty.
+    "unit_art":     {"<civ_index>": {"<const>": index into entries}}, the
+                     same for every non-building const with a Gaia entry
+                     (TASK-140, _unit_art()): ship sails, monks, kings, the
+                     antiquity civs' unit lines, rubble. No render path
+                     draws it yet; sprite reach already walks it.
+    "unit_groups":  {"<const>": "antiquity" | "scenery" | "sails" | "flags" |
+                     "regional"}, every unit_art const's lookup group, so
+                     each group can follow Civilization or Architecture.
 
 The run fails unless every per-civ entry and every age target agrees with
 its reference on angle_count, rotation_is_variant, variant_count and the
@@ -315,24 +324,32 @@ ink at some angle is a non-parent piece and is skipped there. The generator
 fails unless every emitted delta is layer 20 with display_angle -1 and the
 const is type 70: those back "one facing dispatch for hull and sails" and "no
 sail belongs to one angle only". There is no offset dedupe, unlike gates:
-five of the Galleon's sails share (0, -25). Only the Gaia table is emitted
-for ships, so a civ with its own sail set (most of them) draws these.
+five of the Galleon's sails share (0, -25). These are Gaia's (western)
+sails; a civ's own sail set is its building_art_map.json `unit_art` entry.
 
 **Particle effects (GH #20).** Butterflies 1608-1610, Seagulls 303 (GH #67),
-Smoke 1308 and Flames 1333-1336 (GH #256) (`_PARTICLE_CONSTS`, an allowlist)
+Smoke 1308 and Flames 1333-1336 (GH #256), their hidden twins SMOKE 902 and
+FLAME1-4 939-942 (the same graphics and effects), and the waterfalls WFALL 896,
+1635 and SWFALL 2598 (GH #330) (`_PARTICLE_CONSTS`, an allowlist)
 draw from a particle effect, not their standing graphic's file: butterflies and
-seagulls have file_name "None", Smoke and the Flames name a legacy .smp with no
+seagulls have file_name "None", the others name a legacy .smp with no
 modern replacement. The art is `resources/_common/particles/<name>.json`,
 which names a TexturePacker atlas (`AtlasFile`), a frame run
 (`ImageFirst`/`ImageCount`), a `Scale` and, on FLAME4, `FlipH`. Their entry
 carries the effect name as file_name, `particle: true` and `art_scale` (the
 Scale), with angle_count and frame_count 1: a scenario editor draws the loop's
-first frame. The generator fails unless the effect has an AtlasFile, no
-`ImageAngles` (per-angle frame runs, which the waterfalls use and
-descape.particle_art does not read), a real bool for any `FlipH`, and only keys
-in `_PARTICLE_EFFECT_KEYS`: drawn ones, or timing that cannot change a static
-first frame. An unknown key could change that frame, so it fails rather than
-draws wrong. The only particle consts still skipped are the waterfalls.
+first frame. The waterfalls' effects carry `ImageAngles`, a count of facings,
+each one contiguous run of ImageCount / ImageAngles frames; their entry has
+angle_count ImageAngles, frame_count the run length, and `rotation_is_variant`
+with `variant_count` ImageAngles (type 20, as on the .sld path), so the variant
+dispatch lands on a run's first frame. SWFALL's angle_count is its art's 2 runs,
+not its .dat graphic's 3, so a stored index stays inside frames that exist.
+1635's `Layer: "Terrain"` is accepted and drawn in the normal depth order. The
+generator fails unless the effect has an AtlasFile, any `ImageAngles` an int >=
+1 dividing ImageCount, a real bool for any `FlipH`, any `Layer` "Terrain", and
+only keys in `_PARTICLE_EFFECT_KEYS`: drawn ones, or timing that cannot change a
+static first frame. An unknown key could change that frame, so it fails rather
+than draws wrong. Every placeable particle-only doodad is now drawn.
 
 **Garrison flags (GH #203).** A unit's `creatable.garrison_graphic` names the
 flag the game draws on it while it holds units: a legacy shell (never `_x1`,
@@ -1361,6 +1378,8 @@ def _resolve_pieces(
             f"resolve to any modern piece -- re-verify against the .dat rather "
             f"than silently dropping the composite",
             "drawn without its annexes",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     pieces.sort(key=lambda dp: dp[0])
@@ -1381,6 +1400,8 @@ def _resolve_pieces(
             f"{key!r} (_COMPOSITE_SCOPE const {unit_const}), which emits {len(result)} "
             f"pieces -- re-run tools/measure_piece_slots.py and commit its table",
             "drawn without its annexes",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     for piece, slot in zip(result, slots, strict=True):
@@ -1440,6 +1461,8 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
             f"_ANNEX_TREE_SCOPE const {unit_const} yields {len(found)} pieces, not "
             f"{_ANNEX_TREE_PIECE_COUNT} -- re-verify its annex tree against the .dat",
             "drawn without its annex tree: as its own graphic, or not at all where that is a legacy shell",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     parents = [f for f in found if f[0] == _ANNEX_TREE_PARENT_UNIT]
@@ -1448,6 +1471,8 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
             f"_ANNEX_TREE_SCOPE const {unit_const} has {len(parents)} "
             f"{_ANNEX_TREE_PARENT_UNIT} hut pieces, expected exactly 1",
             "drawn without its annex tree: as its own graphic, or not at all where that is a legacy shell",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     pieces = []
@@ -1474,6 +1499,8 @@ def _resolve_annex_tree(units: list, graphics: list, unit_const: int):
             f"_ANNEX_TREE_SCOPE const {unit_const}, which emits {len(result)} pieces -- "
             f"re-run tools/measure_piece_slots.py and commit its table",
             "drawn without its annex tree: as its own graphic, or not at all where that is a legacy shell",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     for piece, slot in zip(result, slots, strict=True):
@@ -1549,6 +1576,8 @@ def _underwater_body(graphics: list, unit_const: int, splash):
             f"{_UNDERWATER_SUFFIX} deltas, expected exactly 1 -- re-verify "
             f"_UNDERWATER_BODY_CONSTS against the .dat",
             "not drawn: its standing graphic is only the surface splash",
+            kind="not_drawn",
+            subject=unit_const,
         )
         return None
     body = bodies[0]
@@ -1558,6 +1587,8 @@ def _underwater_body(graphics: list, unit_const: int, splash):
             f"{(body.angle_count, body.frame_count)}, its splash "
             f"{(splash.angle_count, splash.frame_count)} -- variant structure changed",
             "not drawn: its standing graphic is only the surface splash",
+            kind="not_drawn",
+            subject=unit_const,
         )
         return None
     return body, int(deltas[0].offset_x), int(deltas[0].offset_y)
@@ -1589,6 +1620,8 @@ def _resolve_wall_pieces(
             f"decoration shell {shell.file_name!r} (unit_const {unit_const}) has "
             f"{len(slots)} graphic_id -1 deltas, expected exactly 1 to place it by",
             "drawn as its body alone",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     pieces: list[dict[str, object]] = []
@@ -1620,6 +1653,8 @@ def _resolve_wall_pieces(
                 f"angle_count {piece['angle_count']}, not 5 -- re-verify "
                 f"_BODY_GRAPHIC_OVERRIDES against the .dat",
                 "drawn as its body alone",
+                kind="parts_dropped",
+                subject=unit_const,
             )
             return None
     return pieces
@@ -1656,6 +1691,8 @@ def _resolve_shell_delta_pieces(
             f"{graphics[deltas[0].graphic_id].file_name!r} first, but its resolved "
             f"graphic is {hull.file_name!r}. The parent piece must be the entry's own",
             f"drawn as {hull.file_name!r} alone",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     if unit_type != _CREATABLE_TYPE:
@@ -1664,6 +1701,8 @@ def _resolve_shell_delta_pieces(
             f"shell {shell.file_name!r} but is not type {_CREATABLE_TYPE}, so its pieces "
             f"would not dispatch on a facing. Re-verify the ship-sail rule against the .dat",
             f"drawn as {hull.file_name!r} alone",
+            kind="parts_dropped",
+            subject=unit_const,
         )
         return None
     pieces: list[dict[str, object]] = []
@@ -1676,6 +1715,8 @@ def _resolve_shell_delta_pieces(
                 f"{_SHELL_DELTA_LAYER} at every angle (-1). Re-verify the ship-sail "
                 f"rule against the .dat",
                 f"drawn as {hull.file_name!r} alone",
+                kind="parts_dropped",
+                subject=unit_const,
             )
             return None
         pieces.append({
@@ -1691,22 +1732,43 @@ def _resolve_shell_delta_pieces(
 
 
 # Consts whose standing graphic is a particle effect and gets an entry: the butterflies,
-# the seagulls, Smoke and the Flames. An allowlist; see the module docstring's "Particle effects".
-_PARTICLE_CONSTS: frozenset[int] = frozenset({303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610})
+# the seagulls, Smoke and the Flames, their hidden twins SMOKE 902 and FLAME1-4 939-942
+# (the same graphics and effects), and the waterfalls WFALL 896, 1635 and SWFALL 2598.
+# An allowlist; see the module docstring's "Particle effects".
+_PARTICLE_CONSTS: frozenset[int] = frozenset({
+    303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610,
+    902, 939, 940, 941, 942,
+    896, 1635, 2598,
+})
 
 # Every effect key a _PARTICLE_CONSTS effect may carry: drawn by descape.particle_art,
-# or timing only, which a static first frame cannot show.
+# accepted as measured (Layer "Terrain", see "Particle effects"), or timing only,
+# which a static first frame cannot show.
 _PARTICLE_EFFECT_KEYS: frozenset[str] = frozenset({
-    "AtlasFile", "ImageFirst", "ImageCount", "Scale", "FlipH",
+    "AtlasFile", "ImageFirst", "ImageCount", "ImageAngles", "Scale", "FlipH", "Layer",
     "Type", "Timer", "Duration", "Duration1", "Duration2", "StartMode", "StartDuration",
     "StopMode", "StopDuration", "StartDelay1", "StartDelay2", "IsPersistent", "DisplayInFog",
     "IsFire",
 })
 
 
-def _particle_entry(unit_const: int, graphic, particles_dir: Path) -> dict[str, object] | None:
+def _image_angles(effect: dict) -> int | None:
+    """ImageAngles (1 when absent), or None unless it is an int >= 1 dividing
+    an int ImageCount: descape.particle_art.image_angles()'s rule."""
+    angles, count = effect.get("ImageAngles", 1), effect.get("ImageCount")
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (angles, count)):
+        return None
+    return angles if angles >= 1 and count % angles == 0 else None
+
+
+def _particle_entry(
+    unit_const: int, graphic, particles_dir: Path, unit_type: int | None = None,
+) -> dict[str, object] | None:
     """The entry for a _PARTICLE_CONSTS const: its effect's stem as file_name
-    and the effect's Scale as art_scale. Fails rather than skips, since the
+    and the effect's Scale as art_scale. An effect with ImageAngles n > 1
+    gets angle_count n and frame_count ImageCount / n, so the variant dispatch
+    lands on each run's first frame, plus the variant fields the .sld path
+    gives a non-creatable `unit_type`. Fails rather than skips, since the
     allowlist is a promise that descape.particle_art can draw the effect;
     None (skipped) only when lenient."""
     name = graphic.particle_effect_name
@@ -1717,32 +1779,43 @@ def _particle_entry(unit_const: int, graphic, particles_dir: Path) -> dict[str, 
         _game_root.refuse(
             f"particle const {unit_const}'s effect {name!r} is unreadable at {path}: {exc}",
             "not drawn",
+            kind="not_drawn",
+            subject=unit_const,
         )
         return None
     scale = effect.get("Scale")
     unknown = sorted(set(effect) - _PARTICLE_EFFECT_KEYS)
+    angles = _image_angles(effect) if "ImageAngles" in effect else 1
     if (
-        not name or not effect.get("AtlasFile") or "ImageAngles" in effect
+        not name or not effect.get("AtlasFile") or angles is None
         or isinstance(scale, bool) or not isinstance(scale, (int, float)) or scale <= 0
         or not isinstance(effect.get("FlipH", False), bool) or unknown
+        or effect.get("Layer", "Terrain") != "Terrain"
     ):
         _game_root.refuse(
             f"particle const {unit_const}'s effect {name!r} needs an AtlasFile, a "
-            f"positive Scale, no ImageAngles, a bool FlipH and only known keys to be "
+            f"positive Scale, any ImageAngles an int >= 1 dividing ImageCount, a bool "
+            f"FlipH, any Layer \"Terrain\" and only known keys to be "
             f"drawn; it has {sorted(effect)}, unknown {unknown}. "
             f"Re-verify _PARTICLE_CONSTS",
             "not drawn",
+            kind="not_drawn",
+            subject=unit_const,
         )
         return None
-    return {
+    entry: dict[str, object] = {
         "graphic_id": graphic.id,
         "file_name": name,
-        "angle_count": 1,
+        "angle_count": angles,
         "mirroring_mode": 0,
-        "frame_count": 1,
+        "frame_count": int(effect["ImageCount"]) // angles if angles > 1 else 1,
         "particle": True,
         "art_scale": float(scale),
     }
+    if angles > 1 and unit_type != _CREATABLE_TYPE:
+        entry["rotation_is_variant"] = True
+        entry["variant_count"] = angles
+    return entry
 
 
 def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
@@ -1763,6 +1836,8 @@ def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
                 f"resolve to a named graphic in this .dat -- re-verify it rather "
                 f"than dropping it silently",
                 "not drawn: its standing graphic is only a decoration over that body",
+                kind="not_drawn",
+                subject=unit_const,
             )
             continue
         # Loud on purpose: a shell that stops being a decoration is a real
@@ -1774,6 +1849,8 @@ def _body_delta_positions(units: list, graphics: list) -> dict[int, int]:
                 f"exactly one delta of standing graphic {standing[0]} -- "
                 f"re-verify against the .dat",
                 "not drawn: its standing graphic is only a decoration over that body",
+                kind="not_drawn",
+                subject=unit_const,
             )
             continue
         positions[unit_const] = ids.index(override_id)
@@ -1795,6 +1872,8 @@ def _garrison_flags(unit, graphics: list, unit_const: int) -> list[dict[str, obj
             f"unit_const {unit_const}'s garrison graphic {shell_id} is not a legacy shell with "
             f"1 or 2 deltas -- re-verify the garrison flag rule against the .dat",
             "drawn without garrison flags",
+            kind="no_garrison_flags",
+            subject=unit_const,
         )
         return []
     flags: list[dict[str, object]] = []
@@ -1810,6 +1889,8 @@ def _garrison_flags(unit, graphics: list, unit_const: int) -> list[dict[str, obj
                 f"display_angle {delta.display_angle}, not a delta-free one-angle modern graphic "
                 f"at every angle (-1) -- re-verify the garrison flag rule against the .dat",
                 "drawn without garrison flags",
+                kind="no_garrison_flags",
+                subject=unit_const,
             )
             return []
         flags.append({
@@ -1874,6 +1955,8 @@ def _graphic_entry_for(
                     f"tools/gen_unit_graphic_map.py's gate section against the "
                     f".dat before shipping this",
                     "not drawn",
+                    kind="not_drawn",
+                    subject=unit_const,
                 )
                 return None, "gate_no_modern_replacement"
         # The parent is pieces[0] because it supplies the entry's top-level
@@ -1935,6 +2018,8 @@ def _graphic_entry_for(
                 f"unit_const {unit_const}'s shell {graphic.file_name!r} has no modern "
                 f"body at delta position {position} -- re-verify _BODY_GRAPHIC_OVERRIDES",
                 "not drawn: its standing graphic is only a decoration over that body",
+                kind="not_drawn",
+                subject=unit_const,
             )
             return None, "body_override_missing"
     if position is not None:
@@ -1950,7 +2035,7 @@ def _graphic_entry_for(
         resolved = _resolve_modern_graphic(graphics, graphic_id)
         if resolved is None:
             if unit_const in _PARTICLE_CONSTS and particles_dir is not None:
-                particle = _particle_entry(unit_const, graphic, particles_dir)
+                particle = _particle_entry(unit_const, graphic, particles_dir, unit.type)
                 if particle is not None:
                     return particle, "particle"
             return None, "legacy_no_modern_replacement"
@@ -2232,7 +2317,9 @@ def _check_start_upgrades(data, building_consts: set[int], upgrades: StartUpgrad
         if _DATA_MOD_DAT:
             print(f"  data mod: {problem}")
         else:
-            _game_root.refuse(f"{problem} -- re-verify _start_upgrades() against the .dat", "written as measured")
+            _game_root.refuse(
+                f"{problem} -- re-verify _start_upgrades() against the .dat", "written as measured", kind="age_art"
+            )
 
 
 # The fields an entry's const-keyed logic reads (rotation dispatch, variant
@@ -2240,12 +2327,17 @@ def _check_start_upgrades(data, building_consts: set[int], upgrades: StartUpgrad
 _ART_INVARIANT_FIELDS = ("angle_count", "rotation_is_variant", "variant_count")
 
 
-# Building consts whose per-civ art breaks _ART_INVARIANT_FIELDS, measured
-# 2026-10-07. The civs whose art breaks it keep Gaia's art for that const; its
-# other civs keep their own. The generator fails unless the measured
+# Consts whose per-civ art breaks _ART_INVARIANT_FIELDS, buildings measured
+# 2026-10-07 (_building_art()) and units 2026-10-28 (_unit_art()). The civs
+# whose art breaks it keep Gaia's art for that const; its other civs keep their own. The generator fails unless the measured
 # violators are exactly these, so a new one is still loud.
 _ART_INVARIANT_HOLDOUTS: dict[int, str] = {
     446: "PORT, hidden in the editor: a projectile graphic, angle_count 32 vs 1",
+    # Non-building consts (TASK-140, measured 2026-10-28, build 26249352).
+    520: "Projectile Dromon (Fire), hidden: angle_count 32 vs 1 (1 civ)",
+    # Only the 48 breaking civs: their statue would need Cycle Variant's count to follow the art.
+    1279: "STATUE: angle_count 13 vs 8, its variants (48 civs)",
+    1434: "House Age2 Rubble, hidden: variant_count 5 vs 3 (8 pairs)",
 }
 
 
@@ -2324,6 +2416,8 @@ def _annex_upgrades(ages: dict[int, dict[int, int]]) -> dict[int, dict[int, int]
                 _game_root.refuse(
                     f"const {target} is an age target at two ages -- re-verify",
                     f"its annexes follow age {age_of[target]}",
+                    kind="age_art",
+                    subject=target,
                 )
     return {
         target: {base: by_age[age] for base, by_age in ages.items() if age in by_age}
@@ -2347,6 +2441,8 @@ def _age_art(
             f"town centres no age tech reaches: {sorted(unreached)}, listed "
             f"{sorted(_AGE_ART_SCOPE)} -- re-verify _AGE_ART_SCOPE against the .dat",
             "only the listed ones that are unreached draw per age",
+            kind="age_art",
+            subject=tuple(sorted(unreached - _AGE_ART_SCOPE)),
         )
     scope = sorted(unreached & _AGE_ART_SCOPE)
     age_annexes = {
@@ -2363,9 +2459,10 @@ def _age_art(
                 entry, _kind = _entry_for(
                     civ.units, graphics, graphics_dir, const, body_positions, {const: annexes}
                 )
-                fallback = "drawn with its base entry at that age" if civ_index == 0 else "drawn with Gaia's art at that age"
                 if entry is None or "pieces" not in entry:
-                    _game_root.refuse(f"civ {civ_index} const {const} at age {age} resolves no town-centre pieces", fallback)
+                    _refuse_age_entry(
+                        civ_index, const, f"civ {civ_index} const {const} at age {age} resolves no town-centre pieces"
+                    )
                     continue
                 # The same guards as a civ_art entry (_building_art()), against Gaia's at this age.
                 if civ_index and 0 not in by_civ:
@@ -2378,7 +2475,7 @@ def _age_art(
                     continue
                 if problems + found:
                     for problem in problems + found:
-                        _game_root.refuse(problem, fallback)
+                        _refuse_age_entry(civ_index, const, problem)
                     continue
                 if civ_index == 0 or entry != by_civ.get(0):
                     by_civ[civ_index] = entry
@@ -2389,6 +2486,14 @@ def _age_art(
         if by_age:
             result[const] = by_age
     return result
+
+
+def _refuse_age_entry(civ_index: int, const: int, message: str) -> None:
+    # Gaia's own miss loses the age's look; another civ's falls back to Gaia's (a civ look).
+    if civ_index == 0:
+        _game_root.refuse(message, "drawn with its base entry at that age", kind="age_art", subject=const)
+    else:
+        _game_root.refuse(message, "drawn with Gaia's art at that age", kind="civ_art", subject=const)
 
 
 def _gaia_gate_piece_fallbacks(
@@ -2420,15 +2525,130 @@ def _gaia_gate_piece_fallbacks(
     return {**entry, "pieces": pieces}, swaps
 
 
+# The civs with their own unit lines (archers, militia, knights, rams...):
+# Achaemenids, Athenians, Spartans, Macedonians, Thracians, Puru (measured
+# 2026-10-28, build 26249352). Only _unit_art()'s grouping reads it.
+_ANTIQUITY_CIVS = frozenset({46, 47, 48, 54, 55, 56})
+_SCENERY_TYPE = 10
+
+
+class UnitArt(NamedTuple):
+    art: dict[int, dict[int, dict[str, object]]]  # civ -> {const: entry}, where it differs from Gaia's
+    groups: dict[int, str]  # const -> its lookup group, for every const in art
+    held_out: set[int]  # _ART_INVARIANT_HOLDOUTS consts some civ's art broke
+    violations: list[str]  # unexplained breaks, refused with the building ones
+
+
+def _unit_art(
+    data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
+    gaia_entries: dict[str, dict[str, object]], building_consts: set[int], particles_dir: Path | None,
+) -> UnitArt:
+    """Every civ's non-building entries that differ from Gaia's (TASK-140),
+    under _building_art()'s guards with no age table, and each such const's
+    lookup group. The groups follow different civ groupings, so the render
+    keys each one on Civilization or Architecture on its own: "scenery" (type
+    10: rubble, the statue), else by how the civs outside _ANTIQUITY_CIVS
+    differ: "antiquity" (none do), "sails" (a shell-delta ship keeping Gaia's
+    hull: the architecture sets), "flags" (only the garrison flag: rams, siege
+    towers) and "regional" (the rest: monks, kings, carts, merchants). On the
+    dataset's own .dat, a civ entry naming a file this install can't read
+    keeps Gaia's, as a gate piece does (measured 2026-11-25: three antiquity
+    rubbles); a data mod's is kept, since its art may ship with the mod."""
+    gaia_units = data.civs[0].units
+    lenient = _game_root.lenient()
+    consts = sorted(c for c in map(int, gaia_entries) if c not in building_consts)
+    art: dict[int, dict[int, dict[str, object]]] = {}
+    gaia_kinds: dict[int, str] = {}
+    violations: list[str] = []
+    held_out: set[int] = set()
+    lenient_held_out: set[int] = set()
+    # file -> {const: {civ}}: named by a civ's entry but not on this install, so it keeps Gaia's.
+    unreadable: dict[str, dict[int, set[int]]] = {}
+    readable_names: dict[str, bool] = {}
+
+    def missing_files(entry: dict[str, object]) -> list[str]:
+        if entry.get("particle"):
+            return []  # an atlas, not an .sld
+        names = [entry["file_name"], *(p["file_name"] for p in (*entry.get("pieces", ()), *entry.get("garrison_flags", ())))]
+        for name in names:
+            if name not in readable_names:
+                readable_names[name] = _sld_frame_count(graphics_dir / f"{name}.sld") is not None
+        return [name for name in names if not readable_names[name]]
+
+    for civ_index, civ in enumerate(data.civs):
+        units = civ.units
+        for const in consts:
+            entry, kind = _entry_for(units, graphics, graphics_dir, const, body_positions, None, particles_dir)
+            if civ_index == 0:
+                gaia_kinds[const] = kind
+                continue
+            gaia_entry = gaia_entries[str(const)]
+            if entry is None or entry == gaia_entry:
+                continue  # Gaia's is drawn
+            # A data mod's own art may live outside the install (mod_graphics, GH #272).
+            missing = [] if _DATA_MOD_DAT else missing_files(entry)
+            for name in missing:
+                unreadable.setdefault(name, {}).setdefault(const, set()).add(civ_index)
+            if missing:
+                continue
+            what = f"civ {civ_index} const {const}"
+            problems = _structure_violations(what, entry, units[const], gaia_entry, gaia_units[const])
+            found = _art_invariant_violations(what, entry, units[const], gaia_entry, gaia_units[const])
+            keep = True
+            if found and const in _ART_INVARIANT_HOLDOUTS:
+                # Only this civ's art is held back, as for a building.
+                held_out.add(const)
+                keep = False
+            else:
+                problems += found
+            if problems and lenient:
+                # No render path draws unit_art yet, so a lenient break is a log line, not a user warning.
+                for problem in problems:
+                    print(f"  unit art, drawn with Gaia's: {problem}")
+                lenient_held_out.add(const)
+            elif problems:
+                violations += problems
+            elif keep:
+                art.setdefault(civ_index, {})[const] = entry
+    groups: dict[int, str] = {}
+    for const in sorted({c for by_const in art.values() for c in by_const}):
+        gaia_entry = gaia_entries[str(const)]
+        # Grouped by the other civs' differences; an antiquity civ's own art rides along.
+        others = [by_const[const] for c, by_const in art.items() if const in by_const and c not in _ANTIQUITY_CIVS]
+        if gaia_units[const].type == _SCENERY_TYPE:
+            groups[const] = "scenery"  # before antiquity: an antiquity-only rubble is still a building's
+        elif not others:
+            groups[const] = "antiquity"
+        elif gaia_kinds[const] == "shell_deltas" and all(e["file_name"] == gaia_entry["file_name"] for e in others):
+            groups[const] = "sails"
+        elif all({**e, "garrison_flags": None} == {**gaia_entry, "garrison_flags": None} for e in others):
+            groups[const] = "flags"
+        else:
+            groups[const] = "regional"
+    visible = sum(1 for c in groups if not gaia_units[c].hide_in_editor)
+    pairs = sum(len(by_const) for by_const in art.values())
+    print(f"  non-building consts whose art differs by civ: {len(groups)} ({visible} editor-visible), {pairs} (const, civ) pairs")
+    print(f"    by group: {dict(sorted(Counter(groups.values()).items()))}")
+    print(f"    held out on Gaia art (invariant break): {sorted(held_out)}")
+    if lenient_held_out:
+        print(f"    held out on Gaia art (lenient): {sorted(lenient_held_out)}")
+    if unreadable:
+        found = {name: {c: sorted(civs) for c, civs in sorted(by_const.items())} for name, by_const in sorted(unreadable.items())}
+        print(f"    files missing on this install, drawn with Gaia's: {found}")
+    return UnitArt(art, groups, held_out, violations)
+
+
 def _building_art(
     data, graphics: list, graphics_dir: Path, body_positions: dict[int, int],
     gaia_entries: dict[str, dict[str, object]], building_consts: set[int],
     ages: dict[int, dict[int, int]], annex_upgrades: dict[int, dict[int, int]],
     civ_ages: dict[int, dict[int, dict[int, int]]] | None = None,
     age_art: dict[int, dict[int, dict[int, dict[str, object]]]] | None = None,
+    unit_art: UnitArt | None = None,
 ) -> dict[str, object]:
     """descape/building_art_map.json's content (GH #48): the age table, every
-    civ's building entries that differ from Gaia's, and the civ names.
+    civ's building entries that differ from Gaia's, and the civ names, plus
+    `unit_art`'s non-building entries and groups (TASK-140) when given.
 
     `ages` is the generic table and `civ_ages` each civ's own (TASK-205,
     _start_upgrades()); None writes the age table alone, as before. Every
@@ -2491,7 +2711,7 @@ def _building_art(
         if not lenient:
             violations.append(message)
             continue
-        _game_root.refuse(message, age_fallback(base))
+        _game_root.refuse(message, age_fallback(base), kind="age_art", subject=base)
         bad_ages.add(row)
     for civ_index, civ in enumerate(data.civs):
         units = civ.units
@@ -2526,7 +2746,7 @@ def _building_art(
                     problems += found
             if problems and lenient:
                 for problem in problems:
-                    _game_root.refuse(problem, "drawn with Gaia's art")
+                    _game_root.refuse(problem, "drawn with Gaia's art", kind="civ_art", subject=const)
                 lenient_held_out.add(const)
                 continue
             violations += problems
@@ -2546,6 +2766,8 @@ def _building_art(
                     f"civ {civ_index}: age {age} upgrade {base} -> {target} has no "
                     f"entry on one side -- re-verify the age techs against the .dat",
                     age_fallback(base),
+                    kind="age_art",
+                    subject=base,
                 )
                 bad_ages.add(row)
                 continue
@@ -2558,7 +2780,7 @@ def _building_art(
                 continue
             if found and lenient:
                 for problem in found:
-                    _game_root.refuse(problem, age_fallback(base))
+                    _game_root.refuse(problem, age_fallback(base), kind="age_art", subject=base)
                 bad_ages.add(row)
                 continue
             violations += found
@@ -2589,6 +2811,10 @@ def _building_art(
     # A data mod's .dat may lack the civ a holdout was listed for.
     measured_upgrades = {c: frozenset(bases) for c, bases in held_upgrades.items()}
     listed_upgrades = _UPGRADE_HOLDOUTS if civ_ages else {}
+    if unit_art is not None:
+        violations += unit_art.violations
+    building_held_out = set(held_out)
+    held_out |= unit_art.held_out if unit_art is not None else set()
     unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS) or measured_upgrades != listed_upgrades
     if _DATA_MOD_DAT:
         unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS) or any(
@@ -2596,12 +2822,13 @@ def _building_art(
         )
     if violations or unexplained:
         _game_root.refuse(
-            "per-civ/per-age building art breaks the placed const's own logic -- "
+            "per-civ/per-age building or unit art breaks the placed const's own logic -- "
             "re-verify against the .dat:\n  " + "\n  ".join(violations[:40])
             + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}"
             + (f"\n  upgrade holdouts measured {_holdout_text(measured_upgrades)}, listed {_holdout_text(listed_upgrades)}"
                if measured_upgrades != listed_upgrades else ""),
             "written as measured",
+            kind="age_art",
         )
     print(f"  building consts: {len(building_consts)}; age-upgraded bases: {len(ages)}")
     print(f"    civs with their own upgrades: {len(civ_upgrades)}; upgrade holdouts: {_holdout_text(measured_upgrades)}")
@@ -2609,7 +2836,7 @@ def _building_art(
         print(f"    upgrades no civ draws, dropped: {sorted({(b, t) for b, _a, t in undrawn})}")
     differing = {c for art in civ_art.values() for c in art}
     print(f"  building consts whose art differs by civ: {len(differing)}")
-    print(f"    held out on Gaia art (invariant break): {sorted(held_out)}")
+    print(f"    held out on Gaia art (invariant break): {sorted(building_held_out)}")
 
     def by_file(found: dict[str, dict[int, set[int]]]) -> str:
         return str({name: sorted(consts) for name, consts in sorted(found.items())})
@@ -2653,6 +2880,19 @@ def _building_art(
     }
     if age_art_indexed:
         print(f"  per-age town centres (age_art): {sorted(age_art or {})}")
+    # Indexed last, so the building rows' indices do not move.
+    unit_keys: dict[str, object] = {}
+    if unit_art is not None:
+        before = len(shared)
+        unit_keys = {
+            "unit_art": {
+                str(civ): {str(const): index(entry) for const, entry in sorted(by_const.items())}
+                for civ, by_const in sorted(unit_art.art.items())
+            },
+            "unit_groups": {str(const): group for const, group in sorted(unit_art.groups.items())},
+        }
+        reused = len({i for by_const in unit_keys["unit_art"].values() for i in by_const.values()}) - (len(shared) - before)
+        print(f"    distinct unit entries: {len(shared) - before} new, {reused} shared with buildings")
 
     def keyed(table: dict[int, dict[int, int]]) -> dict[str, dict[str, int]]:
         return {str(base): {str(age): t for age, t in sorted(by_age.items())} for base, by_age in sorted(table.items())}
@@ -2666,7 +2906,7 @@ def _building_art(
         }
     return {
         "_comment": (
-            "GH #48 per-civ and per-age building art -- see "
+            "GH #48 per-civ and per-age building art, and per-civ unit art -- see "
             "tools/gen_unit_graphic_map.py"
         ),
         "civ_names": {str(i): civ.name for i, civ in enumerate(data.civs)},
@@ -2674,6 +2914,7 @@ def _building_art(
         "entries": shared,
         "civ_art": civ_art_indexed,
         **({"age_art": age_art_indexed} if age_art_indexed else {}),
+        **unit_keys,
     }
 
 
@@ -2701,7 +2942,7 @@ _ROR_VALUES: dict[str, object] = {
     "_UNDERWATER_BODY_CONSTS": _UNDERWATER_BODY_CONSTS - {2625},
     "_BODY_FRAME_OFFSETS": _BODY_FRAME_OFFSETS,
     # The same objects, graphics and effects as AoE2's (Smoke and Flames measured 2026-11-02).
-    "_PARTICLE_CONSTS": _PARTICLE_CONSTS,
+    "_PARTICLE_CONSTS": frozenset({303, 1308, 1333, 1334, 1335, 1336, 1608, 1609, 1610}),
     # TASK-205's start simulation is unmeasured on the RoR .dat (absent 2026-11-03): the age techs alone.
     "_START_UPGRADE_TECHS": None,
 }
@@ -2849,6 +3090,8 @@ def main() -> None:
             f"particle consts emitted {sorted(particles)}, listed {sorted(_PARTICLE_CONSTS)}. "
             f"Re-verify _PARTICLE_CONSTS against the .dat",
             "the others are not drawn",
+            kind="not_drawn",
+            subject=tuple(sorted(_PARTICLE_CONSTS - set(particles))),
         )
 
     missing_fish = sorted(_UNDERWATER_BODY_CONSTS - set(fish_bodies))
@@ -2858,6 +3101,8 @@ def main() -> None:
             f"fish body overrides not applied: consts {missing_fish}, frame offsets "
             f"{unused_offsets} -- re-verify against the .dat",
             "those fish are not drawn",
+            kind="not_drawn",
+            subject=tuple(missing_fish),
         )
 
     for unit_const, entry in entries.items():
@@ -2866,6 +3111,8 @@ def main() -> None:
                 f"unit_const {unit_const} has a top-level dx/dy beside pieces -- "
                 f"sprite_pieces_for() would draw the pieces and drop the offset",
                 "drawn without its pieces",
+                kind="parts_dropped",
+                subject=int(unit_const),
             )
             del entry["pieces"]
         parents = sum(1 for piece in entry.get("pieces", ()) if piece.get("parent"))
@@ -2874,6 +3121,8 @@ def main() -> None:
                 f"unit_const {unit_const} emitted {parents} parent pieces, not exactly 1 -- "
                 f"sprite_pieces_for() bails on the parent, so this must be unambiguous",
                 "drawn without its pieces",
+                kind="parts_dropped",
+                subject=int(unit_const),
             )
             del entry["pieces"]
 
@@ -2885,9 +3134,10 @@ def main() -> None:
         _check_start_upgrades(data, building_consts, start)
         generic, civ_ages = start.generic, start.per_civ
     age_art = _age_art(data, graphics, graphics_dir, body_positions, ages) if _AGE_ART_SCOPE else None
+    unit_art = _unit_art(data, graphics, graphics_dir, body_positions, entries, building_consts, particles_dir)
     building_art = _building_art(
         data, graphics, graphics_dir, body_positions, entries, building_consts, generic, annex_upgrades, civ_ages,
-        age_art,
+        age_art, unit_art,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     art_path = args.out_dir / "building_art_map.json"

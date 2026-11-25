@@ -97,7 +97,8 @@ def main() -> None:
     terrains = data.terrain_block.terrains
 
     classes: dict[str, dict] = {}
-    violations: list[str] = []
+    # (terrain id, report line)
+    violations: list[tuple[int, str]] = []
     for i, t in enumerate(terrains):
         if not t.enabled:
             continue
@@ -105,21 +106,22 @@ def main() -> None:
         try:
             family, climate = decode(raw)
         except ValueError as exc:
-            violations.append(f"  id={i} name={t.name!r}: {exc}")
+            violations.append((i, f"  id={i} name={t.name!r}: {exc}"))
             continue
         if family == "obsolete" and "OBSOLETE" not in (t.name or "").upper():
-            violations.append(
-                f"  id={i} name={t.name!r}: family bits 0 but not named OBSOLETE"
-            )
+            violations.append((i, f"  id={i} name={t.name!r}: family bits 0 but not named OBSOLETE"))
             continue
         classes[str(i)] = {"raw": raw, "family": family, "climate": climate}
 
     if violations and _game_root.lenient():
-        for line in violations:
-            _game_root.refuse(f"is_water bitmask invariant: {line.strip()}", "terrain left out of the class table")
+        for terrain_id, line in violations:
+            _game_root.refuse(
+                f"is_water bitmask invariant: {line.strip()}", "terrain left out of the class table",
+                kind="terrain_class", subject=terrain_id,
+            )
     elif violations:
         print("The is_water bitmask invariant no longer holds:", file=sys.stderr)
-        for line in violations:
+        for _terrain_id, line in violations:
             print(line, file=sys.stderr)
         raise SystemExit(
             "Refusing to write: a game update has changed what this field means. "

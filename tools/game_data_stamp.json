@@ -30,15 +30,15 @@
   },
   "steam_buildid": "26249352",
   "tables": {
-    "building_art_map.json": "0eb01d23d98c84ad2893514acf989aa4ceab18ccb5d861a1dea419e38e6c5cf2",
+    "building_art_map.json": "dc50a806abb2da4b9f748cfa6e3d8b099b4eecd6b1a1c198769d6faa2052c115",
     "garrison_table.json": "5656574d39b676ec83cb64d532b15e0ae352c918a33f839a36296af31dfe1834",
-    "object_catalog.json": "d400d90685b86bf3c3f6bd7572ed7c095d60cdcf3b9a0e4d9f97e801eb5070bc",
+    "object_catalog.json": "7d1e5b3f21e380c541bd16c3b47d27575e8fe286f5e2fd405e3b605f77f1163a",
     "terrain_blend_map.json": "875762c76bcecbaa24a15314d1963fbc8f18cc1c7d398ed1405ebc66c7b6e3ff",
     "terrain_classes.json": "35f4564b5f395a4b7df03c6a5d482410c60f8605e6e5a6fe2516344c7377bcc6",
     "terrain_texture_map.json": "e10c3831211b693e4ac01efe3dbeff10e1c40a6d5c7ece42422c51a96caf639e",
     "terrain_unit_map.json": "cfd8f0e22539f96f543dd754f76a27710d3f48c392fc2492d9079eeed584d9fb",
     "tree_unit_ids.json": "7f67ea779b0e96b886b161c0165f3db079ea13be10ac9347851fc195eae34bfa",
-    "unit_graphic_map.json": "3a36293fca267665147311f03ef10a366204e4b110fe63ffcbe1f95f8ec367a2",
+    "unit_graphic_map.json": "8dfc744052acec354521582e79dcf95fa6332df99185682ac6c19b83950a4549",
     "unit_render_data.json": "5a90023e39fc2368652834c7fc34ee4c4d08ff0d6421e93db7cdd7f3589aff98",
     "unit_stats.json": "540b5b3cb935898d23370a57e0b60ae60247a5a8565ff6f79236bb81cdb3378f"
   }

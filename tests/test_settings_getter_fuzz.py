@@ -122,7 +122,7 @@ def _mismatch(value, hint) -> str | None:
     args = typing.get_args(hint)
     if expected is dict and args:
         items = [x for k, v in value.items() for x in ((k, args[0]), (v, args[1]))]
-    elif expected in (list, frozenset) and args:
+    elif (expected in (list, frozenset) and args) or (expected is tuple and len(args) == 2 and args[1] is Ellipsis):
         items = [(member, args[0]) for member in value]
     elif expected is tuple and args:
         items = list(zip(value, args, strict=False)) if len(value) == len(args) else [(value, None)]

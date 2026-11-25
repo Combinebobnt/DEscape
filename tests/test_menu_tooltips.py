@@ -181,12 +181,82 @@ def test_no_action_tooltip_types_a_rebindable_default_key() -> None:
         tips = {action.toolTip() for action in window.findChildren(QAction)}
         found = _typed_default_keys(tips) + [tip for tip in tips if "Ctrl+wheel" in tip]
         assert not found, "\n".join(found)
-        # TASK-608's two tools came after TASK-487 and keep its no " -- " rule.
-        for action in (window.unit_line_action, window.unit_shape_action):
-            assert " -- " not in action.toolTip(), action.text()
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def _double_hyphen_tips(window) -> list[str]:
+    from PyQt5.QtWidgets import QAction, QWidget
+
+    found = [
+        f"{action.text()!r} {kind}: {tip!r}"
+        for action in window.findChildren(QAction)
+        for kind, tip in (("tooltip", action.toolTip()), ("status tip", action.statusTip()))
+        if " -- " in tip
+    ]
+    found += [
+        f"{type(widget).__name__} {widget.objectName()!r} tooltip: {widget.toolTip()!r}"
+        for widget in window.findChildren(QWidget)
+        if " -- " in widget.toolTip()
+    ]
+    return found
+
+
+def test_no_tip_in_the_window_uses_a_double_hyphen_separator_in_any_mode() -> None:
+    """TASK-487, TASK-612: every action's tooltip and status tip, and every widget tooltip, in each mode."""
+    window = conftest.blank_window()
+    try:
+        found = set(_double_hyphen_tips(window))
+        for i in range(window.mode_combo.count()):
+            window.mode_combo.setCurrentIndex(i)
+            found.update(_double_hyphen_tips(window))
+        assert not found, "\n".join(sorted(found))
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+_TIP_SETTERS = {"setToolTip", "setStatusTip", "setWhatsThis"}
+_TIP_KEYWORDS = {"tooltip", "tool_tip", "toolTip", "tip", "status_tip", "statusTip"}
+
+
+def test_no_tip_literal_in_the_source_uses_a_double_hyphen_separator() -> None:
+    """TASK-612: tips the window test can't reach (read-only notes, the Settings dialog, an install)."""
+    import ast
+
+    found = []
+    for path in sorted((conftest.ROOT / "descape").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            roots = []
+            if isinstance(node, ast.Call):
+                func = node.func
+                if (func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")) in _TIP_SETTERS:
+                    roots += node.args
+                roots += [kw.value for kw in node.keywords if kw.arg in _TIP_KEYWORDS]
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and (t.id.endswith("_NOTE") or "TIP" in t.id) for t in node.targets
+            ):
+                roots.append(node.value)
+            for root in roots:
+                found += [
+                    f"{path.name}:{const.lineno}: {const.value!r}"
+                    for const in ast.walk(root)
+                    if isinstance(const, ast.Constant) and isinstance(const.value, str) and " -- " in const.value
+                ]
+    assert not found, "\n".join(found)
+
+
+def test_the_composite_edit_failure_dialog_names_undo_not_its_key() -> None:
+    """TASK-612: it said "Ctrl+Z reverts it", stale once Undo is rebound."""
+    import inspect
+
+    from descape import viewer_triggers
+
+    source = inspect.getsource(viewer_triggers)
+    assert "Ctrl+Z" not in source
+    assert "one undo step; Edit > Undo reverts it." in source
 
 
 def test_the_players_civilization_rows_read_as_user_text() -> None:

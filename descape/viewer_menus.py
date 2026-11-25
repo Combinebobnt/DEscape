@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import (
     QKeySequence,
@@ -24,6 +26,8 @@ from descape import (
     perf_trace,
     place_rotation,
     region_transform,
+    scenario_convert,
+    script_menu,
     settings,
     unit_pick,
     view_layers,
@@ -83,6 +87,11 @@ class _ViewerMenusMixin:
         self.recent_menu = file_menu.addMenu("Open &Recent")
         self.recent_menu.menuAction().setToolTip("Reopen a scenario you opened before")
         self._rebuild_recent_files_menu()
+        # Always enabled, like Recover: it works with no map open.
+        self.browse_scenarios_action = QAction("&Browse Game Scenarios…", self)
+        self.browse_scenarios_action.setToolTip("List the scenarios in the game's profile and mod folders and open one")
+        self.browse_scenarios_action.triggered.connect(self.show_scenario_browser)
+        file_menu.addAction(self.browse_scenarios_action)
         self.close_action = QAction("&Close Map", self)
         self.close_action.setToolTip("Close the open scenario, asking first if it has unsaved changes")
         self.close_action.setEnabled(False)  # re-gated by _update_tool_enabled()
@@ -106,6 +115,11 @@ class _ViewerMenusMixin:
         self.save_as_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.save_as_action.triggered.connect(self.save_as)
         file_menu.addAction(self.save_as_action)
+        # GH #307. Not convert_action: that name is the Units-mode Convert tool's.
+        self.convert_version_action = QAction(scenario_convert.action_label().replace("Convert", "Conver&t", 1), self)
+        self.convert_version_action.setEnabled(False)  # re-gated, tooltip included, by _update_tool_enabled()
+        self.convert_version_action.triggered.connect(lambda checked=False: self.convert_version())
+        file_menu.addAction(self.convert_version_action)
         # Enabled unconditionally, unlike the save actions: recovery is most
         # needed when nothing is open.
         self.recover_autosave_action = QAction("Reco&ver from Autosave…", self)  # Open Recent owns R
@@ -121,6 +135,8 @@ class _ViewerMenusMixin:
         file_menu.addAction(self.exit_action)
 
         edit_menu = menu_bar.addMenu("&Edit")
+        # Text selected inside a focused label moves no focus, so the clipboard verbs re-read it here.
+        edit_menu.aboutToShow.connect(self._update_clipboard_actions)
         self.undo_action = QAction("&Undo", self)
         self.undo_action.setToolTip("Take back the last edit")
         self.undo_action.setEnabled(False)  # re-gated by _update_edit_actions()
@@ -365,8 +381,8 @@ class _ViewerMenusMixin:
         self.iso_action.setCheckable(True)
         self.iso_action.setToolTip(
             "Flat Elevation View only. Switches Flat to a real isometric "
-            "render -- terrain as iso diamonds, units as upright ground-"
-            "anchored sprites -- instead of the plain top-down grid with a "
+            "render (terrain as iso diamonds, units as upright ground-"
+            "anchored sprites) instead of the plain top-down grid with a "
             "view rotation applied. Stepped already renders its own real "
             "per-tile projection into the image, so this has nothing left to "
             "do there and is disabled while Elevation View = Stepped."
@@ -407,12 +423,15 @@ class _ViewerMenusMixin:
         self._place_ghost_memo: tuple[tuple, object] | None = None
         # GH #172: the facing or variant Place Unit's ghost and next click use.
         self._place_rotation = place_rotation.PlaceRotation()
+        # TASK-367: Random facing/variant's draws, and the const the state was last rolled or set for.
+        self._place_rng = random.Random()
+        self._place_roll_const: int | None = None
         # The Cliff tool's ghosts: the hover's (key, item) like the one above,
-        # and one stroke's per-node (sprite draws, mark) by (const, rotation, x, y).
+        # and one stroke's per-node (GhostSprite or None, mark) by (const, rotation, x, y).
         self._cliff_hover_memo: tuple[tuple, object] | None = None
-        self._cliff_ghost_parts: dict[tuple, tuple[list, tuple | None]] = {}
+        self._cliff_ghost_parts: dict[tuple, tuple[object, tuple | None]] = {}
         # The hover's own such parts, and the look (style, elevation, colour) they were built for.
-        self._cliff_hover_parts: dict[tuple, tuple[list, tuple | None]] = {}
+        self._cliff_hover_parts: dict[tuple, tuple[object, tuple | None]] = {}
         self._cliff_hover_look: tuple | None = None
         # (scenario weakref, (unit_gen, width, height), cliffs, tile index): see _cliff_existing().
         self._cliff_existing_memo: tuple | None = None
@@ -785,6 +804,8 @@ class _ViewerMenusMixin:
         self.analysis_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.analysis_action.triggered.connect(self._show_analysis)
         tools_menu.addAction(self.analysis_action)
+        tools_menu.addSeparator()
+        script_menu.build(self, tools_menu)
 
         help_menu = menu_bar.addMenu("&Help")
         # GH #160: the guide, web links, the debug tools, then About last (the platform convention).
@@ -986,9 +1007,11 @@ class _ViewerMenusMixin:
             "file_new": self.new_map_action,
             "file_new_default": self.new_action,
             "file_open": self.open_action,
+            "file_browse_scenarios": self.browse_scenarios_action,
             "file_close": self.close_action,
             "file_save": self.save_action,
             "file_save_as": self.save_as_action,
+            "file_convert": self.convert_version_action,
             "file_recover_autosave": self.recover_autosave_action,
             "file_exit": self.exit_action,
             "edit_undo": self.undo_action,
@@ -1012,6 +1035,7 @@ class _ViewerMenusMixin:
             "map_disables": self.disables_action,
             "map_swap_players": self.swap_players_action,
             "analysis_run": self.analysis_action,
+            "script_open_folder": self.open_scripts_folder_action,
             "view_isometric": self.iso_action,
             "view_distance_ticks": self.distance_ticks_action,
             "view_zoom_native": self.zoom_native_action,
@@ -1070,6 +1094,7 @@ class _ViewerMenusMixin:
             "filter_show_obstacles": self.show_obstacles_action,
             "filter_show_invisible": self.show_invisible_action,
             "filter_show_garrisoned": self.show_garrisoned_action,
+            "filter_show_inactive": self.show_inactive_action,
             "filter_all_players": self.filter_all_players_action,
             "filter_no_players": self.filter_no_players_action,
             "filter_show_all": self.filter_show_all_action,

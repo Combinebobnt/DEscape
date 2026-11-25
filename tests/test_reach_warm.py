@@ -41,6 +41,9 @@ def _settled(*, anchor: str = "top-left", at=None, reach: bool = True, placehold
     vp = view.viewport().rect()
     points = {"top-left": QPoint(8, 8), "bottom-right": QPoint(vp.width() - 8, vp.height() - 8), "centre": vp.center()}
     _wheel_at(view, points[anchor])
+    # No lattice: the reach runs to the coarser stop, past the ring. The lattice's last notch (TASK-611) adds about
+    # the ring at this size, so the wiring here would go vacuous; test_margin_warm pins the lattice extent.
+    view._wheel_lattice = lambda: None
     _set_device_scale(window, scale)
     b = view._canvas_item.boundingRect()
     w = vp.width() / scale

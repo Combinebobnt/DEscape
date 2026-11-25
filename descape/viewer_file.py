@@ -31,6 +31,7 @@ from descape import (
     place_rotation,
     region_clipboard,
     scenario_format,
+    scenario_library,
     settings,
     terrain_units,
     ui_icons,
@@ -42,12 +43,15 @@ from descape.load_progress import SCENARIO_STAGES, scenario_caption
 from descape.new_map_dialog import NewMapChoice, NewMapDialog
 from descape.resize_dialog import ResizeDialog
 from descape.resize_preview import preview_source
+from descape.scenario_browser import ScenarioBrowserDialog
+from descape.scenario_convert import TARGET_VERSION, ConversionRefusedError, confirm_text, convert_scenario
 from descape.scenario_io import (
     BLANK_TEMPLATE_TILES,
     TEMPLATE_DIR,
     LoadedScenario,
     UnsupportedStructureVersion,
     is_in_game_profile,
+    is_workshop_subscribed,
     load_map_and_units,
     load_map_and_units_from_bytes,
     parse_triggers,
@@ -77,7 +81,7 @@ from descape.viewer_common import (
 )
 
 # What File > Open and a drop accept: DE's own, plus the pre-DE .scn/.scx (TASK-429, read-only).
-SCENARIO_SUFFIXES = (".aoe2scenario", ".scn", ".scx")
+SCENARIO_SUFFIXES = scenario_library.SUFFIXES
 OPEN_FILTER = (
     "All scenarios (*.aoe2scenario *.scn *.scx);;AoE2 Scenario (*.aoe2scenario);;Older AoE2 scenario (*.scn *.scx)"
 )
@@ -87,6 +91,21 @@ def dropped_scenario_paths(urls: Sequence[QUrl]) -> list[Path]:
     """GH #221: the local scenario files (SCENARIO_SUFFIXES) among dropped URLs, in drop order."""
     paths = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
     return [path for path in paths if path.suffix.lower() in SCENARIO_SUFFIXES]
+
+
+def _in_template_dir(path: Path) -> bool:
+    try:
+        return resolve_detecting_loops(path.parent) == TEMPLATE_DIR.resolve()
+    except (OSError, RuntimeError):  # a symlink loop: only a start folder, so keep it as given
+        return False
+
+
+def _in_subscribed(path: Path) -> bool:
+    """A resolve error counts as not subscribed: write_scenario()'s own guard has the last word."""
+    try:
+        return is_workshop_subscribed(path)
+    except (OSError, RuntimeError):
+        return False
 
 
 # Display-only sentinel assigned to LoadedScenario.path for a File > New map.
@@ -266,19 +285,41 @@ class _ViewerFileMixin:
 
     def _save_as_start_path(self) -> str:
         if self._untitled:
-            # Never the template's own directory (Path.home() is always
-            # writable and never TEMPLATE_DIR).
-            return str(Path.home() / UNTITLED_NAME)
+            # The game's scenario folder, else home: never TEMPLATE_DIR.
+            return str((scenario_library.default_folder() or Path.home()) / UNTITLED_NAME)
         src = self.scenario.path
+        if _in_subscribed(src):  # the game re-syncs that folder, so start where a save can land
+            return str((scenario_library.default_folder() or Path.home()) / src.name)
         # File > Open can reach the shipped template itself; without this,
         # the default would aim inside TEMPLATE_DIR, which write_scenario()
         # unconditionally refuses to write into.
-        try:
-            in_template = resolve_detecting_loops(src.parent) == TEMPLATE_DIR.resolve()
-        except (OSError, RuntimeError):  # a symlink loop: only a start folder, so keep it as given
-            in_template = False
-        parent = Path.home() if in_template else src.parent
+        parent = Path.home() if _in_template_dir(src) else src.parent
         return str(parent / src.name)
+
+    def _open_start_dir(self) -> str:
+        """The open document's own folder, else the game's scenario folder, else "" (Qt's default)."""
+        doc = None if self.scenario is None or self._untitled else self.scenario.path
+        if doc is not None and not _in_template_dir(doc) and doc.parent.is_dir():
+            return str(doc.parent)
+        folder = scenario_library.default_folder()
+        return "" if folder is None else str(folder)
+
+    def show_scenario_browser(self) -> None:
+        """File > Browse Game Scenarios…. Modeless and reused, like Recover from Autosave."""
+        if self._scenario_browser_dialog is None:
+            self._scenario_browser_dialog = ScenarioBrowserDialog(self, self._open_browsed_scenario)
+        else:
+            self._scenario_browser_dialog.refresh()
+        self._scenario_browser_dialog.show()
+        self._scenario_browser_dialog.raise_()
+        self._scenario_browser_dialog.activateWindow()
+
+    def _open_browsed_scenario(self, path: Path) -> None:
+        if not self._confirm_discard_changes():
+            return
+        if self._scenario_browser_dialog is not None:
+            self._scenario_browser_dialog.close()
+        self.load_scenario(Path(path))
 
     def show_recover_autosave(self) -> None:
         """File > Recover from Autosave…. Modeless and reused, like the
@@ -440,6 +481,10 @@ class _ViewerFileMixin:
             # case Save As already handles.
             self.save_as()
             return
+        if _in_subscribed(self.scenario.path):
+            self._log_status("In a subscribed mod: the game re-syncs that folder, so Save asks for a new name")
+            self.save_as()
+            return
         path = str(self.scenario.path)
         autosave_key = self._autosave_doc_key()
         try:
@@ -529,9 +574,7 @@ class _ViewerFileMixin:
     def open_file(self) -> None:
         if not self._confirm_discard_changes():
             return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open scenario", "", OPEN_FILTER
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Open scenario", self._open_start_dir(), OPEN_FILTER)
         if not path:
             return
         self.load_scenario(Path(path))
@@ -884,6 +927,35 @@ class _ViewerFileMixin:
             f"{result.units_deleted} objects deleted, triggers {plan.triggers}"
         )
 
+    def convert_version(self) -> None:
+        """File > Convert to Version (GH #307): one confirm, then _apply_resize()'s shape. The
+        document keeps its path and stays unsaved; the history is cleared, as a resize clears it."""
+        old = self.scenario
+        if old is None or self._busy:
+            return
+        self._commit_focused_field()  # a multi-line box ignores the menu, and the models are dropped below
+        name = None if self._untitled else old.path.name
+        text = confirm_text(name, old.scenario_version)
+        reply = QMessageBox.question(self, f"Convert to {TARGET_VERSION}", text, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            result = convert_scenario(old, **self._edit_model_kwargs())
+        except (ConversionRefusedError, WriteBlockedError, UnitEditsUnavailableError, TriggerEditsUnavailableError) as e:
+            self._log_status(f"Convert to {TARGET_VERSION} failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
+            QMessageBox.critical(self, f"Convert to {TARGET_VERSION} failed", str(e))
+            return
+        self.load_scenario(old.path, untitled=self._untitled, data=result.data, loaded=result.loaded)
+        if self.scenario is not result.loaded:
+            return  # the load itself failed and already reported why
+        self.edit_history.saved_at_cursor = None
+        self._update_edit_actions()
+        self._update_title()
+        self._log_status(
+            f"Converted {old.path.name} from {result.source_version} to {result.target_version} "
+            f"({result.units} objects, {result.conditions} conditions). Not saved yet."
+        )
+
     def _freeze_loaded_document(self) -> None:
         """One full collection, then gc.freeze(): the loaded document's ~500k
         tracked objects move to the permanent generation, so no later full
@@ -1177,7 +1249,10 @@ class _ViewerFileMixin:
             self._match_cycle = None
             # GH #172: a pending facing or variant is this document's, never the next one's.
             self._place_rotation = place_rotation.PlaceRotation()
+            self._place_roll_const = None
             self._place_ghost_memo = None
+            # TASK-291: each cliff hover part's GhostSprite holds the old document's scenario.
+            self._cliff_hover_parts = {}
             # TASK-327: the group grid holds the old document's units.
             self._reset_drag_rule_memos()
 

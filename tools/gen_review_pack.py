@@ -29,6 +29,8 @@ ground_borders (TASK-143's terrain blending), over two examples/ maps.
 particle_doodads (TASK-454's Smoke and Flames) needs only the install: a synthetic
 flat scene, written to an `objects/` directory so its paths stay neutral.
 native_tier (TASK-599's 96 px level) needs both, and writes to `zoom_levels/`.
+unit_state (units in a Unit State other than Alive, drawn faded) needs both, writes
+to `map_objects/`, and lives in review_pack_unit_state.py.
 
 Off-engine throughout (descape.render_iso.composite_rect_iso, no PyQt5), unlike
 gen_seam_eyeball.py's main sweep: composite_rect_iso() is byte-identically
@@ -58,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
+import review_pack_unit_state as unit_state_pack
 
 from descape import (
     asset_source,
@@ -726,21 +729,24 @@ _TEXTURE_VARIANTS: dict[tuple, np.ndarray] = {}
 
 
 def _texture_variant(kind: str, tile_px: int):
-    """A terrain_texture_at stand-in serving one derived texture at the size asked."""
+    """A terrain_texture_at stand-in serving one derived texture at the size
+    asked. "unfiltered" ignores `angled` (no prefilter is its point); "turned"
+    turns the variant asked for."""
 
-    def get(terrain_id: int, size: int):
+    def get(terrain_id: int, size: int, angled: bool = False):
         path = asset_source.get_terrain_texture_path(terrain_id)
         if path is None:
             return None
-        key = (kind, path, tile_px, size)
+        angled = angled and kind != "unfiltered"
+        key = (kind, path, tile_px, size, angled)
         if key not in _TEXTURE_VARIANTS:
-            _TEXTURE_VARIANTS[key] = _derive_texture(kind, path, terrain_id, tile_px, size)
+            _TEXTURE_VARIANTS[key] = _derive_texture(kind, path, terrain_id, tile_px, size, angled)
         return _TEXTURE_VARIANTS[key]
 
     return get
 
 
-def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int, size: int) -> np.ndarray:
+def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int, size: int, angled: bool = False) -> np.ndarray:
     from PIL import Image
 
     if kind == "unfiltered":
@@ -750,7 +756,7 @@ def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int, size: 
     else:
         # Every crop block whose (bx + by) is odd, turned 90 degrees in place:
         # a checkerboard of turned cells at this tile_px.
-        arr = np.array(_REAL_TEXTURE_AT(terrain_id, size))
+        arr = np.array(_REAL_TEXTURE_AT(terrain_id, size, angled=angled))
         n = arr.shape[0] // tile_px
         for by in range(n):
             for bx in range(n):
@@ -960,8 +966,9 @@ def _ground_texture_spec() -> rp.PackSpec:
 
 
 # Isolated-pixel speckle, as fine_grain's options are written: a pixel more
-# than SPECKLE_DELTA luma from its 3x3 median. Clean angled grass ~0.5%,
-# overhead ~0.06%, the unfiltered inject ~8-11% (measured 2026-10-07).
+# than SPECKLE_DELTA luma from its 3x3 median. Measured 2026-11-24 with the angled prefilter (TASK-691):
+# clean grass_angled / grass_angled_near / grass_hillside 0.04 / 0.53 / 0.04% (3.51% near before it),
+# overhead 0.16%, the unfiltered inject 10.01 / 8.28 / 7.46%.
 SPECKLE_DELTA = 30
 CLEAN_SPECKLE_MAX = 0.015
 UNFILTERED_SPECKLE_MIN = 0.05
@@ -1102,7 +1109,8 @@ def _check_ground_texture() -> None:
 
 # The field frame's gates (measured 2026-10-13, FARM_0 at 64 px): coherence
 # 0.60 clean and 0.27 under turned-cells, so pattern_direction has a direction
-# to lose. Clean vs one-cell-shift luma over the changed cell correlate -0.52;
+# to lose; 0.63 and 0.33 with the angled prefilter (2026-11-24, turned-cells
+# turns the filtered texture). Clean vs one-cell-shift luma over the changed cell correlate -0.52 (-0.62 since);
 # the grass whole-tile offset nobody saw on 2026-10-07 scored +0.09, and a
 # whole-tile offset on the furrows (in phase, 5 periods) +1.00.
 FIELD_COHERENCE_MIN = 0.45
@@ -1185,12 +1193,11 @@ SHRINK_STRAY_DELTA_MAX = 1
 
 def _straight_box(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
     """The straight-average inject: _box_resize_rgba()'s taps without premultiplying, so a
-    transparent px's colour (black) is averaged into its opaque neighbours'."""
+    transparent px's colour (black) is averaged into its opaque neighbours', either way on each
+    axis as _box_resize_rgba() resamples."""
     from descape import unit_sprites
 
     src_h, src_w = rgba.shape[:2]
-    if width > src_w or height > src_h:
-        return unit_sprites._resize_rgba(rgba, width, height)
     ys, wy = unit_sprites._area_taps(src_h, height)
     xs, wx = unit_sprites._area_taps(src_w, width)
     src = rgba.astype(np.float32)
@@ -1201,8 +1208,8 @@ def _straight_box(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
 
 @contextmanager
 def _shrink_inject(name: str | None):
-    """Smooth shrinking on (the clean run and straight-average) or off (nearest), with the scaled
-    cache dropped on both sides so no run reads another's sprites."""
+    """Smooth resampling on (the clean run and straight-average) or off (nearest), with the scaled
+    and icon caches dropped on both sides so no run reads another's sprites."""
     from descape import unit_sprites
 
     was, real = unit_sprites.smooth_shrink(), unit_sprites._box_resize_rgba
@@ -1210,6 +1217,7 @@ def _shrink_inject(name: str | None):
     if name == "straight-average":
         unit_sprites._box_resize_rgba = _straight_box
     unit_sprites._scaled_cache.clear()
+    unit_sprites._icon_cache.clear()
     unit_sprites.clear_slice_cache()
     try:
         yield
@@ -1217,16 +1225,18 @@ def _shrink_inject(name: str | None):
         unit_sprites._box_resize_rgba = real
         unit_sprites.set_smooth_shrink(was)
         unit_sprites._scaled_cache.clear()
+        unit_sprites._icon_cache.clear()
         unit_sprites.clear_slice_cache()
 
 
-def _shrink_lineup(frame_id: str) -> tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]:
+def _shrink_lineup(frame_id: str, frames: dict | None = None) -> tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]:
     """(frame, figures): the frame's group left to right, hotspots on one baseline, each piece
     painted onto the grey ground; figures are (rgba, x0, y0), each figure's own pieces flattened
-    by source-over at its place in the frame, for the --check measurements."""
+    by source-over at its place in the frame, for the --check measurements. `frames` is the
+    pack's frame table (default sprite_shrink's)."""
     from descape import unit_sprites
 
-    group, half_w = _SHRINK_FRAMES[frame_id]
+    group, half_w = (frames or _SHRINK_FRAMES)[frame_id]
     placed = []
     for const, rotation in _SHRINK_GROUPS[group]:
         pieces = unit_sprites.sprite_pieces_for(const, rotation, _SHRINK_TEAM, half_w)
@@ -1485,6 +1495,289 @@ def _check_sprite_shrink() -> None:
         f"touches the 1x frames; nearest breaks the ink into more components on every shrunk frame; straight-average "
         f"keeps the components, puts light edge px below the ground where the clean render puts none, moves nothing "
         f"else, and stays under nearest's largest delta"
+    )
+
+
+# -------------------------------------------------------- sprite_grow pack
+#
+# Graphics Quality Default and above area-resamples sprites enlarged by a non-whole factor (the 128 px
+# level's 4/3, Flat icons), where the nearest gather doubles every third row and column. Same groups,
+# ground and injects as sprite_shrink; the 2x frames take the gather either way, so no inject may move them.
+
+# frame id -> (group, half_w): 4/3 (the 128 px level) and 2x (the 192 px level). Icons take a tile_px
+# instead: Flat's 64 px level fits these figures at 1.1-1.5x, so the gather doubles a line every few, as at
+# 4/3 (at 128 px they reach 2.2-3x, where its blocks of 3 and 4 px read as nearly even).
+_GROW_FRAMES = {
+    "figures_1": ("figures", 64), "building_1": ("building", 64),
+    "figures_2": ("figures", 96), "building_2": ("building", 96),
+    "figures_3": ("icons", 64),
+}
+_GROW_SPECIFICITY = ("figures_2", "building_2")
+_GROW_ENLARGED = ("figures_1", "building_1", "figures_3")
+# building_2 is 776 px wide, so no whole factor lands it in the band: its middle columns only.
+_GROW_CROP_W = 740
+# The unevenness measure (_grow_repeats()): the fraction of adjacent ink row and column pairs that are
+# byte-identical. The gather at 4/3 repeats one line in four; an area resample blends every seam.
+GROW_NEAREST_REPEATS_MIN = 0.15
+GROW_AREA_REPEATS_MAX = 0.05
+
+
+def _grow_icon_lineup() -> tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]:
+    """The figures group's Flat icons in one-tile footprints of the 64 px level, bottoms on one
+    baseline, as _shrink_lineup() lays out sprites."""
+    from descape import unit_sprites
+
+    tile_px = _GROW_FRAMES["figures_3"][1]
+    icons = []
+    for const, rotation in _SHRINK_GROUPS["figures"]:
+        icon = unit_sprites.icon_for(const, rotation, _SHRINK_TEAM, tile_px, tile_px)
+        if icon is None:
+            raise SystemExit(f"sprite_grow: const {const} draws no icon on this install")
+        icons.append(icon.rgba)
+    height = max(rgba.shape[0] for rgba in icons) + 2 * _SHRINK_PAD
+    width = sum(rgba.shape[1] for rgba in icons) + _SHRINK_PAD * (len(icons) + 1)
+    frame = np.full((height, width, 3), _SHRINK_GROUND, dtype=np.uint8)
+    figures, x = [], _SHRINK_PAD
+    for rgba in icons:
+        y = height - _SHRINK_PAD - rgba.shape[0]
+        render_paint._clipped_paint_rgba(frame, y, x, rgba)
+        figures.append((rgba, x, y))
+        x += rgba.shape[1] + _SHRINK_PAD
+    return frame, figures
+
+
+def _grow_lineup(frame_id: str) -> tuple[np.ndarray, list[tuple[np.ndarray, int, int]]]:
+    if _GROW_FRAMES[frame_id][0] == "icons":
+        return _grow_icon_lineup()
+    frame, figures = _shrink_lineup(frame_id, _GROW_FRAMES)
+    if frame.shape[1] > _GROW_CROP_W:
+        x0 = (frame.shape[1] - _GROW_CROP_W) // 2
+        frame = frame[:, x0:x0 + _GROW_CROP_W]
+        figures = [(rgba, fx - x0, fy) for rgba, fx, fy in figures]
+    return frame, figures
+
+
+def _grow_frame_images(inject: str | None) -> dict[str, np.ndarray]:
+    with _shrink_inject(inject):
+        return {fid: _grow_lineup(fid)[0] for fid in _GROW_FRAMES}
+
+
+def _sprite_grow_spec() -> rp.PackSpec:
+    """Sprites enlarged by a non-whole factor: thin parts' pixel sizes and edge tone at the 128 px
+    level and on Flat's 64 px icons, and the 2x frames where no resample changes a pixel (specificity)."""
+    captions = {
+        "figures": "Three figures standing on a plain grey background, left to right: an archer, a spearman and a "
+        "farmer holding a hoe.",
+        "building": "A market building with stalls, a bell tower and a rope, on a plain grey background.",
+        "icons": "The same three figures, left to right, each fitted into a square on a plain grey background.",
+    }
+    cropped = "The middle part of a market building with stalls, a bell tower and a rope, on a plain grey background."
+    frames = tuple(
+        rp.Frame(fid, f"{fid}.png", "raw", caption=cropped if fid == "building_2" else captions[group])
+        for fid, (group, _hw) in _GROW_FRAMES.items()
+    )
+    small, large = ", ".join(_GROW_ENLARGED), " and ".join(_GROW_SPECIFICITY)
+    sizes = (
+        f"Frames {small} show three figures, a market building, and the figures again fitted into squares; frames "
+        f"{large} show the same figures and building drawn at another size, for comparison."
+    )
+    checks = (
+        rp.Check(
+            id="thin_parts",
+            question=(
+                f"{sizes} First, in your own words, describe the thinnest straight parts in frames {small}, such as "
+                "the bow and its string, the spear's shaft, the hoe's handle, and the market's rope, poles, railings "
+                "and beams, and how each one looks along its length, including the sizes of the square pixel blocks "
+                "or steps it is built from.\n\n"
+                "Then the closed question. In those frames, is any such thin part drawn unevenly: built from pixel "
+                "blocks or steps of two clearly different sizes, some about twice as long or as thick as the rest, so "
+                "that it reads as irregular dashes or a lumpy line, where the comparison frames show the same part "
+                "built from blocks of one size? NOT uneven: (1) a part whose blocks are all about one size but whose "
+                "borders between blocks look soft or blended; (2) a part passing behind another part; (3) a part "
+                "that changes in thickness or colour gradually along its length, as it does in the comparison "
+                "frames; (4) gaps or separate dashes that the comparison frames show too, such as the short streaks "
+                "beside the archer or the gaps between separate stalls, crates or barrels.\n\n"
+                "Answer UNEVEN if at least one thin part is drawn unevenly, EVEN if every one is even."
+            ),
+            frames=(*_GROW_ENLARGED, *_GROW_SPECIFICITY),
+            answers=("UNEVEN", "EVEN", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="edge_tone",
+            question=(
+                f"{sizes} First, in your own words, describe the outer edges of the figures and the building in "
+                f"frames {small}, where they meet the grey background, and the colour of their thin parts (the spear "
+                "shaft, the hoe handle, the bow, the market's rope and poles), each compared with how the same edge "
+                "or part looks in the comparison frames.\n\n"
+                f"Then the closed question. In frames {small}, is there a dark fringe that the comparison frames do "
+                "not have: pixels along the edge of a light-coloured part, or along a light-coloured thin part, that "
+                "are darker than both that part's own colour in the comparison frames and the grey background? NOT a "
+                "dark fringe: (1) a dark outline or dark colour that the same part also has in the comparison "
+                "frames; (2) an edge that looks softer, paler or greyer than in the comparison frames, blending "
+                "toward the grey; (3) blocks of different sizes along a part.\n\n"
+                "Answer DARK-FRINGE if you see such a fringe, CLEAN if you do not."
+            ),
+            frames=(*_GROW_ENLARGED, *_GROW_SPECIFICITY),
+            answers=("DARK-FRINGE", "CLEAN", "CANNOT-TELL"),
+        ),
+        rp.Check(
+            id="large_figures",
+            question=(
+                f"Frames {large} show three figures and part of a market building. Is any thin straight part in "
+                "them, such as the bow, the spear's shaft, the hoe's handle, or the market's rope, poles and "
+                "railings, built from square pixel blocks or steps of two clearly different sizes, some about twice "
+                "as long or as thick as the rest? Not counted: a part passing behind another part, and a part that "
+                "changes in thickness or colour gradually along its length.\n\n"
+                "Answer PRESENT if you see such a part, NONE if you do not."
+            ),
+            frames=_GROW_SPECIFICITY,
+            answers=("PRESENT", "NONE", "CANNOT-TELL"),
+        ),
+    )
+    return rp.PackSpec(
+        id="sprite_grow",
+        title="Figure detail review",
+        frames=frames,
+        checks=checks,
+        preamble=(
+            "These are offscreen renders from a map editor for an isometric strategy game: game figures drawn over a "
+            "flat grey ground. Each frame is enlarged by a whole-number factor with no smoothing, so one pixel of the "
+            "render appears as a square block of pixels. Judge only what you can actually see."
+        ),
+        injects=tuple(SHRINK_INJECTS),
+    )
+
+
+def _grow_repeats(figures: list[tuple[np.ndarray, int, int]]) -> float:
+    """Of the adjacent row and column pairs holding ink, over every figure, the fraction that are
+    byte-identical: an even resample blends each seam, the 4/3 gather repeats one line in four."""
+    same = total = 0
+    for rgba, _x0, _y0 in figures:
+        for arr in (rgba, rgba.transpose(1, 0, 2)):
+            ink = (arr[..., 3] > 0).any(axis=1)
+            pairs = ink[1:] & ink[:-1]
+            equal = (arr[1:] == arr[:-1]).all(axis=(1, 2))
+            same += int(np.count_nonzero(equal & pairs))
+            total += int(np.count_nonzero(pairs))
+    return same / total if total else 0.0
+
+
+def _check_sprite_grow() -> None:
+    """--check for sprite_grow: spec coupling and leaks, frame band, each inject changing every
+    enlarged frame and leaving both 2x frames byte-identical, straight-average moving nothing off
+    the edge px beyond float rounding and staying under nearest's largest delta; then the symptom
+    each check rests on, per enlarged frame. thin_parts: nearest repeats at least
+    GROW_NEAREST_REPEATS_MIN of the ink lines, the clean render and straight-average at most
+    GROW_AREA_REPEATS_MAX. edge_tone: the clean render puts no light edge px below the ground,
+    straight-average at least SHRINK_STRAIGHT_FRINGE_MIN where a frame has enough of them."""
+    reason = _shrink_prerequisites()
+    if reason:
+        raise SystemExit(f"sprite_grow: {reason}")
+    failures: list[str] = []
+    spec = _sprite_grow_spec()
+    try:
+        rp.validate_spec(spec)
+    except rp.PackError as exc:
+        failures.append(f"spec: {exc}")
+    if leaked := rp.leaks(spec):
+        failures.append(f"leaks: {leaked}")
+    if any(word in _PACK_DIRS["sprite_grow"] for word in ("grow", "enlarg", "upscal")):
+        failures.append("the pack directory names its subject")
+
+    lineups = {}
+    for name in (None, *SHRINK_INJECTS):
+        with _shrink_inject(name):
+            lineups[name] = {fid: _grow_lineup(fid) for fid in _GROW_FRAMES}
+    clean = {fid: lineup[0] for fid, lineup in lineups[None].items()}
+    for frame in spec.frames:
+        try:
+            scaled, _factor = rp.frame_to_band(clean[frame.id])
+            rp.validate_frame_size(scaled.shape[1], scaled.shape[0], frame.id)
+        except rp.PackError as exc:
+            failures.append(str(exc))
+
+    edges, lights = {}, {}
+    for fid in _GROW_ENLARGED:
+        frame, figures = lineups[None][fid]
+        edge = np.zeros(frame.shape[:2], dtype=bool)
+        light = np.zeros(frame.shape[:2], dtype=bool)
+        for rgba, x0, y0 in figures:
+            # Clipped to the frame, in case a crop ever reaches an enlarged frame.
+            ys = slice(max(0, y0), min(frame.shape[0], y0 + rgba.shape[0]))
+            xs = slice(max(0, x0), min(frame.shape[1], x0 + rgba.shape[1]))
+            part = rgba[ys.start - y0:ys.stop - y0, xs.start - x0:xs.stop - x0]
+            partial = (part[..., 3] > 0) & (part[..., 3] < 255)
+            edge[ys, xs] |= partial
+            light[ys, xs] |= partial & (_shrink_luma(part[..., :3]) >= _SHRINK_GROUND + SHRINK_LIGHT)
+        edges[fid], lights[fid] = edge, light
+
+    reach: dict[str, dict[str, tuple[int, int]]] = {}
+    for name, bound in SHRINK_INJECTS.items():
+        touched = {}
+        for fid in _GROW_FRAMES:
+            injected = lineups[name][fid][0]
+            mask = rp.changed_pixels(clean[fid], injected)
+            if mask.any():
+                touched[fid] = (int(np.count_nonzero(mask)), rp.largest_component_px(mask))
+            if bound is not None and fid in edges:
+                delta = np.abs(clean[fid].astype(int) - injected.astype(int))[~edges[fid]]
+                if delta.size and delta.max() > SHRINK_STRAY_DELTA_MAX:
+                    failures.append(f"inject {name} on {fid}: moves a px off the edge px by {delta.max()}")
+        if stray := [fid for fid in _GROW_SPECIFICITY if fid in touched]:
+            failures.append(f"inject {name} changed the 2x frames {', '.join(stray)}, which must stay byte-identical")
+        if missed := [fid for fid in _GROW_ENLARGED if fid not in touched]:
+            failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
+        reach[name] = touched
+        shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
+        print(f"reach: {name} -> {shown or 'nothing'}")
+    coarse = reach[SHRINK_COARSE_INJECT]
+    for name, bound in SHRINK_INJECTS.items():
+        if bound is None:
+            continue
+        for fid, (_px, comp) in sorted(reach[name].items()):
+            if fid in coarse and comp >= coarse[fid][1]:
+                failures.append(
+                    f"inject {name} on {fid}: largest delta {comp} px is not under the coarse inject's "
+                    f"{coarse[fid][1]} px there, so the two no longer differ in size"
+                )
+
+    gated = 0
+    for fid in _GROW_ENLARGED:
+        repeats = {name: _grow_repeats(lineups[name][fid][1]) for name in (None, *SHRINK_INJECTS)}
+        fringe = {name: _shrink_fringe(lineups[name][fid][0], lights[fid]) for name in (None, *SHRINK_INJECTS)}
+        print(
+            f"{fid}: repeated ink lines clean {repeats[None]:.3f} / nearest {repeats['nearest']:.3f} / "
+            f"straight-average {repeats['straight-average']:.3f}; light edge px {int(lights[fid].sum())}, below the "
+            f"ground: clean {fringe[None]:.2f} / nearest {fringe['nearest']:.2f} / "
+            f"straight-average {fringe['straight-average']:.2f}"
+        )
+        if repeats["nearest"] < GROW_NEAREST_REPEATS_MIN:
+            failures.append(f"{fid}: nearest repeats {repeats['nearest']:.3f} of the ink lines, under {GROW_NEAREST_REPEATS_MIN}")
+        failures.extend(
+            f"{fid}: {name or 'clean'} repeats {repeats[name]:.3f} of the ink lines, over {GROW_AREA_REPEATS_MAX}"
+            for name in (None, "straight-average") if repeats[name] > GROW_AREA_REPEATS_MAX
+        )
+        if fringe[None]:
+            failures.append(f"{fid}: the clean render puts {fringe[None]:.2f} of the light edge px below the ground")
+        if lights[fid].sum() >= SHRINK_LIGHT_MIN_PX:
+            gated += 1
+            if fringe["straight-average"] < SHRINK_STRAIGHT_FRINGE_MIN:
+                failures.append(
+                    f"{fid}: straight-average puts {fringe['straight-average']:.2f} of the light edge px below the "
+                    f"ground, under {SHRINK_STRAIGHT_FRINGE_MIN}"
+                )
+    if not gated:
+        failures.append(f"no enlarged frame has {SHRINK_LIGHT_MIN_PX} light edge px to gate edge_tone on")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}")
+        raise SystemExit(f"{len(failures)} check(s) failed")
+    print(
+        f"OK: sprite_grow frames couple to its checks, leak nothing and land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} "
+        f"px; every inject changes every enlarged frame and leaves the 2x frames byte-identical; nearest repeats ink "
+        f"lines where the clean render and straight-average blend them; straight-average puts light edge px below the "
+        f"ground where the clean render puts none, moves nothing else, and stays under nearest's largest delta"
     )
 
 
@@ -2426,8 +2719,8 @@ _NATIVE_SCENES = {
     "field": ("plateau", "stepped", (131, 101), False, FIELD),
     "field_slope": ("plateau", "sloped", (219, 152), False, FIELD),
 }
-# frame id -> (scene, level tile_px). field_a is the specificity frame: 64 divides the texture, so
-# no crop reads a wrap copy there, and no inject touches a 64 or 128 level.
+# frame id -> (scene, level tile_px). field_a is the specificity frame: column-shift alters only the
+# texture served at the 96 level's size, and no inject touches a 64 or 128 level.
 _NATIVE_FRAMES = {
     "village_a": ("village", 64), "village_b": ("village", 96), "village_c": ("village", 128),
     "plateau_a": ("plateau", 64), "plateau_b": ("plateau", 96), "plateau_c": ("plateau", 128),
@@ -2436,24 +2729,38 @@ _NATIVE_FRAMES = {
 }
 _NATIVE_SPECIFICITY = "field_a"
 _NATIVE_96 = tuple(fid for fid, (_scene, px) in _NATIVE_FRAMES.items() if px == ig.NATIVE_TILE_PIXELS)
-# old-basis is the coarse inject: ground_texture's, at the 96 level only. wrap-seam is the localized
-# one: 6.5% and 5.7% of its frames, largest pieces 18684 and 11501 px (2026-11-04). hotspot-scale is
+# old-basis is the coarse inject: ground_texture's, at the 96 level only. column-shift is the
+# localized one: FIELD's 96 level texture with texture columns [k*96, (k+1)*96) rolled half a furrow
+# along axis 0, across the furrows, so every map column with x % 10 == k draws a strip of cells whose furrows
+# meet both neighbours out of step. k = _NATIVE_SHIFT_COLUMN, picked by a probe over 0..9
+# (2026-11-23; field_b | field_slope_b changed fraction, largest piece, px on a shading change,
+# masked correlation clean vs injected):
+#   k=0 10.7% 33257 0 -0.39 | 10.7% 33257 6632 -0.39    k=5  9.6% 19584 0 -0.39 |  9.6% 21741  405 +0.04
+#   k=1 11.1% 34559 0 -0.37 | 10.6% 32825 7820 +0.07    k=6  9.6% 14976 3 -0.38 | 10.2% 28359 7357 -0.07
+#   k=2 10.7% 33258 0 -0.38 |  9.3% 27640 6898 -0.01    k=7  9.6% 19579 3 -0.38 |  9.9% 30518 9314 +0.06
+#   k=3  9.7% 28791 3 -0.37 |  8.9% 19715 5534 +0.14    k=8  9.6% 24185 3 -0.37 | 10.7% 33256 3000 -0.37
+#   k=4  9.6% 24191 3 -0.40 |  9.1% 15116 1195 +0.07    k=9  9.7% 28796 0 -0.40 | 11.1% 34555    0 -0.40
+# Only k=9 clears both frames' shading, so no row limit (_NATIVE_SHIFT_ROWS, (r0, r1) in 96 texel
+# rows) is needed; old-basis's largest piece there is 310948 px. hotspot-scale is
 # objects_on_ground's matching inject, unbounded: buildings fill most of plateau_b. Sprite detail at
 # 96 is pixel identity with the native frame, countable, so it is asserted (test_x2_sprites.py, the
 # live crop), not asked: round 1's SHARP/SOFT question missed a bilinear resample at 2x.
 NATIVE_INJECTS = {
     "old-basis": None,
-    "wrap-seam": rp.LocalizedBound(max_changed_fraction=0.15, max_component_px=24000),
+    "column-shift": rp.LocalizedBound(max_changed_fraction=0.22, max_component_px=45000),
     "hotspot-scale": None,
 }
 NATIVE_COARSE_INJECT = "old-basis"
+_NATIVE_SHIFT_COLUMN = 9
+_NATIVE_SHIFT_ROWS: tuple[int, int] | None = None
 _NATIVE_REACH = {
     "old-basis": _NATIVE_96,
-    "wrap-seam": ("field_b", "field_slope_b"),
+    "column-shift": ("field_b", "field_slope_b"),
     "hotspot-scale": ("village_b", "plateau_b"),
 }
 # The furrow frames' luma step across 28 px (_shading_step) at which ground reads as a shading change.
-# Measured 2026-11-04: level ground at most 4.4, wrap-seam's strips 6.5, the slope's bends up to 38.
+# Measured 2026-11-23: level ground at most 12.8 (15 px over 12, all in field_b's row 14), column-shift's
+# strips 11.6 and 11.3, the slope's bends up to 42.8.
 NATIVE_SHADING_STEP = 12
 
 _NATIVE_SCENARIOS: dict[tuple, object] = {}
@@ -2524,31 +2831,29 @@ class _NativeInject:
 
             self.saved.append((ig, "_inverse_sample", real))
             ig._inverse_sample = inverse_sample
-        elif self.name == "wrap-seam":
-            real = asset_source.crop_source
-            field = _field_texture(native)
+        elif self.name == "column-shift":
+            real = asset_source.terrain_texture_at
+            size = asset_source.terrain_texture_size(native)
             shift = _half_period(native)
+            cols = slice(_NATIVE_SHIFT_COLUMN * native, (_NATIVE_SHIFT_COLUMN + 1) * native)
+            rows = slice(None) if _NATIVE_SHIFT_ROWS is None else slice(*(r * native for r in _NATIVE_SHIFT_ROWS))
             memo: dict[int, tuple] = {}
 
-            def crop_source(arr, tile_px):
-                # FIELD's wrap copy past column 512 misregistered by half a furrow across the furrows.
-                out = real(arr, tile_px)
-                if out is arr or arr.shape != field.shape:
-                    return out
-                hit = memo.get(id(arr))
-                if hit is None or hit[0] is not arr:
-                    bad = None
-                    if np.array_equal(arr, field):
-                        size, pad = arr.shape[0], out.shape[1] - arr.shape[1]
-                        rolled = np.roll(arr, -shift, axis=0)[:, :pad]
-                        bad = out.copy()
-                        bad[:, size:] = np.pad(rolled, ((0, pad), (0, 0), (0, 0)), mode="wrap")
-                        bad.flags.writeable = False
-                    hit = memo[id(arr)] = (arr, bad)
-                return out if hit[1] is None else hit[1]
+            def terrain_texture_at(terrain_id, tex_size, *args, **kwargs):
+                # FIELD's 96 level texture with one band of columns half a furrow out of step.
+                tex = real(terrain_id, tex_size, *args, **kwargs)
+                if tex is None or terrain_id != FIELD or tex_size != size:
+                    return tex
+                hit = memo.get(id(tex))
+                if hit is None or hit[0] is not tex:
+                    bad = np.array(tex)
+                    bad[rows, cols] = np.roll(tex, -shift, axis=0)[rows, cols]
+                    bad.flags.writeable = False
+                    hit = memo[id(tex)] = (tex, bad)
+                return hit[1]
 
-            self.saved.append((asset_source, "crop_source", real))
-            asset_source.crop_source = crop_source
+            self.saved.append((asset_source, "terrain_texture_at", real))
+            asset_source.terrain_texture_at = terrain_texture_at
         elif self.name == "hotspot-scale":
             import dataclasses
 
@@ -2610,7 +2915,7 @@ def _native_frame_images(inject: str | None, chunk_px: int = SLOPED_CHUNK_PX) ->
 
 def _native_tier_spec() -> rp.PackSpec:
     """TASK-599's native tier: objects drawn at 96 px a tile beside the same tiles at 64 and 128, and
-    furrowed ground at 96, where a crop straddles the texture's wrap. The reviewer is told only that
+    furrowed ground at 96, where column-shift breaks a strip of cells. The reviewer is told only that
     each scene appears at several zoom levels."""
     places = {
         "village": "Houses and other buildings, people and riders on level ground",
@@ -2719,7 +3024,7 @@ def _shading_step(img: np.ndarray, reach: int = 14, box: int = 6) -> np.ndarray:
 def _check_native_tier() -> None:
     """--check for native_tier: spec coupling, frame band, the clean frames byte-identical at the
     app's chunk size, each object frame's level built sprites, each inject reaching exactly its own
-    frames (printed) and never a 64 or 128 one, wrap-seam bounded, under old-basis's largest delta
+    frames (printed) and never a 64 or 128 one, column-shift bounded, under old-basis's largest delta
     and clear of every shading change, and hotspot-scale moving buildings by at least half a 96
     tile's height."""
     from descape import unit_sprites
@@ -2802,17 +3107,15 @@ def _check_native_tier() -> None:
                     f"inject {name} on {frame_id}: largest delta {comp} px is not under the coarse "
                     f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
                 )
-    # ground_continuity excludes changes of shading by name, so wrap-seam must break evenly lit ground.
-    for frame_id in _NATIVE_REACH["wrap-seam"]:
+    # ground_continuity excludes changes of shading by name, so column-shift must break evenly lit ground.
+    for frame_id in _NATIVE_REACH["column-shift"]:
         step = _shading_step(clean[frame_id])
-        mask = rp.changed_pixels(clean[frame_id], injected_by_name["wrap-seam"][frame_id])
+        mask = rp.changed_pixels(clean[frame_id], injected_by_name["column-shift"][frame_id])
         shaded = step > NATIVE_SHADING_STEP
-        print(
-            f"{frame_id}: shading changes on {shaded.mean():.1%}, max step {step.max():.0f}; "
-            f"wrap-seam's max step {step[mask].max():.0f}"
-        )
+        on_strip = f"column-shift's max step {step[mask].max():.0f}" if mask.any() else "column-shift changed nothing"
+        print(f"{frame_id}: shading changes on {shaded.mean():.1%}, max step {step.max():.0f}; {on_strip}")
         if (mask & shaded).any():
-            failures.append(f"{frame_id}: wrap-seam reaches a shading change, which ground_continuity excludes")
+            failures.append(f"{frame_id}: column-shift reaches a shading change, which ground_continuity excludes")
     if not (_shading_step(clean["field_slope_b"]) > NATIVE_SHADING_STEP).any():
         failures.append("field_slope_b: no shading change left for ground_continuity's exclusion to name")
 
@@ -2823,7 +3126,7 @@ def _check_native_tier() -> None:
     print(
         f"OK: native_tier frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and match "
         f"chunk_px {DEFAULT_CHUNK_PX}; all {len(NATIVE_INJECTS)} injects bite exactly their own 96 px frames, "
-        f"wrap-seam bounded, under {NATIVE_COARSE_INJECT} and on evenly lit ground, hotspot-scale moving buildings "
+        f"column-shift bounded, under {NATIVE_COARSE_INJECT} and on evenly lit ground, hotspot-scale moving buildings "
         f"up to {lift} px, and none reaches a 64 or 128 px frame or {_NATIVE_SPECIFICITY}"
     )
 
@@ -4251,6 +4554,7 @@ def _check_particle_doodads() -> None:
 
 PACKS = {
     "sprite_shrink": _sprite_shrink_spec,
+    "sprite_grow": _sprite_grow_spec,
     "shadow_band": _shadow_band_spec,
     "ground_texture": _ground_texture_spec,
     "sloped_mip": _sloped_mip_spec,
@@ -4259,9 +4563,15 @@ PACKS = {
     "garrison_flags": _garrison_flags_spec,
     "particle_doodads": _particle_doodads_spec,
     "native_tier": _native_tier_spec,
+    "unit_state": unit_state_pack.spec,
 }
 # The directory a pack's runs land in, where its id alone would name the subject in REVIEW.md's paths.
-_PACK_DIRS = {"particle_doodads": "objects", "native_tier": "zoom_levels"}
+_PACK_DIRS = {
+    "sprite_grow": "figure_detail",
+    "particle_doodads": "objects",
+    "native_tier": "zoom_levels",
+    "unit_state": "map_objects",
+}
 
 
 # ---------------------------------------------------------------- rendering
@@ -4361,18 +4671,21 @@ def _run_token(pack_id: str, inject: str | None, replica: int = 0) -> str:
 
 def _pack_injects(pack_id: str) -> dict:
     return {
-        "sprite_shrink": SHRINK_INJECTS,
+        "sprite_shrink": SHRINK_INJECTS, "sprite_grow": SHRINK_INJECTS,
         "ground_texture": GROUND_INJECTS, "sloped_mip": SLOPED_INJECTS, "sloped_fine": FINE_INJECTS,
         "ground_borders": BORDER_INJECTS,
         "garrison_flags": GARRISON_INJECTS,
         "particle_doodads": PARTICLE_INJECTS,
         "native_tier": NATIVE_INJECTS,
+        "unit_state": unit_state_pack.INJECTS,
     }.get(pack_id, INJECTS)
 
 
 def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
     if pack_id == "sprite_shrink":
         return _shrink_frame_images(inject)
+    if pack_id == "sprite_grow":
+        return _grow_frame_images(inject)
     if pack_id == "ground_texture":
         return _ground_frame_images(inject)
     if pack_id == "sloped_mip":
@@ -4387,12 +4700,17 @@ def _pack_images(pack_id: str, inject: str | None) -> dict[str, np.ndarray]:
         return _particle_frame_images(inject)
     if pack_id == "native_tier":
         return _native_frame_images(inject)
+    if pack_id == "unit_state":
+        return unit_state_pack.frame_images(inject)
     return _frame_images(inject)
 
 
 def _frame_tile_px(pack_id: str, frame_id: str) -> int:
     if pack_id == "sprite_shrink":
         return 2 * _SHRINK_FRAMES[frame_id]
+    if pack_id == "sprite_grow":
+        group, size = _GROW_FRAMES[frame_id]
+        return size if group == "icons" else 2 * size
     if pack_id == "ground_texture":
         return _GROUND_FRAMES[frame_id][1]
     if pack_id in ("sloped_mip", "sloped_fine"):
@@ -4406,6 +4724,8 @@ def _frame_tile_px(pack_id: str, frame_id: str) -> int:
         return _PARTICLE_TILE_PX
     if pack_id == "native_tier":
         return _NATIVE_FRAMES[frame_id][1]
+    if pack_id == "unit_state":
+        return unit_state_pack.frame_tile_px(frame_id)
     return TILE_PX
 
 
@@ -4415,8 +4735,8 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
     injects = _pack_injects(pack_id)
     if inject is not None and inject not in injects:
         raise SystemExit(f"unknown inject {inject!r} for {pack_id}; choose from {', '.join(injects)}")
-    if pack_id == "sprite_shrink" and (reason := _shrink_prerequisites()):
-        raise SystemExit(f"sprite_shrink: {reason}")
+    if pack_id in ("sprite_shrink", "sprite_grow") and (reason := _shrink_prerequisites()):
+        raise SystemExit(f"{pack_id}: {reason}")
     if pack_id == "ground_texture" and (reason := _ground_prerequisites()):
         raise SystemExit(f"ground_texture: {reason}")
     if pack_id in ("sloped_mip", "sloped_fine") and (reason := _sloped_prerequisites()):
@@ -4429,6 +4749,8 @@ def generate(out_dir: Path, pack_id: str, inject: str | None, replica: int = 0) 
         raise SystemExit(f"particle_doodads: {reason}")
     if pack_id == "native_tier" and (reason := _native_prerequisites()):
         raise SystemExit(f"native_tier: {reason}")
+    if pack_id == "unit_state" and (reason := unit_state_pack.prerequisites()):
+        raise SystemExit(f"unit_state: {reason}")
 
     pack_name = _PACK_DIRS.get(pack_id, pack_id)
     pack_dir = out_dir / pack_name / _run_token(pack_id, inject, replica)
@@ -4489,6 +4811,9 @@ def check(pack_id: str = "shadow_band") -> None:
     if pack_id == "sprite_shrink":
         _check_sprite_shrink()
         return
+    if pack_id == "sprite_grow":
+        _check_sprite_grow()
+        return
     if pack_id == "ground_texture":
         _check_ground_texture()
     elif pack_id == "sloped_mip":
@@ -4503,6 +4828,8 @@ def check(pack_id: str = "shadow_band") -> None:
         _check_particle_doodads()
     elif pack_id == "native_tier":
         _check_native_tier()
+    elif pack_id == "unit_state":
+        unit_state_pack.check()
     else:
         _check_shadow_band()
 
@@ -4608,7 +4935,7 @@ def main() -> None:
         "--inject",
         choices=sorted({
             *INJECTS, *GROUND_INJECTS, *SLOPED_INJECTS, *FINE_INJECTS, *BORDER_INJECTS, *SHRINK_INJECTS,
-            *GARRISON_INJECTS, *PARTICLE_INJECTS, *NATIVE_INJECTS,
+            *GARRISON_INJECTS, *PARTICLE_INJECTS, *NATIVE_INJECTS, *unit_state_pack.INJECTS,
         }),
         help="Render the pack with one known defect applied",
     )

@@ -65,7 +65,7 @@ _GROUP_TEXT = {
     ),
     GROUP_OBJECTS: (
         "Objects",
-        "Click units on the map to add or remove them; Esc to finish",
+        "Click units on the map to add or remove them, or drag a box to add them; Esc to finish",
         "Centre the map between the selected objects",
         "Clear the selected objects",
     ),
@@ -156,7 +156,7 @@ class _TriggerPanelFieldsMixin:
         button.setCheckable(True)
         button.setChecked(target == self._armed_pick)
         button.setToolTip(
-            "Click units on the map to add or remove them; Esc to finish"
+            "Click units on the map to add or remove them, or drag a box to add them; Esc to finish"
             if target[4]
             else "Click a unit on the map to set this field; Esc to cancel"
         )
@@ -345,17 +345,36 @@ class _TriggerPanelFieldsMixin:
         row = self._unit_ref_rows.get(target[3])
         if row is None or not self._editable or not self._pick_target_is_current(target):
             return False
-        spec, refs, editor, refresh = row
         if not target[4]:
+            _spec, _refs, editor, _refresh = row
             editor.setValue(ref_id)
             return False
         current = list(self.unit_reference_ids(target))
         new = [i for i in current if i != ref_id] if ref_id in current else [*current, ref_id]
+        self._write_picked_list(row, new)
+        return True
+
+    def apply_picked_references(self, target: tuple, ref_ids, toggle: bool) -> tuple[int, int] | None:
+        """TASK-168: a Set Objects box, one undo record, by unit_references.marquee_ids().
+        Returns (added, removed), (0, 0) with no write when nothing changes, or None
+        when the target is stale, read-only or not a list."""
+        row = self._unit_ref_rows.get(target[3])
+        if row is None or not self._editable or not self._pick_target_is_current(target) or not target[4]:
+            return None
+        current = list(self.unit_reference_ids(target))
+        new = unit_references.marquee_ids(current, ref_ids, toggle)
+        if new == current:
+            return (0, 0)
+        self._write_picked_list(row, new)
+        return (len(set(new) - set(current)), len(set(current) - set(new)))
+
+    def _write_picked_list(self, row, new: list[int]) -> None:
+        """A picked list through the form's own funnel: one _changed() call, one undo record."""
+        spec, refs, editor, refresh = row
         editor.setText(trigger_fields.format_int_list(new))
         self._list_changed(spec, refs, editor)
         refresh()
         self._update_group_rows()
-        return True
 
     def apply_picked_type(self, target: tuple, const: int) -> bool:
         """GH #276: a clicked unit's type into an object row, through commit_value()

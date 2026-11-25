@@ -44,7 +44,7 @@ class MessagesPanel(QWidget):
     MIN_USEFUL_WIDTH = FontScaledWidth(300)
 
     _NO_DOCUMENT = "No map open."
-    _READ_ONLY_NOTE = "Read-only for this file -- nothing here can be written back."
+    _READ_ONLY_NOTE = "Read-only for this file: nothing here can be written back."
     _SET_ID_WARNING = (
         "The game shows language-file string #{id} for this field, not the "
         "text below."

@@ -754,3 +754,118 @@ def test_a_setter_raising_mid_step_leaves_the_document_and_history_as_before_the
         assert window._live_lift(kind) is lift, "the lift no longer holds" if lift else "a failed first step made a lift"
     finally:
         _close(window)
+
+
+def test_a_flipped_or_turned_bridge_takes_its_sibling_keeps_its_reference_id_and_escape_restores():
+    """TASK-329, with Free placement on (the flip moves a bridge onto land,
+    which placement rules refuse). Flip West <-> North (mx) reverses an `a`
+    piece's run, Flip West <-> South (my) keeps its const, and Rotate Group
+    gives the axis sibling."""
+    from PyQt5.QtCore import Qt
+
+    window = _units_window()
+    try:
+        window.unrestricted_check.setChecked(True)
+        (bridge,) = _add(window, [(1, 605, *render_units.span_anchor(40, 40, 2, 3), 7.0, None)])
+        reference_id = bridge.reference_id
+        _select(window, [bridge])
+        before = _state(window)
+        for action, const in (
+            (window.flip_horizontal_action, 607),
+            (window.flip_vertical_action, 605),
+            (window.rotate_group_cw_action, 610),
+        ):
+            action.trigger()
+            assert (bridge.unit_const, bridge.reference_id, bridge.rotation) == (const, reference_id, 7.0), action.text()
+            assert "kept their orientation" not in _last_status(window)
+            tiles = render_units.unit_occupied_tiles(bridge, 120, 120)
+            assert len(tiles) == 6 and len({x for x, _y in tiles}) == (3 if const == 610 else 2)
+            _key(window, Qt.Key_Escape)
+            assert _state(window) == before, action.text()
+    finally:
+        window.unrestricted_check.setChecked(False)
+        _close(window)
+
+
+def test_a_turned_mole_is_counted_as_kept_with_the_status_naming_why():
+    """The mole has no transposed sibling (TASK-329), so a quarter turn keeps its
+    const and the status log counts it."""
+    window = _units_window()
+    try:
+        window.unrestricted_check.setChecked(True)
+        (mole,) = _add(window, [(1, 2421, *render_units.span_anchor(40, 40, 3, 1), 0.0, None)])
+        _select(window, [mole])
+        window.rotate_group_cw_action.trigger()
+        assert mole.unit_const == 2421
+        assert "; 1 objects kept their orientation (cliffs, and objects with no turned form)" in _last_status(window)
+    finally:
+        window.unrestricted_check.setChecked(False)
+        _close(window)
+
+
+# --- TASK-532: a gate's corner pieces flip and turn with it -------------------
+
+
+def _gate_with_pieces(window, gate: int = GATE):
+    """A stone gate with its low corner on (40, 40) and its two corner pieces on its end tiles, as real files store them."""
+    from descape import placement_rules
+    from descape.terrain_palette import tile_span
+
+    x, y = render_units.span_anchor(40, 40, *tile_span(gate, render_units.NON_BUILDING_SPAN))
+    corner = gate_orientation.corner_piece(gate)
+    ends = placement_rules.end_tiles(gate, x, y)
+    return _add(window, [(1, gate, x, y, 0.0, None), *[(1, corner, tx + 0.5, ty + 0.5, 0.0, None) for tx, ty in ends]])
+
+
+def _pieces_on_the_gates_ends(gate, pieces) -> bool:
+    from descape import placement_rules
+
+    return all(p.unit_const == gate_orientation.corner_piece(gate.unit_const) for p in pieces) and {
+        (int(p.x), int(p.y)) for p in pieces
+    } == set(placement_rules.end_tiles(gate.unit_const, gate.x, gate.y))
+
+
+def _nudge_carries(window, gate, pieces) -> bool:
+    """After Enter, the gate's next Shift+Right nudge still carries its pieces: their match survived."""
+    from PyQt5.QtCore import QEvent, Qt
+    from PyQt5.QtGui import QKeyEvent
+
+    _key(window, Qt.Key_Return)
+    window.mode_combo.setCurrentText("Units")
+    _select(window, [gate])
+    before = [(p.x, p.y) for p in pieces]
+    window.map_view.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.ShiftModifier))
+    return [(p.x, p.y) for p in pieces] == [(x + 1, y) for x, y in before]
+
+
+@pytest.mark.parametrize(
+    ("action", "gate_const", "image_const"),
+    [("flip_horizontal_action", 659, 667), ("rotate_group_cw_action", GATE, 88)],
+    ids=["flip_diagonal", "rotate_straight"],
+)
+def test_flip_and_rotate_group_of_a_gate_alone_take_its_pieces_to_its_images_ends(action, gate_const, image_const):
+    window = _units_window()
+    try:
+        gate, *pieces = _gate_with_pieces(window, gate_const)
+        _select(window, [gate])
+        getattr(window, action).trigger()
+        assert gate.unit_const == image_const, _last_status(window)
+        assert _pieces_on_the_gates_ends(gate, pieces)
+        assert " 1 unit " in _last_status(window), _last_status(window)
+        assert _nudge_carries(window, gate, pieces)
+    finally:
+        _close(window)
+
+
+def test_a_region_holding_the_gates_anchor_but_not_its_far_piece_still_turns_that_piece():
+    window = _select_window()
+    try:
+        gate, *pieces = _gate_with_pieces(window)
+        window.on_region_selected((38, 38, 43, 43))
+        assert int(gate.x) == 42 and int(pieces[1].x) == 43, "the anchor tile is in the region, the far piece is not"
+        window.rotate_group_cw_action.trigger()
+        assert gate.unit_const == 88, _last_status(window)
+        assert _pieces_on_the_gates_ends(gate, pieces)
+        assert _nudge_carries(window, gate, pieces)
+    finally:
+        _close(window)

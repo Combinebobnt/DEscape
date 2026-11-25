@@ -402,6 +402,12 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("poly", AMBER, (16, 16, 21, 11, 23, 13, 18, 18)),
         ("poly", Role.INK, (16, 16, 18, 18, 14.8, 19.2)),
     ),
+    # A page with an up arrow: upgraded to the newer format.
+    "file-convert": (
+        ("poly", Role.INK_SOFT, _PAGE),
+        ("poly", Role.INK, _PAGE_FOLD),
+        ("poly", GREEN, (12, 9, 17, 14, 14, 14, 14, 20, 10, 20, 10, 14, 7, 14)),
+    ),
     # A page with a clock on it: the automatic copies.
     "file-recover": (
         ("poly", Role.INK_SOFT, _PAGE),

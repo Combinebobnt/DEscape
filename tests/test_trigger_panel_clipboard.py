@@ -222,10 +222,13 @@ def test_a_cross_document_pastes_variable_name_shows_in_the_variables_dialog_unt
         window.close()
 
 
-def test_a_paste_from_a_1_58_file_into_a_new_map_is_refused() -> None:
-    """TASK-345: File > New Map is a 1.59 document, so triggers copied from the
-    1.58 fixture are refused there. Paste stays enabled, says why, and
-    changes nothing (GH #3's refusal)."""
+def test_a_paste_from_a_1_58_file_into_a_new_map_pastes_and_saves(tmp_path: Path) -> None:
+    """GH #307: File > New Map is a 1.59 document (TASK-345), and triggers
+    copied from the 1.58 fixture paste into it, each condition taking 1.59's
+    allow_in_fog default. One undo step; the save reloads as 1.59."""
+    from descape.scenario_io import load_map_and_units, parse_triggers
+    from descape.scenario_write import write_scenario
+
     window = _triggers_window()
     try:
         panel = window.trigger_panel
@@ -233,18 +236,63 @@ def test_a_paste_from_a_1_58_file_into_a_new_map_is_refused() -> None:
         window.copy_triggers()
         window.edit_history.mark_saved()
         window.new_map()
+        assert window.scenario.scenario_version == "1.59"
         window.mode_combo.setCurrentText("Triggers")
-        expected = "Copied from a 1.58 scenario; this one is 1.59."
-        assert panel.trigger_paste_button.isEnabled()
-        assert panel.trigger_paste_button.toolTip() == expected
-        assert window.paste_action.toolTip() == expected
-        window.status_log.clear()
+        assert panel.trigger_paste_button.toolTip() != "Copied from a 1.58 scenario; this one is 1.59."
 
-        panel.trigger_paste_button.click()
-        assert f"Cannot paste these triggers: {expected}" in window.status_log.toPlainText()
-        assert len(panel._manager().triggers) == 0
-        assert window.trigger_edits is None or not window.trigger_edits.has_edits
-        assert not window.edit_history.is_dirty, "no undo record was pushed"
+        window.trigger_structural_edit("paste", [])
+        manager = window.trigger_edits.manager()
+        assert [t.name for t in manager.triggers] == ["Fixture: references (copy)", "Fixture: variable (copy)"]
+        assert {c.allow_in_fog for t in manager.triggers for c in t.conditions} == {-1}
+        window.undo()
+        assert len(window.trigger_edits.manager().triggers) == 0
+        assert not window.edit_history.is_dirty, "the paste was one undo step"
+        window.redo()
+
+        out = tmp_path / "pasted.aoe2scenario"
+        write_scenario(window.scenario, out, backup=False, **window._edit_model_kwargs())
+        back = load_map_and_units(out)
+        assert (back.scenario_version, back.trigger_version) == ("1.59", 5.0)
+        assert len(parse_triggers(back).triggers) == 2
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+@pytest.mark.parametrize("kind", ["triggers", "entries"])
+def test_a_1_59_block_in_a_1_58_document_is_refused_naming_the_conversion(kind: str) -> None:
+    """GH #307: only 1.58 into 1.59 pastes. The other way is refused, and the
+    refusal names File > Convert, which is enabled on this 1.58 fixture."""
+    import dataclasses
+
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        expected = "Copied from a 1.59 scenario; this one is 1.58. File > Convert to Version 1.59 upgrades this one."
+        assert window.convert_version_action.isEnabled()
+        records = _record_count(window)
+        if kind == "triggers":
+            _ctrl_select(panel, 0)
+            window.copy_triggers()
+            window._trigger_clipboard = dataclasses.replace(window._trigger_clipboard, scenario_version="1.59")
+            window._sync_trigger_clipboard_state()
+            assert panel.trigger_paste_button.toolTip() == expected
+            window.status_log.clear()
+            panel.trigger_paste_button.click()
+            assert f"Cannot paste these triggers: {expected}" in _status(window)
+            assert len(panel._manager().triggers) == 4
+        else:
+            panel.select_trigger(3)
+            _select_entries(panel, ("effect", 0))
+            window.copy_entries_to_clipboard()
+            window._entry_clipboard = dataclasses.replace(window._entry_clipboard, scenario_version="1.59")
+            window._sync_entry_clipboard_state()
+            paste = _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste")
+            assert paste.isEnabled() and paste.toolTip() == expected
+            paste.trigger()
+            assert f"Cannot paste these conditions/effects: {expected}" in _status(window)
+            assert len(_types_of(window, 3)) == 7
+        assert _record_count(window) == records
     finally:
         window.edit_history.mark_saved()
         window.close()

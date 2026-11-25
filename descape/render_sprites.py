@@ -14,6 +14,7 @@ from descape import (
     mod_graphics,
     unit_kind,
     unit_sprites,
+    unit_state,
 )
 from descape.render_paint import ASSEMBLY_SLICE, INK_NONE, _drain
 from descape.render_units import (
@@ -85,7 +86,10 @@ def unit_sprite_draws_at(
     rotation_override is this unit's wall-connectivity-derived rotation, which
     the caller resolves ONCE -- wall_variant_rotation_overrides() is a walk
     over every unit in the file behind a memo, and calling it per mouse-move
-    is exactly the cost a preview exists to avoid.
+    is exactly the cost a preview exists to avoid. A drag also passes a moved
+    wall's landing shape, or a reshaped neighbour's, planned per tile
+    crossing over a scene walked once per drag (TASK-523), never a whole-file
+    walk per mouse move.
 
     tree_scale must be the WINDOW's current View > Layers value: a ghost left
     on the default 1.0 would drag a tree at full size and snap it small on
@@ -501,7 +505,10 @@ def _resolve_unit_sprite(
     where the "which consts" decision lives; unit_sprites just takes a float.
     `hero_glow` is gated here the same way, to HERO_GLOW_CONSTS (GH #39), and
     `wall_alpha` to unit_kind.wall_consts(), the set
-    Filters' Show Walls owns, gates included (GH #35).
+    Filters' Show Walls owns, gates included (GH #35). A unit whose Unit
+    State is not Alive (unit_state.is_ghosted()) multiplies in
+    unit_state.GHOST_ALPHA and draws no garrison flag: a removed host holds
+    nothing at map start.
 
     A multi-tile unit that does not keep its own point paints each piece per
     screen column (TASK-221, _sprite_columns()) while `sliced` and
@@ -522,6 +529,7 @@ def _resolve_unit_sprite(
     team_index = scenario.team_indices[player_id]
     # Short-circuits, so the wall set is only looked up with the wall row on.
     is_faded_wall = wall_alpha < 1.0 and unit.unit_const in unit_kind.wall_consts()
+    ghost = unit_state.is_ghosted(unit)
     art = player_art_for(scenario, player_id)
     reference_id = getattr(unit, "reference_id", None)
     pieces = unit_sprites.sprite_pieces_for(
@@ -530,7 +538,7 @@ def _resolve_unit_sprite(
         reference_id,
         hero_glow=hero_glow and unit.unit_const in HERO_GLOW_CONSTS,
         art=art,
-        wall_alpha=wall_alpha if is_faded_wall else 1.0,
+        alpha=(wall_alpha if is_faded_wall else 1.0) * (unit_state.GHOST_ALPHA if ghost else 1.0),
     )
     # A pasture (draped_sprite_consts()) carries both: its drape plus its annex-tree art.
     farm_tiles: dict[tuple[int, int], tuple[int, tuple[int, int, int], int]] = {}
@@ -544,7 +552,7 @@ def _resolve_unit_sprite(
         return _SpriteContribution(
             skip_id=id(unit), by_anchor={}, bboxes={}, farm_tiles=farm_tiles
         )
-    if reference_id in (garrison_host_ids(scenario) if flag_hosts is None else flag_hosts):
+    if not ghost and reference_id in (garrison_host_ids(scenario) if flag_hosts is None else flag_hosts):
         # A new list: sprite_pieces_for()'s may be a cached one.
         pieces = [*pieces, *unit_sprites.garrison_flag_pieces_for(unit.unit_const, team_index, half_w, art)]
 
@@ -671,7 +679,8 @@ def _sprite_memo_key(
     unit_rise_px(). An index the resolver would fail on
     keys as None and the resolver decides. `flag_hosts` is the walk's
     garrison_host_ids(): whether the unit draws a garrison flag is set by
-    other units' links, which no field of its own carries (GH #203)."""
+    other units' links, which no field of its own carries (GH #203). The
+    Unit State fade (unit_state.is_ghosted()) is keyed too."""
     ux, uy = int(unit.x), int(unit.y)
     try:
         if sloped:
@@ -687,7 +696,7 @@ def _sprite_memo_key(
         overrides.get((player_id, i), stored_rotation(player_id, unit)),
         reference_id, player_id,
         scenario.team_indices[player_id], scenario.player_colors[player_id], rise,
-        player_art_for(scenario, player_id), reference_id in flag_hosts,
+        player_art_for(scenario, player_id), reference_id in flag_hosts, unit_state.is_ghosted(unit),
     )
 
 

@@ -64,14 +64,16 @@ the previous one's is that level's working set, SCALED_CACHE_BYTES's source.
 bench_mod_art): the cold Stepped sprite layer with Mod Art off against on,
 the first sprite_reach() walk after a change, and .smx against .sld decode.
 
-`--smooth` (GH #254) runs any of the above with box-filtered shrinking on, as
-the app does at Graphics Quality Default and above (the quality in use is
+`--smooth` (GH #254) runs any of the above with box-filtered shrinking (and
+enlarging by a non-whole factor) on, as the app does at Graphics Quality
+Default and above (the quality in use is
 printed; the app pairs it with --hi-res at Enhanced). Interleave runs with
 and without it for an A/B on one tree: the off path is the nearest gather.
 
 `--single-sprite` replaces all of the above with the worst single unit of
 work a level-warm tick can hit (see bench_single_sprite): the largest native
-frame the file draws, shrunk to each level's scale nearest and box-filtered.
+frame the file draws, resized to each level's scale (1:1 and whole
+enlargements skipped) nearest and box-filtered.
 """
 
 from __future__ import annotations
@@ -586,7 +588,8 @@ def _largest_drawn_frame(scenario):
 
 def bench_single_sprite(path: Path) -> str:
     """The GH #254 worst-single-sprite row: the largest native frame this file
-    draws, through _draw_for_entry() at every mip level that shrinks it, with
+    draws, through _draw_for_entry() at every mip level that shrinks it or
+    enlarges it by a non-whole factor, with
     smooth shrinking off (nearest) and on (box), interleaved per level, min of
     SINGLE_SPRITE_REPEATS each. The scaled cache is dropped before every call
     and the native frame is decoded beforehand, so a timing is the tint and
@@ -612,8 +615,8 @@ def bench_single_sprite(path: Path) -> str:
     for mip in sorted(projs):
         half_w = projs[mip].half_w
         scale = unit_sprites.sprite_scale(half_w)
-        if scale >= 1.0:
-            continue
+        if scale >= 1.0 and float(scale).is_integer():
+            continue  # 1:1 and whole factors take the gather either way
         times = {}
         for smooth in (False, True):
             unit_sprites.set_smooth_shrink(smooth)
@@ -704,11 +707,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--smooth", action="store_true",
-        help="Default and above: box-filter art drawn below its native size (GH #254)",
+        help="Default and above: box-filter art drawn below its native size or enlarged by a non-whole factor (GH #254)",
     )
     parser.add_argument(
         "--single-sprite", action="store_true",
-        help="Only the GH #254 row: the largest native frame shrunk to each level, nearest vs box",
+        help="Only the GH #254 row: the largest native frame resized to each level, nearest vs box",
     )
     args = parser.parse_args()
     if sum((args.ladder, args.cold_levels, args.mod_art, args.single_sprite)) > 1:

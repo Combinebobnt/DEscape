@@ -3,8 +3,10 @@
 The suite's synthetic frames have no real facing, so whether
 FLAT_ANGLE_ZERO_OFFSET_DEG is the RIGHT number can only be measured on game
 art. The tool holds the measurement; this file runs it against the galley
-(both projections), a battering ram (Flat only, see its test) and the knight's
-mirror pair.
+(both projections, plus the sense its stored index walks in on screen), a
+battering ram (Flat only, see its test) and the knight's mirror pair. The
+sense arm is the measured term of the Flat offset's mod-360 derivation in
+tests/test_ingame_angle_mapping.py.
 
 Needs AOE2DE_INSTALL_PATH rather than the configured install, for the reason
 tests/test_sprite_variant14_real_assets.py's docstring spells out: conftest's
@@ -97,6 +99,21 @@ def test_the_galley_faces_along_the_iso_axes_as_a_control(tool) -> None:
     assert not _arm_failures(tool, masks, unit_sprites.ANGLE_ZERO_OFFSET_DEG, expected)
 
 
+def test_the_galleys_stored_index_walks_clockwise_on_screen(tool) -> None:
+    """Every consecutive frame turns the same way, clockwise with y down, and
+    the pair-swapped frame list, the arm's own control, reads mixed. The
+    measured sense is the derivation test's INDEX_WALK_SENSE."""
+    from tests.test_ingame_angle_mapping import INDEX_WALK_SENSE
+
+    axes = [tool.principal_axis_deg(m) for m in _masks(tool, tool.GRAPHIC, tool.GRAPHIC_CONST)]
+    measured = tool.index_walk_sense(axes)
+    assert measured is not None, tool.wrapped_steps(axes)
+    sense, smallest = measured
+    assert sense == INDEX_WALK_SENSE == 1, tool.wrapped_steps(axes)
+    assert smallest >= tool.SENSE_MIN_STEP_DEG, tool.wrapped_steps(axes)
+    assert tool.index_walk_sense(tool.pair_swapped(axes)) is None
+
+
 def test_the_ram_faces_along_the_flat_x_axis(tool) -> None:
     """Rotations 0 and pi only: the ram's end-on frames are nearly round, and
     its iso frames sit 6-7 degrees off even when right, so neither arm can
@@ -108,8 +125,8 @@ def test_the_ram_faces_along_the_flat_x_axis(tool) -> None:
 
 
 def test_the_knight_mirror_pair_skews_in_opposite_directions(tool) -> None:
-    """The mod-360 half the axis arms cannot see: angle 0 faces right, angle
-    8 left, so their horizontal skews must disagree in sign."""
+    """A consistency check on frames the axis arms cannot tell apart: angle 0
+    faces right, angle 8 left, so their horizontal skews must disagree in sign."""
     entry = unit_sprites.graphic_map().get(tool.KNIGHT_GRAPHIC_CONST, {})
     assert (entry.get("file_name"), entry.get("angle_count")) == (tool.KNIGHT_GRAPHIC, tool.ANGLE_COUNT)
     frame_count = entry["frame_count"]

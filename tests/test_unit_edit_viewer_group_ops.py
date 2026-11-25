@@ -285,13 +285,16 @@ def test_a_flat_group_move_across_two_blocks_patches_one_rect_per_block(monkeypa
         assert len({(int(e.unit.x) // block, int(e.unit.y) // block) for e in entries}) == 2
         canvas = (0, 0, *cache.canvas_dims(0))
         before = cache.render_rect(*canvas, mip=0).copy()
-        warm = {key: id(chunk) for key, chunk in cache._cache.items()}
+        # The visible level is patched in place, the others evicted under the rects (TASK-442): show mip 0.
+        rng = cache.chunk_index_range(0, *canvas)
+        monkeypatch.setattr(window.map_view, "viewport_chunk_target", lambda: (0, *rng))
+        warm = {key: id(chunk) for key, chunk in cache._cache.items() if key[0] == 0}
         handed = []
         real_patch = cache.patch_rects
 
-        def patch_rects(rects):
+        def patch_rects(rects, levels=None):
             handed.append(list(rects))
-            return real_patch(rects)
+            return real_patch(rects, levels=levels)
 
         monkeypatch.setattr(cache, "patch_rects", patch_rects)
 
@@ -300,7 +303,8 @@ def test_a_flat_group_move_across_two_blocks_patches_one_rect_per_block(monkeypa
         (rects,) = handed
         tp = cache.tile_px
         assert rects == [(5 * tp, 5 * tp, 7 * tp, 7 * tp), (20 * tp, 20 * tp, 22 * tp, 22 * tp)], rects
-        assert {key: id(chunk) for key, chunk in cache._cache.items()} == warm, "the unit patch evicted a chunk"
+        now = {key: id(chunk) for key, chunk in cache._cache.items() if key[0] == 0}
+        assert now == warm, "the unit patch evicted a visible-level chunk"
         after = cache.render_rect(*canvas, mip=0).copy()
         assert not np.array_equal(after, before), "the move changed no pixel, so the check below proves nothing"
         fresh = FlatChunkCache(

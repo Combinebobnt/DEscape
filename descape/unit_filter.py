@@ -1,7 +1,7 @@
 """Which units a render (or, from phase 3 on, a pick) is allowed to see.
 
-A leaf module by construction: it imports terrain_palette and unit_kind
-(both leaves themselves, stdlib-only) and nothing else from this package, so
+A leaf module by construction: it imports terrain_palette, unit_kind and
+unit_state (all leaves themselves) and nothing else from this package, so
 render.py can import it with no cycle risk, and unit_pick.py can import both.
 
 Filtering exists because of scale, not taste. This project's example
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from descape import unit_kind
+from descape import unit_kind, unit_state
 from descape.terrain_palette import TREE_UNIT_IDS
 
 # scenario.unit_manager.units is indexed by player, and index 0 is GAIA (see
@@ -75,6 +75,11 @@ class UnitFilter:
     default stays True like every other field (an unfiltered UnitFilter() has
     to keep hiding nothing, for the byte-identity gate below); it is the
     viewer's Filters menu that ships this one unchecked.
+
+    show_inactive is the second per-unit gate: a unit whose Unit State is not
+    Alive (unit_state.is_ghosted()) is not there as a live unit at map start,
+    and the render draws it faded. Owner-blind and kind-blind like
+    show_garrisoned; it ships checked.
     """
 
     show_gaia: bool = True
@@ -85,6 +90,7 @@ class UnitFilter:
     show_obstacles: bool = True
     show_invisible: bool = True
     show_garrisoned: bool = True
+    show_inactive: bool = True
     # None means every player, which is NOT the same as frozenset(range(9)):
     # a scenario may have fewer players, and None avoids having to know how
     # many before building a default filter.
@@ -93,7 +99,7 @@ class UnitFilter:
     def matches(self, player_id: int, unit) -> bool:
         """Whether this unit, owned by player_id, should be drawn/picked.
 
-        Nine independent gates, ANDed. Order between them doesn't matter
+        Ten independent gates, ANDed. Order between them doesn't matter
         (they never disagree about a unit, only about why it's hidden), but
         which field governs which gate does:
 
@@ -107,6 +113,8 @@ class UnitFilter:
           or kind, and -1 (no host) and a self-reference (legal on disk, and
           its own unit's deletion guard already excludes it) both read as
           "not garrisoned".
+        - A unit in any Unit State but Alive is gated by show_inactive the
+          same way, regardless of owner or kind.
         - GAIA is gated by show_gaia alone.
         - players gates only the non-GAIA slots. Folding GAIA into players
           too would double-gate it, so a Filters menu offering "Show GAIA"
@@ -129,6 +137,8 @@ class UnitFilter:
             host_id = getattr(unit, "garrisoned_in_id", -1)
             if host_id != -1 and host_id != unit.reference_id:
                 return False
+        if not self.show_inactive and unit_state.is_ghosted(unit):
+            return False
         if player_id == GAIA_PLAYER_ID:
             return self.show_gaia
         return self.players is None or player_id in self.players
@@ -151,5 +161,6 @@ class UnitFilter:
             and self.show_obstacles
             and self.show_invisible
             and self.show_garrisoned
+            and self.show_inactive
             and self.players is None
         )

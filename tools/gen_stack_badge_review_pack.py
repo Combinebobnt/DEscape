@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Review pack for GH #100's stacked-unit badge: its position on the tile
-(Settings > Appearance, default bottom-right) and its background colour.
+(Settings > Appearance, default bottom-right). Its background colour is not
+reviewed: tests/test_stack_badge_position.py asserts the background keeps its
+alpha after a colour change.
 
 Same protocol as tools/gen_review_pack.py (see tools/REVIEW_PACK.md), shaped
 like tools/gen_selection_review_pack.py: the badge is a MapView scene item, so
@@ -46,7 +48,6 @@ CHECKER = (14, 0)  # DESERT_SAND, GRASS_1, the marker pack's pair
 _LONE = (40, 41)
 _TRIO = [(60, 61), (61, 61), (60, 62)]
 _TRIO_OWNERS = (1, 2, 6)
-_CUSTOM_BACKGROUND = "#c02040"
 # Device-pixel crop, the same for every frame so every frame gets the same upscale.
 _CROP_W, _CROP_H = 360, 270
 # Tiles fitted either side of the targets. The wide fit is a small-tile zoom where a
@@ -62,8 +63,6 @@ _FRAMES = {
     "b_stepped": ("Stepped", False, "bottom_right", "#000000", True, _TRIO, _FIT),
     "b_flat": ("Flat", False, "bottom_right", "#000000", True, _TRIO, _FIT),
     "c_iso": ("Flat", True, "above", "#000000", True, [_LONE], _FIT),
-    "d_one": ("Stepped", False, "above", "#000000", True, [_LONE], _FIT),
-    "d_two": ("Stepped", False, "above", _CUSTOM_BACKGROUND, True, [_LONE], _FIT),
     # Neutral ids: a frame's file name must not say which box should sit lower.
     "e_one": ("Stepped", False, "bottom_right", "#000000", True, [_LONE], _WIDE_FIT),
     "e_two": ("Stepped", False, "top_right", "#000000", True, [_LONE], _WIDE_FIT),
@@ -164,22 +163,6 @@ def _inject_above_edge():
     return [(MapView, "_stack_badge_anchor", edge)]
 
 
-def _inject_opaque_custom():
-    """A non-black background paints fully opaque."""
-    from PyQt5.QtGui import QColor
-
-    from descape.viewer_canvas import StackBadgeItem
-
-    real = StackBadgeItem.set_background_color
-
-    def opaque(self, color):
-        real(self, color)
-        if (color.red(), color.green(), color.blue()) != (0, 0, 0):
-            self._background = QColor(color.red(), color.green(), color.blue(), 255)
-
-    return [(StackBadgeItem, "set_background_color", opaque)]
-
-
 def _inject_unclamped():
     """The pre-TASK-422 tucked box: the full offset toward the centre, even past the centre's line."""
     from PyQt5.QtCore import QRectF
@@ -207,12 +190,11 @@ INJECTS = {
     "vertex": _inject_vertex,
     "style-size": _inject_style_size,
     "above-edge": _inject_above_edge,
-    "opaque-custom": _inject_opaque_custom,
     "unclamped": _inject_unclamped,
 }
 COARSE_INJECT = "old-anchor"
 # Injects whose reach `--check` pins to an exact frame set.
-_INJECT_REACH = {"unclamped": {"e_one", "e_two"}}
+_INJECT_REACH = {"above-edge": {"c_iso"}, "unclamped": {"e_one", "e_two"}}
 
 
 # Saved in place of a name the owner only inherits, so restore deletes it.
@@ -340,8 +322,6 @@ def _spec() -> rp.PackSpec:
             ("b_stepped", "Three map objects on neighbouring cells, each with a numbered box, angled view."),
             ("b_flat", "The same three, seen straight from above."),
             ("c_iso", "A numbered box by a map object, angled view."),
-            ("d_one", "A numbered box by a map object, angled view."),
-            ("d_two", "The same, with a differently coloured box."),
             ("e_one", "A numbered box by a map object, angled view, zoomed further out."),
             ("e_two", "The same view, with the box placed differently."),
             ("ground", "Checkered ground with a map object, angled view."),
@@ -391,18 +371,6 @@ def _spec() -> rp.PackSpec:
             ),
             frames=("c_iso",),
             answers=("TOP-CORNER", "ELSEWHERE", "CANNOT-TELL"),
-        ),
-        rp.Check(
-            id="q5",
-            question=(
-                _CHECKER + "Each frame has one small coloured box with a number, lying across the boundary "
-                "between two cells of different colours. First describe, for each box, whether and how the two "
-                "ground colours can be told apart through the box's fill. Then: does the ground show through "
-                "both boxes about equally? SAME if so, DIFFERENT if one box lets the ground show and the other "
-                "is a flat solid colour that hides it."
-            ),
-            frames=("d_one", "d_two"),
-            answers=("SAME", "DIFFERENT", "CANNOT-TELL"),
         ),
         rp.Check(
             id="q6",

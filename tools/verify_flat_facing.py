@@ -15,15 +15,16 @@ angle (the eigenvector of its covariance matrix, largest eigenvalue),
 expressed clockwise from screen-right with y down. A war galley is long and
 thin, so its principal axis is its hull, i.e. the direction it faces.
 
-**Everything below is compared mod 180, because a principal axis has no
-direction.** Frames 4 and 12 are both a vertical boat and both measure ~90.
-That is why the flat zero point's SIGN, as opposed to its magnitude, was
-settled separately by decoding u_cav_knight_idleC_x1 (angle 0's horse faces
-screen-RIGHT, angle 8 faces LEFT) rather than here. This script would pass
-just as happily at an offset of 180, so it is one half of the evidence, not
-all of it. See FLAT_ANGLE_ZERO_OFFSET_DEG's own comment for the other half.
+**Arms 1-2 compare mod 180, because a principal axis has no direction.**
+Frames 4 and 12 are both a vertical boat and both measure ~90, so those two
+arms would pass just as happily at a Flat offset of 180. The mod-360 sign
+comes instead from a derivation: Flat draws the iso art, so its offset is
+the iso offset (game-measured, see tests/test_ingame_angle_mapping.py) plus
+the iso-to-flat screen turn of 45 degrees times the sense in which the
+stored index walks on screen. Arm 3 measures that sense, and
+tests/test_ingame_angle_mapping.py pins the sum.
 
-Three arms, since the point is a comparison and not an absolute:
+Four arms, since the point is a comparison and not an absolute:
 
 1. **Flat.** At FLAT_ANGLE_ZERO_OFFSET_DEG, rotation 0 must read along flat
    +x (screen-horizontal) and pi/2 along flat +y (screen-vertical), with pi
@@ -33,20 +34,21 @@ Three arms, since the point is a comparison and not an absolute:
    iso_geometry's own projection gives as 153.43 and 26.57 degrees. If arm 1
    passed and this one failed, the flat number would be right by accident on
    a graphic whose frames are not where they are believed to be.
-3. **Knight decode (mod-360 sign).** Arms 1-2 both compare mod 180 (a
-   principal axis is direction-blind), so neither can tell "faces right"
-   from "faces left" -- that half of the evidence rested on a one-off prose
-   decode of u_cav_knight_idleC_x1 (angle 0's horse faces screen-RIGHT,
-   angle 8 faces LEFT), re-run by no code before this. A principal axis
-   still can't resolve it, so this arm uses a THIRD-MOMENT (skew) statistic
-   instead: horizontal_skew() is direction-sensitive where a covariance-based
-   axis is not, and a genuine mirror pair (which angle 0 and angle 8 are, 8
-   steps apart on a 16-angle graphic) must have skews of OPPOSITE sign. That
-   confirms the two frames are still a real facing pair on this install --
-   it does not independently re-derive which sign means "right" in the
-   abstract. A from-scratch re-derivation of that sign is a separate, harder
-   research task (it would need a labelled corpus of known-facing sprites,
-   not just one hand-decoded pair), deliberately not attempted here.
+3. **Index walk sense.** index_walk_sense() takes every consecutive axis
+   difference of the galley's 16 frames, each wrapped into (-90, 90], and
+   requires them all to share one sign: +1, clockwise on screen with y
+   down. A sense is not a heading, so a direction-blind axis does measure
+   it. The projection puts consecutive frames 11.7 to 39.6 screen degrees
+   apart, far inside the 90 degree limit of a wrapped difference, and the
+   arm fails below SENSE_MIN_STEP_DEG. Its control reruns the statistic on
+   the frames with each adjacent pair swapped, which must read mixed.
+4. **Knight decode, a consistency check.** horizontal_skew(), a
+   third-moment statistic, is direction-sensitive where a covariance-based
+   axis is not, and a genuine mirror pair (u_cav_knight_idleC_x1's angles
+   0 and 8, the horse facing screen-RIGHT and LEFT) must have skews of
+   OPPOSITE sign. That confirms the two frames are still a real facing pair
+   on this install. The mod-360 sign rests on arm 3 and the derivation
+   above, not on this arm.
 
 Usage: python3 tools/verify_flat_facing.py [--install PATH]
 """
@@ -219,11 +221,11 @@ def _run_arm(
 
 
 def _run_knight_arm() -> bool:
-    """Arm 3: the mod-360 sign check. Skips (does not fail) if this install
+    """Arm 4: the knight mirror-pair consistency check. Skips (does not fail) if this install
     doesn't hold the knight graphic, matching every other failure mode this
     script treats as "nothing to measure" rather than a hard error --
     tests/README.md's own convention for install-gated tools/verify_*.py."""
-    print(f"\n=== Knight decode ({KNIGHT_GRAPHIC}, mod-360 sign) ===")
+    print(f"\n=== Knight decode ({KNIGHT_GRAPHIC}, mirror-pair consistency) ===")
     entry = unit_sprites.graphic_map().get(KNIGHT_GRAPHIC_CONST, {})
     if (entry.get("file_name"), entry.get("angle_count")) != (KNIGHT_GRAPHIC, ANGLE_COUNT):
         print(f"  SKIP  const {KNIGHT_GRAPHIC_CONST} is not {KNIGHT_GRAPHIC} at {ANGLE_COUNT} angles here")
@@ -243,6 +245,64 @@ def _run_knight_arm() -> bool:
     print(f"  {verdict}  angle {KNIGHT_ANGLE_LEFT:>2} (screen-LEFT)  skew {skew_left:+.4f}")
     if not ok:
         print("  the two frames' skew did not disagree in sign -- they may no longer be a mirror pair")
+    return ok
+
+
+def wrapped_steps(axes: list[float]) -> list[float]:
+    """Each consecutive axis difference, the last frame back to the first
+    included, wrapped into (-90, 90]. Unambiguous while every true step is
+    under 90 degrees, which the galley's 11.7 to 39.6 screen steps are."""
+    out = []
+    for a, b in zip(axes, axes[1:] + axes[:1], strict=True):
+        d = (b - a) % 180.0
+        out.append(d - 180.0 if d > 90.0 else d)
+    return out
+
+
+def index_walk_sense(axes: list[float]) -> tuple[int, float] | None:
+    """The screen sense the stored index walks in (+1 clockwise, y down, -1
+    counter-clockwise) plus the smallest absolute step, or None when the steps
+    disagree in sign. A sense, not a heading, so a direction-blind axis can
+    measure it."""
+    steps = wrapped_steps(axes)
+    if all(s > 0 for s in steps):
+        sense = 1
+    elif all(s < 0 for s in steps):
+        sense = -1
+    else:
+        return None
+    return sense, min(abs(s) for s in steps)
+
+
+SENSE_MIN_STEP_DEG = 6.0
+
+
+def pair_swapped(axes: list[float]) -> list[float]:
+    """The frame list with each adjacent pair swapped (0,1,2,3 -> 1,0,3,2): out of order, so mixed."""
+    return [axes[index ^ 1] for index in range(len(axes) - len(axes) % 2)]
+
+
+def _run_sense_arm(axes: list[float]) -> bool:
+    """Arm 3: every consecutive frame of the galley must turn clockwise on
+    screen, by at least SENSE_MIN_STEP_DEG. Its control reruns the statistic
+    on the frames with each adjacent pair swapped, which must read mixed (a
+    reversed list cannot serve: wrapped_steps() is antisymmetric)."""
+    print(f"\n=== Index walk sense ({GRAPHIC}, all {len(axes)} steps) ===")
+    for index, step in enumerate(wrapped_steps(axes)):
+        print(f"  frame {index:>2} -> {(index + 1) % len(axes):>2}: {step:+7.2f}")
+    measured = index_walk_sense(axes)
+    swapped_sense = index_walk_sense(pair_swapped(axes))
+    ok = (
+        measured is not None and measured[0] == 1 and measured[1] >= SENSE_MIN_STEP_DEG
+        and swapped_sense is None
+    )
+    verdict = "PASS" if ok else "FAIL"
+    sense = "mixed" if measured is None else f"{measured[0]:+d}"
+    control = "mixed" if swapped_sense is None else f"{swapped_sense[0]:+d}"
+    print(f"  {verdict}  sense {sense} (want +1), pair-swapped control {control} (want mixed)")
+    if measured is not None:
+        margin = measured[1] - SENSE_MIN_STEP_DEG
+        print(f"  smallest step {measured[1]:.2f}, margin {margin:.2f} over the {SENSE_MIN_STEP_DEG} floor")
     return ok
 
 
@@ -280,8 +340,9 @@ def main() -> None:
     failures = sum(
         0 if _run_arm(name, offset, expected, axes) else 1 for name, offset, expected in arms
     )
+    failures += 0 if _run_sense_arm(axes) else 1
     failures += 0 if _run_knight_arm() else 1
-    total = len(arms) + 1
+    total = len(arms) + 2
 
     print(f"\n{total - failures}/{total} arms passed")
     sys.exit(1 if failures else 0)

@@ -169,6 +169,7 @@ def build(window: ViewerWindow) -> dict[str, Binding]:
         "paste_units": _check("paste_units", window.paste_units_check),
         "free_placement": _check("free_placement", window.unrestricted_check),
         "off_grid": _check("off_grid", window.off_grid_check),
+        "place_random": _check("place_random", window.place_random_check),
         "walls_skip_occupied": _check("walls_skip_occupied", window.skip_occupied_check),
         "gate_walls": _check("gate_walls", window.gate_walls_check),
         "last_wall": _last_wall(window),

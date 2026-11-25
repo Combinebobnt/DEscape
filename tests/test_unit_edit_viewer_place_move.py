@@ -466,13 +466,16 @@ def test_moving_a_unit_back_onto_its_own_tile_is_a_no_op() -> None:
         _close(window)
 
 
-def test_a_move_that_raises_after_patching_the_pick_index_drops_the_index(monkeypatch) -> None:
-    """The index was patched for a move the abort undid, and Units entry reuses
-    a non-None index, so the raise must leave it None (and the stack cycle)."""
+def test_a_move_that_raises_after_patching_the_pick_index_replaces_the_patched_index(monkeypatch) -> None:
+    """The index was patched for a move the rollback undid, and Units entry reuses
+    a non-None index, so the raise must not leave the patched one (TASK-503
+    rebuilds it from the restored document) and must drop the stack cycle."""
     window = _window()
     try:
-        entry = window.map_view._unit_index.entries[0]
+        patched = window.map_view._unit_index
+        entry = patched.entries[0]
         key = (entry.player_id, entry.unit.reference_id)
+        start = (entry.unit.x, entry.unit.y)
         window._selection = [key]
         window.map_view.set_unit_selection([entry])
         window._stack_cycle = ("sentinel",)
@@ -485,7 +488,8 @@ def test_a_move_that_raises_after_patching_the_pick_index_drops_the_index(monkey
         monkeypatch.setattr(window, "_patch_unit_index_for_move", patch_then_raise)
         with pytest.raises(RuntimeError, match="mid-edit failure"):
             window.on_unit_move(key, _pos_for_tile(window, 25, 30), Qt.NoModifier)
-        assert window.map_view._unit_index is None
+        assert window.map_view._unit_index is not patched
+        assert (entry.unit.x, entry.unit.y) == start
         assert window._stack_cycle is None
     finally:
         _close(window)

@@ -1190,6 +1190,28 @@ def load_map_and_units_from_bytes(
     return _load_map_and_units(bytes(raw), Path(display_path), fast_terrain, fast_units)
 
 
+def _activate_vocabulary(game_version: str, scenario_version: str, structure_source: str) -> None:
+    """Points the library's per-version condition/effect dicts at `scenario_version`, as a load does."""
+    if structure_source == "library":
+        _initialise_version_dependencies(game_version, scenario_version)
+        library_compat.fix_effect_defaults(effect_dataset.effect_names, effect_dataset.default_attributes)
+    elif structure_source == "repo" and repo_version_has_triggers(scenario_version):
+        _initialise_repo_vocabulary(scenario_version)
+
+
+def reactivate(loaded: LoadedScenario) -> None:
+    """Makes `loaded` the library's active document again after another file
+    was loaded: its version's condition/effect defaults and, if its triggers
+    were parsed, its class state (scenario_convert's failure path). Without
+    it a condition added to `loaded` takes the other version's defaults."""
+    global _active_trigger_uuid
+
+    _activate_vocabulary(loaded._scenario.game_version, loaded.scenario_version, loaded.structure_source)
+    if loaded._trigger_manager is not None:
+        _active_trigger_uuid = None
+        parse_triggers(loaded)
+
+
 @gc_hold.paused()
 def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_units: bool = True) -> LoadedScenario:
     # IncrementalGenerator.from_file() is exactly `open(path,'rb').read()` followed by
@@ -1223,15 +1245,13 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         scenario._load_structure()
         # _get_structure() parses the JSON fresh per call, so this cannot leak across loads.
         library_compat.fix_structure(scenario.structure, scenario_version)
-        _initialise_version_dependencies(scenario.game_version, scenario.scenario_version)
-        library_compat.fix_effect_defaults(effect_dataset.effect_names, effect_dataset.default_attributes)
+        _activate_vocabulary(scenario.game_version, scenario_version, "library")
     else:
         # Parsed fresh per load: the library mutates the structure dict it is
         # given. A repo version with no vocabulary (v1.21) gets no init, and
         # parse_triggers() refuses it instead.
         scenario.structure = json.loads(repo_structure.read_text(encoding="utf-8"))
-        if repo_version_has_triggers(scenario_version):
-            _initialise_repo_vocabulary(scenario_version)
+        _activate_vocabulary(scenario.game_version, scenario_version, "repo")
     scenario._load_header_section(igen)
     # igen wraps the whole raw byte stream up front; progress is exactly the
     # header's length at this point, so this slice is the header's own verbatim

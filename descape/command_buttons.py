@@ -227,11 +227,12 @@ def covering_unit(tech: int, building: int, value: int, keep: Keep | None = None
     return base_of(occupants(building, UNIT, keep=keep).get(value, ()), UNIT)
 
 
-def building_name(building: int, page: str | None = None) -> str:
-    """The builder unit reads as the villager's build menu, with the page when known."""
+def building_name(building: int, page: str | None = None, civ: int | None = None) -> str:
+    """The builder unit reads as the villager's build menu, with the page when
+    known; a building reads as civ's player sees it (object_catalog.owner_name())."""
     if is_builder(building):
         return f"Villager build menu ({page})" if page else "Villager build menu"
-    return object_catalog.display_name(building)
+    return object_catalog.owner_name(building, civ)
 
 
 def ordered(ids, kind: str) -> tuple[int, ...]:

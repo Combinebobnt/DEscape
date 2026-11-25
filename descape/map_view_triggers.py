@@ -1,4 +1,5 @@
-"""MapView's trigger side: unit and tile pickers, area and location edit, the trigger overlay, its ghosts, ring paths and run labels."""
+"""MapView's trigger side: unit and tile pickers, area and location edit, the trigger overlay, its ghosts, ring paths and run labels,
+plus every outlined map label's constructor and the paintEvent() that refreshes their device caches."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import numpy as np
 from PyQt5.QtCore import QPointF, Qt, QTimer
 from PyQt5.QtGui import (
     QBrush,
+    QColor,
     QPainterPath,
     QPen,
     QPolygonF,
@@ -42,6 +44,11 @@ from descape.viewer_canvas import (
     UnitGhostItem,
     map_overlay_font,
 )
+
+
+def _label_cache_mode(dpr: float) -> QGraphicsItem.CacheMode:
+    """Qt lands a device cache's pixmap between device pixels at a fractional DPR, so only a whole one caches."""
+    return QGraphicsItem.DeviceCoordinateCache if float(dpr).is_integer() else QGraphicsItem.NoCache
 
 
 class _RingEntry(NamedTuple):
@@ -78,10 +85,14 @@ def _sloped_edge_chord_deviation(tile_px: int, side: str, nw: int, ne: int, sw: 
 class _MapViewTriggersMixin:
     """MapView's trigger pickers and overlay (map_view.py's docstring has the split's rules)."""
 
-    def set_unit_picker(self, active: bool) -> None:
+    def set_unit_picker(self, active: bool, multi: bool = False) -> None:
         """Trigger Pick from map: left clicks pick a unit (on_unit_pick) and
-        hover outlines one, in any mode. The window forces Pan first."""
+        hover outlines one, in any mode. The window forces Pan first. A `multi`
+        (Unit[]) pick clicks on release and takes a dragged box too (TASK-168)."""
         active = bool(active)
+        # Before the guard: a re-arm from a scalar to a list target is True to True.
+        self._unit_picker_multi = active and bool(multi)
+        self._clear_picker_gesture()
         if active == self._unit_picker_active:
             return
         self._unit_picker_active = active
@@ -94,6 +105,17 @@ class _MapViewTriggersMixin:
 
     def unit_picker_active(self) -> bool:
         return self._unit_picker_active
+
+    def _clear_picker_gesture(self) -> None:
+        """Drops a list pick's press and its rubber band (TASK-168)."""
+        self._picker_press_scene_pos = None
+        self._marquee_start_pos = None
+        self._marquee_press_tile = None
+        self._marquee_press_on_unit = False
+        self._clear_marquee()
+
+    def _picker_gesture_live(self) -> bool:
+        return self._unit_picker_multi and self._picker_press_scene_pos is not None
 
     def set_tile_picker(self, kind: str | None) -> None:
         """GH #138: "point" picks one tile (on_tile_pick), "rect" one dragged
@@ -267,7 +289,8 @@ class _MapViewTriggersMixin:
     def _show_tile_pick_label(self, anchor: QPointF, text: str) -> None:
         label = self._tile_pick_label
         if label is None:
-            label = self._add_run_label(anchor, text)
+            # Re-placed on every move, so a cache would only re-render each frame.
+            label = self._add_run_label(anchor, text, cacheable=False)
             label.setData(0, "tile_pick_preview")
             self._tile_pick_label = label
         else:
@@ -773,7 +796,7 @@ class _MapViewTriggersMixin:
                 item.setData(0, f"marks_{suffix}")
                 self._trigger_items.append(item)
         for anchor, text in runs:
-            label = self._add_run_label(anchor, text)
+            label = self._add_run_label(anchor, text, cacheable=True)
             label.setData(0, "label")
             self._trigger_items.append(label)
         for item in self._trigger_items:
@@ -782,15 +805,8 @@ class _MapViewTriggersMixin:
     def _trigger_ring_set(self, entries: list[_RingEntry]) -> RingSet:
         return RingSet([e.geometry for e in entries], self.TRIGGER_PEN_WIDTH + 2, [e.path for e in entries])
 
-    def _add_run_label(self, anchor: QPointF, text: str) -> QGraphicsSimpleTextItem:
-        label = self.scene().addSimpleText(text)
-        font = map_overlay_font(settings.get_ruler_label_font_px())
-        font.setBold(True)
-        label.setFont(font)
-        label.setBrush(QBrush(self._trigger_run_pens[True].color()))
-        label.setPen(QPen(self._ruler_label_outline, 0))
-        label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-        label.setZValue(self.TRIGGER_LABEL_Z)
+    def _add_run_label(self, anchor: QPointF, text: str, *, cacheable: bool) -> QGraphicsSimpleTextItem:
+        label = self._outlined_label(text, self._trigger_run_pens[True].color(), self.TRIGGER_LABEL_Z, cacheable=cacheable)
         self._place_run_label(label, anchor)
         return label
 
@@ -799,3 +815,49 @@ class _MapViewTriggersMixin:
         label.setPos(anchor)
         box = label.boundingRect()
         label.setTransform(QTransform.fromTranslate(-box.width() / 2.0, -box.height() - self.RULER_LABEL_GAP_PX))
+        if label.cacheMode() != QGraphicsItem.NoCache:
+            # A move is a translate-only device change too: without this Qt blits the old pixmap.
+            label.update()
+
+    def _outlined_label(self, text: str, color: QColor, z: float, *, cacheable: bool) -> QGraphicsSimpleTextItem:
+        """The outlined device-pixel map label: run labels, the pinned rulers' and
+        the live ruler's. A cacheable one is marked in data role 1 and paints from a
+        device cache at a whole-number DPR (_refresh_label_caches(), TASK-519)."""
+        label = self.scene().addSimpleText(text)
+        # map_overlay_font, not label.font(): the latter is the app chrome
+        # font, so the family silently followed apply_ui_font()'s setting.
+        font = map_overlay_font(settings.get_ruler_label_font_px())
+        font.setBold(True)
+        label.setFont(font)
+        label.setBrush(QBrush(color))
+        label.setPen(QPen(self._ruler_label_outline, 0))
+        label.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        label.setZValue(z)
+        if cacheable:
+            label.setData(1, True)
+            label.setCacheMode(_label_cache_mode(self.viewport().devicePixelRatioF()))
+        return label
+
+    def _refresh_label_caches(self) -> None:
+        """Re-renders every cacheable label's device cache, switching it to
+        NoCache at a fractional DPR and back at a whole one."""
+        mode = _label_cache_mode(self.viewport().devicePixelRatioF())
+        for item in (*self._trigger_items, *self._pinned_ruler_items):
+            if item.data(1) is True:
+                if item.cacheMode() != mode:
+                    item.setCacheMode(mode)
+                item.update()
+
+    def paintEvent(self, event) -> None:
+        world = self.viewportTransform()
+        dx, dy = world.dx(), world.dy()
+        key = (
+            world.m11(), world.m12(), world.m21(), world.m22(),
+            dx - math.floor(dx), dy - math.floor(dy), self.viewport().devicePixelRatioF(),
+        )
+        if key != self._label_cache_key:
+            # After a zoom an ItemIgnoresTransformations label's device change is
+            # translate-only, so Qt would reuse its old pixmap at a rounded offset.
+            self._refresh_label_caches()
+            self._label_cache_key = key
+        super().paintEvent(event)

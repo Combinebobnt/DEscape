@@ -405,9 +405,10 @@ def test_a_low_edge_paste_is_on_the_map_after_save_and_reload(tmp_path) -> None:
         _close(window)
 
 
-def test_paste_units_skips_an_occupant_stored_past_the_low_edge() -> None:
+def test_paste_units_lands_an_occupant_stored_past_the_low_edge_on_its_host() -> None:
     """An occupant rides with its host and does not limit the clamp, so one
-    stored on the host's low side can still land in (-1, 0)."""
+    stored on the host's low side would land in (-1, 0): it lands on the
+    host's own x, y and z instead (TASK-341), never off the map."""
     window = _window()
     try:
         model = window._ensure_unit_edits()
@@ -419,9 +420,13 @@ def test_paste_units_skips_an_occupant_stored_past_the_low_edge() -> None:
 
         pasted = _paste_at(window, (1, 50))
 
-        # The house anchors on x = 1.5, so its occupant would land on x = -0.5.
-        assert [(u.unit_const, u.x, u.y) for u in pasted] == [(_HOUSE_CONST, 1.5, 50.5)]
-        assert _status(window) == "Pasted 1 unit at (1, 50), 1 off the map skipped"
+        # The house anchors on x = 1.5, so its occupant's own offset would put it on x = -0.5.
+        by_const = {u.unit_const: u for u in pasted}
+        house, villager = by_const[_HOUSE_CONST], by_const[_PLACE_CONST]
+        assert (house.x, house.y) == (1.5, 50.5)
+        assert (villager.x, villager.y, villager.z) == (house.x, house.y, house.z)
+        assert villager.garrisoned_in_id == house.reference_id
+        assert _status(window) == "Pasted 1 unit (1 garrisoned) at (1, 50)"
     finally:
         _close(window)
 
@@ -570,7 +575,7 @@ def test_cut_units_is_one_undo_step_that_restores_exact_list_indices() -> None:
         assert sorted(u.unit_const for u in history.active_block.units) == sorted(
             e.unit.unit_const for e in entries
         )
-        assert _last_status_lines(window, 2) == ["Cut 3 units", "Cut 3 units"]
+        assert _last_status_lines(window, 2) == ["Cut 3 units", "Cut 3 units to the clipboard"]
 
         window.undo()
         assert _layout(window) == layout
@@ -597,7 +602,7 @@ def test_cutting_one_unit_is_one_record() -> None:
         assert window.edit_history.peek_undo().label == "Cut unit"
         assert _REF_ARCHER_P1 not in {u.reference_id for u in _units(window)}
         assert len(window._clipboard_history.active_block.units) == 1
-        assert _last_status_lines(window, 2) == ["Cut unit", f"Cut {name}"]
+        assert _last_status_lines(window, 2) == ["Cut unit", f"Cut {name} to the clipboard"]
 
         window.undo()
         assert _layout(window) == layout
@@ -622,7 +627,7 @@ def test_cutting_a_host_takes_its_hidden_garrison_in_one_record() -> None:
         assert _unit_count(window) == count - 2
         assert len(window.edit_history.records) == records + 1
         assert window.edit_history.peek_undo().label == "Cut 2 units"
-        assert _last_status_lines(window, 2) == ["Cut 2 units", f"Cut {name} (1 garrisoned)"]
+        assert _last_status_lines(window, 2) == ["Cut 2 units", f"Cut {name} (1 garrisoned) to the clipboard"]
         block = window._clipboard_history.active_block
         by_const = {u.unit_const: slot for slot, u in enumerate(block.units)}
         assert block.units[by_const[_PLACE_CONST]].garrison_slot == by_const[_HOUSE_CONST]
@@ -689,10 +694,144 @@ def test_a_partly_refused_cut_copies_only_what_it_removes() -> None:
         assert _unit_count(window) == count - 1
         assert window.edit_history.peek_undo().label == "Cut unit"
         assert [u.unit_const for u in window._clipboard_history.active_block.units] == [4], "the archer alone"
-        assert _last_status_lines(window, 2) == ["Cut unit", "Cut 1; 1 refused (garrison reference)"]
+        assert _last_status_lines(window, 2) == ["Cut unit", "Cut 1 to the clipboard; 1 refused (garrison reference)"]
         assert warned == [
             ("Some units not cut", "1 unit(s) are referenced by another unit's garrison and were not cut.")
         ]
+    finally:
+        _close(window)
+
+
+# -- cut keeps reference_ids (TASK-341) ----------------------------------------
+
+
+def _ids(window) -> list[int]:
+    return [u.reference_id for u in _units(window)]
+
+
+def _cut_house_and_archer(window) -> dict[int, int]:
+    """Cuts the house (its villager rides along hidden) and a free archer;
+    returns const -> the cut unit's reference_id."""
+    _hide_garrisoned(window)
+    _select(window, _REF_HOUSE, _REF_ARCHER_P1)
+    window.cut_units()
+    assert not {_REF_HOUSE, _REF_VILLAGER_P1, _REF_ARCHER_P1} & set(_ids(window))
+    return {_HOUSE_CONST: _REF_HOUSE, _PLACE_CONST: _REF_VILLAGER_P1, 4: _REF_ARCHER_P1}
+
+
+def test_the_first_paste_after_a_cut_keeps_the_ids_and_a_second_mints() -> None:
+    window = _window()
+    try:
+        cut = _cut_house_and_archer(window)
+
+        first = {u.unit_const: u for u in _paste_at(window, (60, 70))}
+
+        assert {const: u.reference_id for const, u in first.items()} == cut
+        assert first[_PLACE_CONST].garrisoned_in_id == _REF_HOUSE
+        assert _status(window).endswith(", IDs kept")
+
+        second = _paste_at(window, (80, 70))
+
+        assert len(second) == 3
+        assert not {u.reference_id for u in second} & set(cut.values())
+        assert len(set(_ids(window))) == len(_ids(window)), "ids stay unique document-wide"
+        assert "kept" not in _status(window)
+    finally:
+        _close(window)
+
+
+def test_undoing_the_paste_frees_the_ids_again_and_undoing_the_cut_does_not() -> None:
+    window = _window()
+    try:
+        cut = _cut_house_and_archer(window)
+        _paste_at(window, (60, 70))
+        window.undo()  # the paste: the wrong spot
+
+        again = _paste_at(window, (62, 72))
+
+        assert {u.unit_const: u.reference_id for u in again} == cut
+        window.undo()  # the second paste
+        window.undo()  # the cut: the originals are back with their ids
+        assert set(cut.values()) <= set(_ids(window))
+
+        minted = _paste_at(window, (64, 74))
+
+        assert not {u.reference_id for u in minted} & set(cut.values())
+        assert len(set(_ids(window))) == len(_ids(window))
+        assert "kept" not in _status(window)
+    finally:
+        _close(window)
+
+
+def test_a_cut_pasted_into_another_document_mints() -> None:
+    import uuid
+
+    window = _window()
+    try:
+        cut = _cut_house_and_archer(window)
+        window._doc_id = uuid.uuid4().hex
+
+        pasted = _paste_at(window, (60, 70))
+
+        assert len(pasted) == 3
+        assert not {u.reference_id for u in pasted} & set(cut.values())
+        assert "kept" not in _status(window)
+    finally:
+        _close(window)
+
+
+def test_a_cut_of_a_unit_placed_then_undone_twice_mints_without_raising() -> None:
+    """The counter rewinds below the cut id, so add()'s guard would refuse it."""
+    window = _window()
+    try:
+        [key] = _add_units(window, [(_PLACE_CONST, 30.5, 40.5)])
+        _select_keys(window, [key])
+        window.cut_units()
+        window.undo()  # the cut
+        window.undo()  # the place
+        model = window._ensure_unit_edits()
+        assert key[1] >= model.next_unit_id
+
+        pasted = _paste_at(window, (60, 70))
+
+        assert len(pasted) == 1
+        assert len(set(_ids(window))) == len(_ids(window))
+    finally:
+        _close(window)
+
+
+def test_a_read_only_paste_of_a_cut_warns_once(monkeypatch) -> None:
+    window = _window()
+    try:
+        _cut_house_and_archer(window)
+        warned = _warnings(window)
+
+        def read_only():
+            window._warn("Units are read-only", "for this file")
+
+        monkeypatch.setattr(window, "_ensure_unit_edits", read_only)
+
+        assert _paste_at(window, (60, 70)) == []
+        assert len(warned) == 1
+    finally:
+        _close(window)
+
+
+def test_a_kept_id_is_at_the_new_place_once_after_save_and_reload(tmp_path) -> None:
+    window = _window()
+    try:
+        _cut_house_and_archer(window)
+        archer = next(u for u in _paste_at(window, (60, 70)) if u.unit_const == 4)
+        assert archer.reference_id == _REF_ARCHER_P1
+
+        out = tmp_path / "out.aoe2scenario"
+        window.scenario.path = out
+        window._untitled = False
+        window.save()
+
+        reloaded = [u for units in load_map_and_units(out).unit_manager.units for u in units]
+        same = [u for u in reloaded if u.reference_id == _REF_ARCHER_P1]
+        assert [(u.x, u.y) for u in same] == [(archer.x, archer.y)]
     finally:
         _close(window)
 
@@ -831,35 +970,87 @@ def test_ctrl_x_cuts_from_the_map_and_stays_with_a_focused_spin_box() -> None:
         _close(window)
 
 
-def test_the_focused_garrison_list_takes_cut_and_copy_from_the_window() -> None:
+def test_the_focused_garrison_list_takes_cut_copy_and_paste_from_the_window() -> None:
+    """TASK-341 item 7: with the Garrison list focused, all three keys act on
+    its rows through its own buttons, and Paste never reaches the map."""
+    import unit_edit_viewer_helpers as helpers
     from PyQt5.QtCore import Qt
     from PyQt5.QtTest import QTest
 
     window = _shown_units_window()
     try:
-        _select(window, _REF_HOUSE)
+        panel = window.units_panel
+        tree = panel.garrison_tree
+        tower, occupants = helpers._tower_with_two_inside(window)
+        other = helpers._second_tower(window)
+        _hide_garrisoned(window)
+        _select(window, _REF_ARCHER_P1)
+        assert window.copy_units(), "a units entry is active, so a map paste could happen"
+        window.on_hover((60, 70))
+        _select_keys(window, [(1, tower.reference_id)])
         count = _unit_count(window)
-        tree = window.units_panel.garrison_tree
-        assert tree.topLevelItemCount() == 1, "the house shows its villager"
-        _focus(window.map_view)
-        assert _edit_state(window)[:2] == [("Cu&t Units", True), ("&Copy Units", True)]
+        records = len(window.edit_history.records)
 
+        # A click focuses the list first and selects the row after.
         _focus(tree)
-        tree.setCurrentItem(tree.topLevelItem(0))
-        assert _edit_state(window)[:2] == [("Cu&t Units", False), ("&Copy Units", False)]
-        _ctrl(tree, Qt.Key_X)
+        assert _edit_state(window) == [
+            ("Cu&t Garrisoned Units", False), ("&Copy Garrisoned Units", False), ("&Paste Garrisoned Units", False),
+        ]
+        assert window.copy_action.toolTip() == panel.garrison_copy_button.toolTip()
+        window._dispatch_paste()
+        assert _unit_count(window) == count, "nothing to paste in the list, and no map paste"
+
+        helpers._select_rows(window, {occupants[0].reference_id})
+        assert _edit_state(window)[:2] == [("Cu&t Garrisoned Units", True), ("&Copy Garrisoned Units", True)]
         _ctrl(tree, Qt.Key_C)
-        # The disabled actions are only the first gate: the dispatch refuses too.
-        window._dispatch_cut()
-        window._dispatch_copy()
+        assert window._garrison_clipboard, "the list's Copy filled the Garrison clipboard"
+        assert len(window.edit_history.records) == records
+        assert _edit_state(window)[2] == ("&Paste Garrisoned Units", True)
 
-        assert _unit_count(window) == count
-        assert window._clipboard_history.entries == []
+        _ctrl(tree, Qt.Key_V)
+        assert _unit_count(window) == count + 1
+        assert window.edit_history.peek_undo().label == "Paste into garrison"
+        assert len([u for u in _units(window) if u.garrisoned_in_id == tower.reference_id]) == 3
 
-        _focus(window.map_view)
-        assert _edit_state(window)[:2] == [("Cu&t Units", True), ("&Copy Units", True)]
+        # The paste's refresh hides and re-shows the Garrison block (show_unit()), which drops focus.
+        _focus(tree)
+        helpers._select_rows(window, {occupants[1].reference_id})
+        _ctrl(tree, Qt.Key_X)
+        assert window._garrison_cut is not None, "Ctrl+X marked the row"
+        _select_keys(window, [(2, other.reference_id)])
+        _focus(tree)
+        _ctrl(tree, Qt.Key_V)
+        assert window.edit_history.peek_undo().label == "Move into garrison"
+        assert occupants[1].garrisoned_in_id == other.reference_id
+        assert _unit_count(window) == count + 1
     finally:
         QTest.keyRelease(window, Qt.Key_Control)
+        _close(window)
+
+
+def test_opening_the_edit_menu_rereads_text_selected_in_a_focused_label() -> None:
+    """Selecting text inside an already focused label moves no focus, so only
+    the Edit menu's aboutToShow brings Cut and Copy up to date (TASK-341)."""
+    from PyQt5.QtCore import QPoint
+    from PyQt5.QtWidgets import QApplication, QMenu
+
+    window = _shown_units_window()
+    edit_menu = next(m for m in window.menuBar().findChildren(QMenu) if m.title() == "&Edit")
+    try:
+        _select(window, _REF_ARCHER_P1)
+        label = window.units_panel.unit_field_labels["name"]
+        _focus(label)
+        label.setSelection(0, len(label.text()))
+        assert label.selectedText()
+        assert _edit_state(window)[:2] == [("Cu&t Units", True), ("&Copy Units", True)], "stale until the menu opens"
+
+        edit_menu.popup(window.mapToGlobal(QPoint(10, 10)))
+        QApplication.processEvents()
+
+        assert _edit_state(window)[:2] == [("Cu&t Units", False), ("&Copy", True)]
+    finally:
+        edit_menu.hide()
+        QApplication.processEvents()
         _close(window)
 
 

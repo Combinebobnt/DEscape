@@ -26,7 +26,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import asset_source, gate_orientation, terrain_palette, unit_sprites
+from descape import (
+    asset_source,
+    cliff_catalog,
+    flat_deproject,
+    game_dataset,
+    games,
+    gate_orientation,
+    terrain_palette,
+    unit_sprites,
+)
 
 import conftest
 
@@ -175,3 +184,103 @@ def test_no_gate_loses_a_piece_to_the_turn(tool):
                         lost.append((const, civ, age))
     assert checked, "no gate art resolved at all, so this proves nothing"
     assert not lost, f"{len(lost)} of {checked} lose a piece or their icon, first {lost[:5]}"
+
+
+# --- thin cliff straights (TASK-350) ------------------------------------
+# No cliff frame runs along a tile diagonal, so icon_for() de-projects the
+# thin straights (unit_sprites.FLAT_DEPROJECT_CLIFF_FRAMES) onto their
+# footprint. Measured on the install 2026-11-25 at 32 px tiles, both games (22
+# thin consts in AoE2, 14 in Return of Rome): 3x1 frames 10/11 read 178.9-179.9
+# or 0.1 degrees, 1x3 frames 7/8 read 87.7-91.0, and 0.85-0.95 of the ink lands
+# inside except Limestone's 3x1 frame 11 at 0.75. Dropping the de-project branch
+# turns the first test red in both games; de-projecting every frame, the second.
+
+CLIFF_TILE_PX = 32
+# A frame keeps this much of its unclipped de-projected ink on its own footprint.
+CLIFF_INSIDE_MIN = 0.7
+# The frames that run along each thin span's long side: 3x1 along x, 1x3 along y.
+_CLIFF_RUN = {(3, 1): ((10, 11), 0.0), (1, 3): ((7, 8), 90.0)}
+
+
+@pytest.fixture(params=[game.id for game in games.GAMES])
+def cliff_game(request, tool):
+    """Each registered game's dataset active, skipped where its root has no resources."""
+    game = games.get(request.param)
+    if not (game.root(asset_source.get_install_path()) / "resources").is_dir():
+        pytest.skip(f"the install has no {game.display_name} resources")
+    with game_dataset.activated(game.id):
+        unit_sprites.clear_caches()
+        yield tool
+    unit_sprites.clear_caches()
+
+
+def _thin_cliffs() -> list[tuple[str, int, tuple[int, int]]]:
+    """(family, const, span) for every cliff piece with a 1 in its span (suffixes 2 and 3)."""
+    out = []
+    for family, pieces in cliff_catalog.families().items():
+        for piece in pieces:
+            span = terrain_palette.tile_span(piece.unit_const, (1, 1))
+            if span in _CLIFF_RUN:
+                out.append((family, piece.unit_const, span))
+    assert out, "no thin cliff piece in this game, so this proves nothing"
+    return out
+
+
+def _inside_share(const: int, frame: int, span: tuple[int, int]) -> float:
+    """The share of the frame's de-projected ink, unclipped, that lands on its footprint (native scale)."""
+    entry = unit_sprites.graphic_map()[const]
+    (piece,) = unit_sprites._native_pieces_for(const, entry, float(frame), unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG)
+    tile, pad = unit_sprites.NATIVE_TILE_W // 2, 6
+    sx, sy = span
+    out = flat_deproject.deprojected(
+        piece.main, piece.hotspot_x, piece.hotspot_y, tile, tile, (sx + 2 * pad) * tile, (sy + 2 * pad) * tile,
+    )
+    ink = out[..., 3] > 0
+    return float(ink[pad * tile : (pad + sy) * tile, pad * tile : (pad + sx) * tile].sum() / max(1, ink.sum()))
+
+
+def test_every_thin_cliff_straight_lies_along_its_flat_footprint(cliff_game):
+    """Frames 7, 8, 10 and 11 draw on every thin piece of every family; the
+    two that run along the piece's long side read that axis and keep at
+    least CLIFF_INSIDE_MIN of their ink on the footprint."""
+    tool, failures, checked = cliff_game, [], 0
+    for family, const, span in _thin_cliffs():
+        runs, axis = _CLIFF_RUN[span]
+        fw, fh = span[0] * CLIFF_TILE_PX, span[1] * CLIFF_TILE_PX
+        for frame in sorted(unit_sprites.FLAT_DEPROJECT_CLIFF_FRAMES):
+            icon = unit_sprites.icon_for(const, float(frame), 0, fw, fh)
+            if icon is None:
+                failures.append(f"{family} {const} frame {frame}: no icon")
+                continue
+            if frame not in runs:
+                continue
+            checked += 1
+            got = tool.principal_axis_deg(icon.rgba[..., 3])
+            if tool.axis_gap_deg(got, axis) > tool.TOLERANCE_DEG:
+                failures.append(f"{family} {const} frame {frame}: axis {got:.1f}, want {axis}")
+            share = _inside_share(const, frame, span)
+            if share < CLIFF_INSIDE_MIN:
+                failures.append(f"{family} {const} frame {frame}: {share:.2f} of its ink inside")
+    assert checked, "no thin straight was measured"
+    assert not failures, f"{len(failures)} of {checked}: {failures}"
+
+
+def test_every_other_frame_of_a_thin_cliff_keeps_its_contain_fit(cliff_game):
+    """Every frame outside FLAT_DEPROJECT_CLIFF_FRAMES draws exactly as _build_icon() would."""
+    differ, checked = [], 0
+    for family, const, span in _thin_cliffs():
+        entry = unit_sprites.graphic_map()[const]
+        fw, fh = span[0] * CLIFF_TILE_PX, span[1] * CLIFF_TILE_PX
+        for frame in range(cliff_catalog.frame_count(const)):
+            if frame in unit_sprites.FLAT_DEPROJECT_CLIFF_FRAMES:
+                continue
+            icon = unit_sprites.icon_for(const, float(frame), 0, fw, fh)
+            want = unit_sprites._build_icon(
+                const, entry, float(frame), unit_sprites.TEAM_COLORS[0], fw, fh,
+                unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG,
+            )
+            checked += want is not None
+            if (icon is None) != (want is None) or (icon is not None and not np.array_equal(icon.rgba, want.rgba)):
+                differ.append(f"{family} {const} frame {frame}")
+    assert checked, "no contain-fitted frame drew, so this proves nothing"
+    assert not differ, f"{len(differ)} of {checked} differ from the contain-fit: {differ[:5]}"

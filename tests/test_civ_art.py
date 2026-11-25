@@ -216,6 +216,31 @@ def test_a_non_building_const_is_untouched():
     assert unit_sprites.resolve_entry(villager, CHINESE, 5) is unit_sprites.graphic_map()[villager]
 
 
+def test_the_unit_art_table_keeps_each_units_own_logic_and_groups_every_const():
+    """TASK-140 Slice 1: per-civ unit art, inert until the render reads it. A
+    unit_art entry agrees with Gaia's on every field the placed const's logic
+    reads (the holdouts' breaking civs are left out), and no building leaks in."""
+    art = unit_sprites.building_art()
+    gm = unit_sprites.graphic_map()
+    consts = {c for by_const in art.unit_art.values() for c in by_const}
+    assert set(art.unit_groups) == consts and len(consts) > 100
+    assert set(art.unit_groups.values()) == {"antiquity", "scenery", "sails", "flags", "regional"}
+    assert not consts & {c for by_const in art.civ_art.values() for c in by_const}
+    broken = [
+        (civ, const, field)
+        for civ, by_const in art.unit_art.items()
+        for const, entry in by_const.items()
+        for field in ("angle_count", "rotation_is_variant", "variant_count")
+        if entry.get(field) != gm[const].get(field)
+    ]
+    assert not broken, broken[:10]
+    groups = {const: art.unit_groups[const] for const in (539, 545, 125, 434, 4, 35, 1279)}
+    assert groups == {539: "sails", 545: "sails", 125: "regional", 434: "regional", 4: "antiquity", 35: "flags", 1279: "scenery"}
+    assert art.unit_art[CHINESE][125]["file_name"].startswith("u_monk_asia_")
+    assert "u_shp_sail_asia_boat_4_x1" in [p["file_name"] for p in art.unit_art[CHINESE][539]["pieces"]]
+    assert art.unit_art[47][4]["file_name"] == "u_arc_bowman_idleA_x1"
+
+
 def test_the_age_table_reads_the_age_techs():
     """TASK-205: the generic start simulation, ages 2..6; Post-Imperial adds no age tech."""
     ages = unit_sprites.building_art().age_upgrades
@@ -323,6 +348,7 @@ def test_every_file_the_civ_art_table_names_is_on_this_install():
     art = unit_sprites.building_art()
     entries = [e for by_const in art.civ_art.values() for e in by_const.values()]
     entries += [e for by_age in art.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
+    entries += [e for by_const in art.unit_art.values() for e in by_const.values()]
     names = set()
     for entry in entries:
         names.add(entry["file_name"])

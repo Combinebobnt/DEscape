@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from functools import cache, lru_cache
 from typing import NamedTuple
 
-from descape import gate_orientation, render_units, unit_kind, unit_rotation, unit_sprites
+from descape import gate_orientation, object_orientation, render_units, unit_kind, unit_rotation, unit_sprites
 from descape.edit_history import TileState, tile_state
 from descape.terrain_palette import tile_span
 
@@ -664,9 +664,9 @@ POSITION_TRANSFORMS: dict[str, Callable[[float, float, int], tuple[float, float]
 }
 
 # The four elements that exchange the x and y axes. A footprint whose span is
-# not square cannot be expressed under one of these (no const carries the
-# swapped shape), and a wall's stored run-direction index has to swap with
-# them -- Resolution 1's "axis-swapping class".
+# not square cannot be expressed under one of these unless a sibling const
+# carries the swapped shape (gates, object_orientation's groups), and a wall's
+# stored run-direction index has to swap with them -- Resolution 1's "axis-swapping class".
 AXIS_SWAPPING = frozenset({"r", "r3", "d", "a"})
 
 # Wall variant indices, from unit_sprites.wall_variant_from_neighbours8: 0 is
@@ -809,7 +809,8 @@ def reorient_gate_const(unit_const: int, name: Element) -> int:
     loud-refusal contract. The six 1x1 corner groups pass through verbatim:
     all four of their siblings share one graphic and a 1x1 footprint is
     invariant under every element, so remapping would churn the stored const
-    for no visual effect.
+    for no visual effect. A corner piece carried with its gate takes
+    corner_piece() of the gate's image instead (region_transform.unit_images()' `gate`, TASK-532).
     """
     siblings = gate_orientation.orientation_siblings(unit_const)
     if siblings is None:
@@ -817,6 +818,39 @@ def reorient_gate_const(unit_const: int, name: Element) -> int:
     if all(tile_span(c, render_units.NON_BUILDING_SPAN) == (1, 1) for c in siblings):
         return unit_const
     return siblings[gate_orientation_map(name)[siblings.index(unit_const)]]
+
+
+def reorient_object_const(unit_const: int, name: Element) -> int:
+    """The sibling a non-square object (bridge, chain, longhouse, blocker)
+    becomes under element `name` (object_orientation.py, TASK-329).
+
+    The axis flips iff swaps_axes(name). In a group with two ends (the
+    bridges), the end is the one whose top-ward vector the image of this
+    piece's own top-ward vector points along: exact for D4, nearest for an
+    angular element. Raises for a const with no siblings, and on a tie, which
+    the axis choice rules out.
+    """
+    axis, end = object_orientation.group_state(unit_const)
+    new_axis = 1 - axis if swaps_axes(name) else axis
+    if end is None:
+        return object_orientation.sibling(unit_const, new_axis, None)
+    tx, ty = object_orientation.TOP_WARD[axis]
+    vx, vy = _linear_part(name)(tx, ty) if end == 0 else _linear_part(name)(-tx, -ty)
+    ux, uy = object_orientation.TOP_WARD[new_axis]
+    along = vx * ux + vy * uy
+    if abs(along) < 1e-9:
+        raise ValueError(f"unit_const {unit_const}'s run under {name} is equidistant from both ends")
+    return object_orientation.sibling(unit_const, new_axis, 0 if along > 0 else 1)
+
+
+def image_const(unit_const: int, name: Element) -> int:
+    """The const of `unit_const`'s image under `name`: a gate's or a
+    non-square object's orientation sibling, else the const itself."""
+    if gate_orientation.is_gate(unit_const):
+        return reorient_gate_const(unit_const, name)
+    if object_orientation.has_siblings(unit_const):
+        return reorient_object_const(unit_const, name)
+    return unit_const
 
 
 # What plan_mirror_units() does with an image that lands on a source unit:
@@ -855,8 +889,8 @@ class UnitMirrorPlan:
     # Report-only: a source unit whose footprint is not square cannot be
     # reflected under an axis-swapping element, because no const carries the
     # swapped shape. Its image keeps the original footprint orientation.
-    # Gates are the one family that CAN (their four orientations are four
-    # consts), so they are reoriented rather than listed here.
+    # Gates and the object_orientation groups CAN (each orientation is its
+    # own const), so they are reoriented rather than listed here.
     unsquare_spans: list[object]
     # Report-only: gates whose image carries a different orientation const
     # than its source (Stage 2b).
@@ -879,6 +913,9 @@ class UnitMirrorPlan:
     # (a unit straddling a modes 1/2 axis row), the unit landed on and the
     # first shared tile. A tree landing on a spilling building names the building.
     overlap_blockers: list[tuple[object, tuple[int, int]]] = field(default_factory=list)
+    # Report-only: non-gate units (bridges, chain, longhouse, blockers) whose
+    # image carries another orientation const than its source (TASK-329).
+    reoriented: list[object] = field(default_factory=list)
 
     @property
     def overlap_blocked(self) -> bool:
@@ -908,8 +945,9 @@ def _image_position(
     span_anchor round trip UnitEditModel.set_unit_const() uses, and the only
     correct treatment of the diagonal gates' sparse footprints.
 
-    `new_const` is the reoriented gate sibling (Stage 2b), whose span is the
-    one the anchor has to satisfy: ne is (4, 1) and se is (1, 4), so reusing
+    `new_const` is the reoriented gate or object sibling (Stage 2b,
+    image_const()), whose span is the one the anchor has to satisfy: a gate's
+    ne is (4, 1) and se is (1, 4), a bridge's `a` (2, 3) and `b` (3, 2), so reusing
     the source's span would leave the image half a footprint off its tiles.
 
     An angular element that coincides with a D4 element (id, r2, a) takes
@@ -1030,11 +1068,9 @@ def walls_are_radian(units) -> bool:
 def unit_image(unit, x: float, y: float, element: Element, n: int, file_radian: bool):
     """(const, x, y, rotation) of `unit`'s image under `element` on an n x n
     lattice, with the position passed in (a RegionUnit stores dx/dy). The
-    gate sibling first, then the position from that sibling's own span, then
-    the rotation: plan_mirror_units()' own order."""
-    new_const = (
-        reorient_gate_const(unit.unit_const, element) if gate_orientation.is_gate(unit.unit_const) else unit.unit_const
-    )
+    gate or object sibling first (image_const()), then the position from that
+    sibling's own span, then the rotation: plan_mirror_units()' own order."""
+    new_const = image_const(unit.unit_const, element)
     image_x, image_y = _image_position(unit.unit_const, x, y, n, element, new_const)
     return new_const, image_x, image_y, _image_rotation(unit, element, file_radian)
 
@@ -1218,35 +1254,45 @@ def plan_mirror_units(
     overlapping: list[UnitImage] = []
     unsquare_spans: list[object] = []
     gates: list[object] = []
+    reoriented: list[object] = []
     off_map: list[tuple[object, Element]] = []
     for unit in sources:
         span_x, span_y = tile_span(unit.unit_const, render_units.NON_BUILDING_SPAN)
         is_gate = gate_orientation.is_gate(unit.unit_const)
+        has_siblings = is_gate or object_orientation.has_siblings(unit.unit_const)
         # Images are re-anchored on whole tiles, so an off-parity building's
         # image onto its own footprint matches its canonical anchor, not its raw one.
-        seen = {_key(unit.x, unit.y), _key(*_image_position(unit.unit_const, unit.x, unit.y, n, "id"))}
+        # One const per position: the same const there is a duplicate, another sibling an overlap.
+        seen = {
+            _key(unit.x, unit.y): unit.unit_const,
+            _key(*_image_position(unit.unit_const, unit.x, unit.y, n, "id")): unit.unit_const,
+        }
+        source_keys = set(seen)
         reported_span = False
         for index, element in enumerate(elements):
             # The source itself stays put. Re-anchoring an off-parity building
             # through identity lands it half a tile off, where it would "straddle" itself.
             if element == "id" or element == ANGULAR_IDENTITY:
                 continue
-            # Stage 2b: a gate's orientation lives in its const, so the image
-            # gets the sibling the element maps it to -- and its anchor comes
-            # from that sibling's own span, which is why the const is resolved
-            # before the position.
-            new_const = reorient_gate_const(unit.unit_const, element) if is_gate else unit.unit_const
+            # Stage 2b: a gate's or object's orientation lives in its const, so
+            # the image gets the sibling the element maps it to -- and its anchor
+            # comes from that sibling's own span, which is why the const is
+            # resolved before the position.
+            new_const = image_const(unit.unit_const, element)
             x, y = _image_position(unit.unit_const, unit.x, unit.y, n, element, new_const)
-            if _key(x, y) in seen and new_const == unit.unit_const:
+            key = _key(x, y)
+            if seen.get(key) == new_const:
                 continue  # a degenerate orbit: this element maps the unit onto itself
-            seen.add(_key(x, y))
+            stacked = key in seen and key not in source_keys  # another image of this unit, as another sibling
+            seen.setdefault(key, new_const)
             blocking = set() if new_const in passable else kept_tiles  # passable eye candy collides with nothing
             if angular is not None and not _angular_image_lands(new_const, x, y, n, unreachable, blocking):
                 off_map.append((unit, element))
                 continue
-            if new_const != unit.unit_const and unit not in gates:
-                gates.append(unit)
-            if span_x != span_y and swaps_axes(element) and not is_gate and not reported_span:
+            changed = reoriented if not is_gate else gates
+            if new_const != unit.unit_const and unit not in changed:
+                changed.append(unit)
+            if span_x != span_y and swaps_axes(element) and not has_siblings and not reported_span:
                 unsquare_spans.append(unit)
                 reported_span = True
             collides = new_const not in passable
@@ -1255,6 +1301,13 @@ def plan_mirror_units(
                 continue
             tiles = render_units.occupied_tiles_for(new_const, x, y, width, height) if collides else None
             hits = sorted(tile for tile in tiles or () if tile in source_owners)
+            if stacked and collides and not hits:
+                if unit not in straddling:
+                    straddling.append(unit)
+                if tiles:
+                    blame(unit, unit, sorted(tiles)[0])
+                overlapping.append(image_of(unit, index, element, new_const, x, y))
+                continue
             if hits:
                 # An image overlapping a KEPT source unit means the source's
                 # own footprint crosses the symmetry axis: dedup cannot catch
@@ -1284,6 +1337,7 @@ def plan_mirror_units(
         overlapping=overlapping,
         overlaps=overlaps,
         overlap_blockers=list(blockers.values()),
+        reoriented=reoriented,
     )
 
 

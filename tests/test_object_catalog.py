@@ -620,3 +620,79 @@ def test_the_committed_tables_carry_the_measured_civ_portraits() -> None:
     game_dataset.set_active(game_dataset.ROR)
     assert object_catalog.icon_for(BARRACKS_AGE1) == 10
     assert object_catalog.icon_for(BARRACKS_AGE1, EGYPTIAN) == 8
+
+
+# --- antiquity civs' own unit names, by the same civ as the portrait --------------
+
+ARCHER, ATHENIANS, BOWMAN_STRING = 4, 47, 405052
+
+
+@pytest.fixture()
+def named_rows(monkeypatch):
+    from descape import asset_source
+
+    rows = {
+        1: {"type": 70, "class": 0, "code": "ARCHR", "string_id": 5083, "civ_string_ids": {"47": 405052, "48": 999999}},
+        2: {"type": 70, "class": 0, "code": "MILTA", "string_id": 5079},
+    }
+    strings = {5083: "Archer", 5079: "Militia", 405052: "Bowman"}
+    monkeypatch.setattr(object_catalog, "_dat_entry", lambda section, id_: rows.get(id_))
+    monkeypatch.setattr(asset_source, "resource_string", lambda key, lang=None: strings.get(key))
+    monkeypatch.setattr(object_catalog, "_dat_table", lambda: {"objects": {str(k): v for k, v in rows.items()}})
+    object_catalog.civ_named_ids.cache_clear()
+    yield rows
+    object_catalog.civ_named_ids.cache_clear()
+
+
+def test_civ_name_reads_the_civs_own_name_id(named_rows) -> None:
+    assert object_catalog.civ_name(1, 47) == "Bowman"
+    assert object_catalog.civ_name(1, None) is None
+    assert object_catalog.civ_name(1, 1) is None, "no own id for that civ"
+    assert object_catalog.civ_name(2, 47) is None, "a row without civ_string_ids"
+    assert object_catalog.civ_name(99, 47) is None, "no row"
+    assert object_catalog.civ_name(1, 48) is None, "an id the install lacks"
+
+
+def test_owner_name_falls_back_to_the_base_and_keeps_the_data_mod_tag(named_rows, monkeypatch) -> None:
+    monkeypatch.setattr(object_catalog, "display_name", lambda id_: f"display {id_}")
+    tag = object_catalog.DATA_MOD_TAG
+    assert object_catalog.owner_name(1, 47) == "Bowman"
+    assert object_catalog.owner_name(1, 47, "Archer") == "Bowman"
+    assert object_catalog.owner_name(1, 47, f"Archer {tag}") == f"Bowman {tag}"
+    assert object_catalog.owner_name(1, 1, "Archer") == "Archer"
+    assert object_catalog.owner_name(1, None) == "display 1"
+    assert object_catalog.owner_name(1, 48, "") == "display 1", "an unresolved id and an empty base"
+
+
+def test_name_civ_key_and_civ_named_ids_follow_the_rows_own_ids(named_rows) -> None:
+    assert object_catalog.name_civ_key(1, 47) == 47
+    assert object_catalog.name_civ_key(1, 48) == 48, "the key is the row's, resolved or not"
+    assert object_catalog.name_civ_key(1, 1) is None
+    assert object_catalog.name_civ_key(1, None) is None
+    assert object_catalog.name_civ_key(2, 47) is None
+    assert object_catalog.name_civ_key(99, 47) is None
+    assert object_catalog.civ_named_ids(47) == {1}
+    assert object_catalog.civ_named_ids(1) == object_catalog.civ_named_ids(None) == frozenset()
+
+
+def test_a_fallback_game_refuses_a_civ_id_its_fallback_does_not_share(named_rows, monkeypatch) -> None:
+    """Under Return of Rome with no strings file of its own, the AoE2 strings fit
+    only a civ id AoE2's row gives the same object for the same civ."""
+    from descape import game_dataset
+
+    game_dataset.set_active(game_dataset.ROR)
+    monkeypatch.setattr(game_dataset, "has_own_strings", lambda lang, game=None: False)
+    base = {"1": {"code": "ARCHR", "string_id": 5083, "civ_string_ids": {"47": 405052, "48": 111}}}
+    monkeypatch.setattr(object_catalog, "_committed_table", lambda game_id: {"objects": base})
+    assert object_catalog.civ_name(1, 47) == "Bowman"
+    base["1"]["civ_string_ids"] = {"47": 123}
+    assert object_catalog.civ_name(1, 47) is None
+    base["1"] = {"code": "OTHER", "string_id": 5083, "civ_string_ids": {"47": 405052}}
+    assert object_catalog.civ_name(1, 47) is None, "another object in the fallback"
+
+
+def test_the_committed_table_names_the_athenian_archer_by_its_own_id() -> None:
+    row = object_catalog.dat_objects()[ARCHER]
+    assert row["civ_string_ids"][str(ATHENIANS)] == BOWMAN_STRING
+    assert ARCHER in object_catalog.civ_named_ids(ATHENIANS)
+    assert ARCHER not in object_catalog.civ_named_ids(BRITONS)

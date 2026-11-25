@@ -34,6 +34,7 @@ requested for the rows in the viewport only.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -494,6 +495,8 @@ class CatalogBrowserView(QWidget):
         else:
             self._entries = tuple(entries)
             self._by_id = {entry.id: entry for entry in self._entries}
+        # The rows as loaded; _entries and _by_id carry set_civ()'s owner names over them.
+        self._base_entries, self._base_by_id = self._entries, self._by_id
         self._items: dict[int, QListWidgetItem] = {}
         self._category = self._opening_category(default_category)
         # The real category the favorites view returns to.
@@ -670,8 +673,9 @@ class CatalogBrowserView(QWidget):
         return self._mode if self._has_install() else "names"
 
     def entry(self, value: int):
-        """`value`'s catalog entry, random rows included, or None for an id this dataset lacks."""
-        return self._by_id.get(value)
+        """`value`'s catalog entry, random rows included, or None for an id this
+        dataset lacks. Its name is the standard one, not the owner's."""
+        return self._base_by_id.get(value)
 
     # -- favorites (GH #195) ------------------------------------------------------
 
@@ -785,7 +789,8 @@ class CatalogBrowserView(QWidget):
 
     def reload_entries(self) -> None:
         """After a game dataset switch: rows rebuilt from the new dataset's catalog; the favorites view stays."""
-        self._entries, self._by_id = self._load_entries()
+        self._base_entries, self._base_by_id = self._load_entries()
+        self._name_entries()
         self._excluded_rows = self._rows_excluded_by(self._excluded)
         self._last_category = self._opening_category(self._last_category)
         self.class_combo.setProperty("category", None)
@@ -820,11 +825,31 @@ class CatalogBrowserView(QWidget):
 
     def set_civ(self, civ: int | None) -> None:
         """The Owner's portrait civ (GH #372): re-requests the rows on screen; a
-        row scrolled back into view takes the new civ's from the memo."""
+        row scrolled back into view takes the new civ's from the memo. Rows are
+        renamed (an Athenian Archer reads Bowman) only when the two civs' own
+        names differ."""
         if civ == self._civ:
             return
-        self._civ = civ
+        old, self._civ = self._civ, civ
+        named = object_catalog.civ_named_ids(civ)
+        if object_catalog.civ_named_ids(old) != named or any(
+            object_catalog.civ_name(i, old) != object_catalog.civ_name(i, civ) for i in named
+        ):
+            self._name_entries()
+            self._populate()
+            return
         self._request_viewport()
+
+    def _name_entries(self) -> None:
+        """_entries and _by_id from the loaded rows, each named as the owner's civ names it."""
+        named = object_catalog.civ_named_ids(self._civ)
+        entries = tuple(self._owner_entry(entry) if entry.id in named else entry for entry in self._base_entries)
+        self._entries, self._by_id = entries, {entry.id: entry for entry in entries}
+
+    def _owner_entry(self, entry):
+        name = object_catalog.owner_name(entry.id, self._civ, entry.name)
+        # search_text stays the standard name's, so "archer" still finds the Bowman.
+        return entry if name == entry.name else dataclasses.replace(entry, name=name)
 
     # -- category, class, filter -------------------------------------------------
 
@@ -852,7 +877,8 @@ class CatalogBrowserView(QWidget):
         self._update_counts()
 
     def _passes(self, entry, needle: str, show_hidden: bool, *, favorite: bool = False) -> bool:
-        return self._listed(entry, show_hidden, favorite=favorite) and (not needle or needle in entry.search_text)
+        matches = not needle or needle in entry.search_text or needle in entry.name.lower()
+        return self._listed(entry, show_hidden, favorite=favorite) and matches
 
     def _listed(self, entry, show_hidden: bool, *, favorite: bool = False) -> bool:
         """Whether a row passes the hidden box and set_excluded(), before any text or class filter.

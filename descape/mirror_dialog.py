@@ -384,6 +384,8 @@ class MirrorDialog(QDialog):
                 )
                 if unit_plan.gates:
                     parts.append(f"{len(unit_plan.gates)} gate(s) reoriented")
+                if unit_plan.reoriented:
+                    parts.append(f"{len(unit_plan.reoriented)} object(s) reoriented")
                 if unit_plan.unsquare_spans:
                     parts.append(
                         f"{len(unit_plan.unsquare_spans)} non-square footprint(s) cannot be "

@@ -25,6 +25,17 @@ def test_trees_and_scenery_are_cyclable(const):
     assert unit_variant.is_cyclable(const)
 
 
+@pytest.mark.parametrize(("const", "runs"), [(896, 3), (1635, 3), (2598, 2)])
+def test_the_particle_waterfalls_cycle_through_their_image_angles_runs(const, runs):
+    """GH #330: a waterfall's entry carries angle_count ImageAngles, so it is
+    VARIANT and cyclable by the existing derivation, with no special case."""
+    assert unit_rotation.semantics_for(const) == unit_rotation.VARIANT
+    assert unit_variant.is_cyclable(const)
+    assert unit_variant.variant_count_for(const) == runs
+    assert not unit_variant.frame_follows_variant(const), ".dat type 20 keeps its frame"
+    assert unit_variant.cycle_step(float(runs - 1), runs, runs, 1) == 0.0
+
+
 def test_barrels_cycle_through_six_variants():
     """GH #52's Barrels step, DEscape half: the count Next/Previous wraps at."""
     assert unit_variant.variant_count_for(BARRELS) == 6

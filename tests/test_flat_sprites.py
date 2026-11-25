@@ -52,21 +52,46 @@ what each check actually covers is recorded rather than hoped for:
 - Turn the wrong way (`FLAT_RUN_STEPS = 3`): RED via the gate check here and
   the first-principles turn checks in tests/test_unit_sprites.py; the wall
   check here stays green, since it derives its frame from flat_wall_shape().
+- Drop the de-project branch in `icon_for()` (every cliff contain-fits, TASK-350):
+  RED, 6 of 8, via the thin-straight checks, the Enhanced check and the scope
+  check's own cliff draw. The frame-4 controls stay green by design. Recorded
+  2026-11-25.
+- Drop the `"deproject"` cache-key tag: RED via the scope check only (the
+  non-cliff const is served the cliff's cached icon). Drop the cliff-membership
+  test from the branch: RED, the same check. Size x2 art with x1's tile
+  (`scale = tile / (NATIVE_TILE_W / 2)`): RED via the Enhanced check, the run
+  twice as thick (ink 2046 px against 1020) and off centre. De-project every
+  cliff frame (drop the frame condition): RED, 2 of 2, via the frame-4
+  controls. Shift the hotspot `_deprojected_icon()` passes by a quarter tile:
+  RED, 4 of 4, via the thin-straight checks' placement assertion, added for
+  exactly this (the axis and reach assertions alone stayed green). Recorded
+  2026-11-25.
 """
 
 from __future__ import annotations
 
 import math
+import struct
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, render_cache, render_flat, render_paint, render_units, unit_sprites
+from descape import (
+    asset_source,
+    flat_deproject,
+    iso_geometry,
+    render_cache,
+    render_flat,
+    render_paint,
+    render_units,
+    unit_sprites,
+)
 from descape.terrain_palette import BUILDING_TILE_SPANS, PLAYER_COLORS
 from descape.unit_filter import UnitFilter
 
-from test_unit_sprites import CONST, FILE_NAME, build_sld
+import conftest
+from test_unit_sprites import _FRAME_HEADER, _HEADER, CONST, FILE_NAME, MAGIC, MAIN, bc1_solid, build_sld
 
 MAP_W = MAP_H = 12
 CHUNK = 128
@@ -527,3 +552,184 @@ def test_a_flat_gate_icon_draws_its_turned_sibling_in_its_own_footprint(sprite_i
     sprite = unit_sprites.sprite_for(GATE_CONST, 0.0, 0, 32)
     assert sprite is not None
     assert _centre_colour(sprite) == _file_colour(GATE_FILE, 0)
+
+
+# --- thin cliff straights de-projected onto the grid (TASK-350) --------
+
+# Two synthetic cliff consts sharing one 24-frame file: a 3x1 and a 1x3, as a
+# family's suffix 3 and 2 pieces are, plus a non-cliff const on the same file.
+CLIFF_X, CLIFF_Y, NOT_CLIFF = CONST + 10, CONST + 11, CONST + 12
+CLIFF_FILE = "t_cliff_x1"
+# Canvas in 4 px blocks, hotspot at its centre. A stroke 2 blocks thick along
+# the iso +x screen direction (2 right per 1 up) or +y (2 right per 1 down),
+# about 3.1 tiles long, so a de-projected run spans its whole 3-tile footprint.
+_CLIFF_BLOCKS_W, _CLIFF_BLOCKS_H = 40, 24
+_STROKE_FRAMES = {10: -1, 4: -1, 8: 1}  # frame -> rows per step along +x
+
+
+def _stroke_layer(mask: np.ndarray, rgb565: int) -> bytes:
+    """A MAIN layer drawing a solid block wherever `mask` holds, skipping the rest."""
+    flat, cmds, i = mask.ravel(), [], 0
+    while i < flat.size:
+        skip = draw = 0
+        while i < flat.size and not flat[i] and skip < 255:
+            skip, i = skip + 1, i + 1
+        while i < flat.size and flat[i] and draw < 255:
+            draw, i = draw + 1, i + 1
+        cmds.append(bytes((skip, draw)))
+    h, w = mask.shape
+    body = struct.pack("<4H2B", 0, 0, 4 * w, 4 * h, 0, 1) + struct.pack("<H", len(cmds)) + b"".join(cmds)
+    body += bc1_solid(rgb565) * int(flat.sum())
+    return struct.pack("<I", 4 + len(body)) + body
+
+
+def _cliff_sld(k: int = 1) -> bytes:
+    """The cliff file, or at k=2 its _x2 copy: the same art at exactly twice the size."""
+    w, h = 4 * k * _CLIFF_BLOCKS_W, 4 * k * _CLIFF_BLOCKS_H
+    out = bytearray(_HEADER.pack(MAGIC, 4, 24, 0, 16, 0))
+    for frame in range(24):
+        mask = np.zeros((_CLIFF_BLOCKS_H, _CLIFF_BLOCKS_W), dtype=bool)
+        sense = _STROKE_FRAMES.get(frame)
+        if sense is None:
+            mask[8:16, 12:28] = True
+        else:
+            for t in range(-9, 10):
+                row, col = _CLIFF_BLOCKS_H // 2 + sense * t, _CLIFF_BLOCKS_W // 2 + 2 * t
+                mask[row, max(0, col - 1) : col + 1] = True
+        mask = mask.repeat(k, axis=0).repeat(k, axis=1)
+        out += _FRAME_HEADER.pack(w, h, w // 2, h // 2, MAIN, 0, frame)
+        out += _stroke_layer(mask, 0x0800 * (frame + 1))
+        out += bytes([0xAA]) * ((4 - len(out)) % 4)
+    return bytes(out)
+
+
+@pytest.fixture
+def cliff_install(sprite_install, tmp_path, monkeypatch):
+    from descape import terrain_palette
+
+    graphics = tmp_path / unit_sprites.GRAPHICS_SUBPATH
+    (graphics / f"{CLIFF_FILE}.sld").write_bytes(_cliff_sld())
+    (graphics / f"{CLIFF_FILE[:-3]}_x2.sld").write_bytes(_cliff_sld(2))
+    cliff = {"graphic_id": 4, "file_name": CLIFF_FILE, "angle_count": 24, "mirroring_mode": 0,
+             "frame_count": 1, "rotation_is_variant": True}
+    table = {**unit_sprites.graphic_map(), CLIFF_X: cliff, CLIFF_Y: cliff, NOT_CLIFF: cliff}
+    monkeypatch.setattr(unit_sprites, "graphic_map", lambda: table)
+    cliffs = unit_sprites._CLIFF_VARIANT_BY_GAME["aoe2"]
+    monkeypatch.setitem(unit_sprites._CLIFF_VARIANT_BY_GAME, "aoe2", cliffs | {CLIFF_X, CLIFF_Y})
+    for const, span in ((CLIFF_X, (3, 1)), (CLIFF_Y, (1, 3)), (NOT_CLIFF, (3, 1))):
+        monkeypatch.setitem(terrain_palette.OBJECT_TILE_SPANS, const, span)
+    unit_sprites.clear_caches()
+    return conftest.load_verify_module("verify_flat_facing")
+
+
+def _contain_fit(const: int, frame: int, fw: int, fh: int):
+    entry = unit_sprites.graphic_map()[const]
+    return unit_sprites._build_icon(
+        const, entry, float(frame), unit_sprites.TEAM_COLORS[0], fw, fh, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG,
+    )
+
+
+@pytest.mark.parametrize("smooth", [False, True])
+@pytest.mark.parametrize(("const", "frame", "axis"), [(CLIFF_X, 10, 0.0), (CLIFF_Y, 8, 90.0)])
+def test_a_thin_cliff_straight_lies_along_its_flat_footprint(cliff_install, const, frame, axis, smooth):
+    """**The wiring check for the de-projection.** Contain-fit leaves the iso
+    stroke a diagonal dash (the control below); the icon_for() one runs along
+    its footprint's long side and spans most of it, at both resample paths."""
+    unit_sprites.set_smooth_shrink(smooth)
+    span = (3, 1) if const == CLIFF_X else (1, 3)
+    fw, fh = span[0] * 32, span[1] * 32
+    fitted = _contain_fit(const, frame, fw, fh)
+    assert fitted is not None
+    assert cliff_install.axis_gap_deg(cliff_install.principal_axis_deg(fitted.rgba[..., 3]), axis) > 20, (
+        "the contain-fitted stroke already lies along the footprint, so this cannot tell the two apart"
+    )
+
+    icon = unit_sprites.icon_for(const, float(frame), 0, fw, fh)
+    assert icon is not None, "the icon resolved to nothing, so this proves nothing"
+    assert icon.rgba.shape[:2] == (fh, fw), "a de-projected icon is its whole footprint"
+    alpha = icon.rgba[..., 3]
+    got = cliff_install.principal_axis_deg(alpha)
+    assert cliff_install.axis_gap_deg(got, axis) <= 5.0, f"frame {frame}: axis {got:.1f}, want {axis}"
+    long_axis = 0 if const == CLIFF_X else 1
+    reach = np.flatnonzero((alpha > 0).any(axis=long_axis))  # the columns of an x-run, rows of a y-run
+    assert reach.size >= 0.8 * (fw, fh)[long_axis], f"the run covers {reach.size} of {(fw, fh)[long_axis]} px"
+    # Placement: the shipped icon sits where the native frame's own de-projection does, scaled to 32 px tiles.
+    want_x, want_y = (c * 32 / (unit_sprites.NATIVE_TILE_W / 2) for c in _centroid(_native_deprojection(const, frame, span)))
+    got_x, got_y = _centroid(alpha)
+    assert abs(got_x - want_x) <= 1.5 and abs(got_y - want_y) <= 1.5, (
+        f"ink centred at ({got_x:.1f}, {got_y:.1f}), the native de-projection at ({want_x:.1f}, {want_y:.1f})"
+    )
+
+
+def _native_deprojection(const: int, frame: int, span: tuple[int, int]) -> np.ndarray:
+    """The frame de-projected at native scale (no resize) onto its footprint: the alpha the icon scales."""
+    entry = unit_sprites.graphic_map()[const]
+    (piece,) = unit_sprites._native_pieces_for(const, entry, float(frame), unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG)
+    tile = unit_sprites.NATIVE_TILE_W // 2
+    out = flat_deproject.deprojected(piece.main, piece.hotspot_x, piece.hotspot_y, tile, tile, span[0] * tile, span[1] * tile)
+    return out[..., 3]
+
+
+def _centroid(alpha: np.ndarray) -> tuple[float, float]:
+    ys, xs = np.nonzero(alpha)
+    return float(xs.mean()) + 0.5, float(ys.mean()) + 0.5
+
+
+def test_a_de_projected_cliff_at_enhanced_draws_the_x2_art_in_the_same_place(cliff_install):
+    """At Enhanced a footprint whose tiles enlarge x1 (64 px against x1's
+    48 px half diamond) draws from x2 (GH #241). The x2 copy is the same art
+    at twice the size, so the icon must cover what x1's does: an x2 frame
+    resampled with x1's tile size would draw a run twice as long, off centre."""
+    entry = unit_sprites.graphic_map()[CLIFF_X]
+    assert unit_sprites._native_pieces_for(CLIFF_X, entry, 10.0, x2=True), "no x2 art, so this proves nothing"
+    x1 = unit_sprites.icon_for(CLIFF_X, 10.0, 0, 3 * 64, 64)
+    unit_sprites.set_hi_res(True)
+    x2 = unit_sprites.icon_for(CLIFF_X, 10.0, 0, 3 * 64, 64)
+    assert x1 is not None and x2 is not None
+    assert not np.array_equal(x1.rgba, x2.rgba), "the two draws are byte-identical, so x2 was not drawn"
+    # x1's nearest 4/3 enlargement stipples where x2's shrink is solid, so compare the run, not pixels.
+    runs = []
+    for draw in (x1, x2):
+        ink = draw.rgba[..., 3] > 0
+        rows = np.nonzero(ink)[0]
+        runs.append((rows.mean(), ink.sum() / ink.any(axis=0).sum(), ink.any(axis=0).sum()))
+    (row1, thick1, len1), (row2, thick2, len2) = runs
+    assert abs(row1 - row2) <= 2.0, f"run centre row {row1:.1f} at x1, {row2:.1f} at x2"
+    assert 2 / 3 <= thick2 / thick1 <= 3 / 2, f"run thickness {thick1:.1f} px at x1, {thick2:.1f} at x2"
+    assert min(len1, len2) >= 0.9 * 3 * 64, f"the run covers {len1} px at x1, {len2} at x2, of {3 * 64}"
+
+
+@pytest.mark.parametrize("const", [CLIFF_X, CLIFF_Y])
+def test_a_cliff_frame_outside_the_thin_straights_keeps_its_contain_fit(cliff_install, const):
+    """Frame 4 is a tall straight's: it has the same diagonal stroke as frame
+    10, and must still draw exactly as _build_icon() does."""
+    assert 4 not in unit_sprites.FLAT_DEPROJECT_CLIFF_FRAMES
+    fw, fh = (96, 32) if const == CLIFF_X else (32, 96)
+    icon = unit_sprites.icon_for(const, 4.0, 0, fw, fh)
+    want = _contain_fit(const, 4, fw, fh)
+    assert icon is not None and want is not None
+    assert np.array_equal(icon.rgba, want.rgba)
+    entry = unit_sprites.graphic_map()[const]
+    deprojected = unit_sprites._deprojected_icon(const, entry, 4.0, unit_sprites.TEAM_COLORS[0], fw, fh)
+    assert deprojected is not None and deprojected.rgba.shape != want.rgba.shape, "the two draws coincide"
+
+
+def test_a_non_cliff_const_on_frame_10_is_not_de_projected(cliff_install):
+    """Scope: the branch keys on the active game's cliff set, not on the art
+    or the frame. NOT_CLIFF shares CLIFF_X's file, span and frame, and is
+    drawn right after it, so a cache key without the de-project tag would
+    hand it the cliff's icon."""
+    assert unit_sprites.icon_for(CLIFF_X, 10.0, 0, 96, 32).rgba.shape[:2] == (32, 96)
+    icon = unit_sprites.icon_for(NOT_CLIFF, 10.0, 0, 96, 32)
+    want = _contain_fit(NOT_CLIFF, 10, 96, 32)
+    assert icon is not None and want is not None
+    assert np.array_equal(icon.rgba, want.rgba)
+    # An ANGLE unit whose facing resolves to index 10 is a facing, not a cliff frame.
+    rotation = 10 * 2 * math.pi / ANGLE_COUNT
+    angle_entry = unit_sprites.graphic_map()[ANGLE_CONST]
+    assert unit_sprites._frame_key(ANGLE_CONST, angle_entry, rotation, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG) == (10,)
+    angle_icon = unit_sprites.icon_for(ANGLE_CONST, rotation, 0, 96, 32)
+    angle_want = unit_sprites._build_icon(
+        ANGLE_CONST, angle_entry, rotation, unit_sprites.TEAM_COLORS[0], 96, 32, unit_sprites.FLAT_ANGLE_ZERO_OFFSET_DEG,
+    )
+    assert np.array_equal(angle_icon.rgba, angle_want.rgba)

@@ -268,8 +268,9 @@ def _units_owning_tiles(scenario, tiles) -> list:
 
     Exactly the set a walk over scenario.unit_manager.units testing that own
     tile would keep: the index is keyed on the same expression, covers every
-    player's list unfiltered, and is memoized on unit_gen, which every
-    UnitEditModel mutator bumps and no terrain or elevation edit touches.
+    player's list unfiltered, and is current only at its scenario's unit_gen,
+    spliced by the UnitEditModel mutator that moved it there (else rebuilt);
+    no terrain or elevation edit touches either.
     tests/test_dirty_bbox_unit_index.py keeps that walk as its oracle."""
     own_index = unit_own_tile_index(scenario)
     return [u for t in tiles for _, _, u in own_index.get(t, ())]

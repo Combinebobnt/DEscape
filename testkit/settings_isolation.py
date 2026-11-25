@@ -30,6 +30,8 @@ from pathlib import Path
 MEMOIZED_GLOBALS = (
     "_zoom_centered_on_cursor",
     "_trigger_details",
+    "_trigger_section_headers",
+    "_trigger_rename_double_click",
     "_graphics_quality",
     "_pan_speed",
     "_wall_opacity_pct",
@@ -53,6 +55,7 @@ MEMOIZED_GLOBALS = (
     "_overlay_opacity",
     "_ruler_label_font_px",
     "_distance_tick_font_px",
+    "_distance_ticks_behind_terrain",
     "_ui_font_family",
     "_ui_font_size",
     "_window_size",

@@ -96,6 +96,31 @@ def test_an_off_lattice_start_moves_at_least_half_a_notch(name, base, ladder) ->
     assert checked > 100, f"{name}: only {checked} off-lattice moves checked"
 
 
+@pytest.mark.parametrize("name, base, ladder", LADDERS, ids=[row[0] for row in LADDERS])
+def test_the_widest_landing_is_one_notch_in_from_the_coarser_stop(name, base, ladder) -> None:
+    """TASK-611: the zoom-out reach's limit is the point one notch in from
+    the coarser level's stop, never the stop itself, which that level draws."""
+    stops, points = _lattice(base, ladder)
+    for coarser, finer in itertools.pairwise(stops):
+        landing = zoom_stops.widest_landing(points, coarser)
+        assert coarser < landing <= finer, (name, coarser, landing)
+        assert zoom_stops.notch_target(landing, -1, points) == coarser, (name, coarser, landing)
+        # A float multiply's drift on the stop still reads as the stop.
+        assert zoom_stops.widest_landing(points, coarser * (1 + 1e-14)) == landing
+    assert zoom_stops.widest_landing(points, points[-1]) is None
+
+
+def test_a_floor_between_the_coarser_stop_and_its_next_point_is_the_widest_landing() -> None:
+    _stops, points = _lattice(64, LADDERS[0][2])
+    one = points.index(1.0)
+    landing = points[one + 1]
+    assert zoom_stops.widest_landing(points, 1.0, floor=1.1) == 1.1
+    assert zoom_stops.widest_landing(points, 1.0, floor=0.9) == landing
+    assert zoom_stops.widest_landing(points, 1.0, floor=landing * 1.01) == landing
+    assert zoom_stops.widest_landing(points, points[-1], floor=points[-1] * 2) == points[-1] * 2
+    assert zoom_stops.widest_landing([], 1.0) is None
+
+
 def test_level_stops_merge_duplicates_and_sort() -> None:
     assert zoom_stops.level_stops([2.0, 0.5, 1.0, 1.0 * (1 + 1e-13), 0.0]) == [0.5, 1.0, 2.0]
     assert zoom_stops.lattice([], LO, HI) == []

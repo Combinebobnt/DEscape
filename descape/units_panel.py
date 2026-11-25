@@ -106,7 +106,10 @@ _CHOICE_READERS = {
 _OTHER_CHOICE = "Other ({value})"
 # UnitFieldSpec.requires_codec_field -> why the row is disabled in a file without it.
 _CODEC_FIELD_TOOLTIPS = {
-    "capture_flag": "Capture Flag needs a scenario saved by the September 2026 game update (version 1.59)",
+    "capture_flag": (
+        "Capture Flag needs a scenario saved by the September 2026 game update (version 1.59). "
+        "File > Convert to Version 1.59 upgrades a 1.58 one."
+    ),
 }
 
 # unit_fields.FIELDS rows the header shows instead of the field grid (GH #148).
@@ -345,6 +348,8 @@ class UnitsPanel(QWidget):
         # GH #32: the shown garrison's GAIA-only occupants, by reference_id (show_garrison()).
         self._garrison_gaia_only: frozenset[int] = frozenset()
         self._pending_name: str | None = None
+        # The placing civ the pending name was last given for; refresh_portrait_civs() renames on a change.
+        self._placing_civ: int | None = None
         # GH #130: what the owner combos show, pushed by refresh_player_labels().
         self._player_labels = player_labels.DEFAULT_LABELS
         self._player_colors = None
@@ -463,19 +468,27 @@ class UnitsPanel(QWidget):
             const_text = " / ".join(str(const) for const in place_random.choices(value)) + " (random)"
         else:
             self._rolled_const = None
-            name = object_catalog.name_for(object_catalog.objects(), value) or str(value)
+            name = self._owner_pick_name(value)
             shown = value
             const_text = None
-        self._pending_name = name
-        self.placing_card.show_const(shown, prefix="Placing: ", name=name, const_text=const_text)
-        # The name line elides a long name (the longest run 36 characters),
-        # so the full one stays reachable by hover.
-        self.placing_label.setToolTip(name)
+        self._show_pending_name(shown, name, const_text)
         self._on_pending_changed()
         # GH #265: the unchanged object picked before this one hides again.
         if changed and self._hides_unchanged():
             self._keep_shown = None
             self.refresh_owner_filter()
+
+    def _owner_pick_name(self, value: int) -> str:
+        """A real pick's name as the Owner combo's player sees it (an Athenian Archer reads Bowman)."""
+        base = object_catalog.name_for(object_catalog.objects(), value) or str(value)
+        return object_catalog.owner_name(value, self._portrait_civ(self.owner_combo.currentData()), base)
+
+    def _show_pending_name(self, shown: int, name: str, const_text: str | None) -> None:
+        self._pending_name = name
+        self.placing_card.show_const(shown, prefix="Placing: ", name=name, const_text=const_text)
+        # The name line elides a long name (the longest run 36 characters),
+        # so the full one stays reachable by hover.
+        self.placing_label.setToolTip(name)
 
     def selected_object_const(self) -> int | None:
         """The real const the next placement adds: a random pick's rolled one (GH #164)."""
@@ -611,8 +624,13 @@ class UnitsPanel(QWidget):
         the list, the inspector Owner's for the selection (GAIA's for a mixed group).
         The viewer calls it when a player's civ can change without a label or colour."""
         placing = self._portrait_civ(self.owner_combo.currentData())
+        old, self._placing_civ = self._placing_civ, placing
         self.placing_card.set_civ(placing)
         self.catalog_view.set_civ(placing)
+        pending = self._pending_object_const
+        renamed = pending is not None and object_catalog.name_civ_key(pending, old) != object_catalog.name_civ_key(pending, placing)
+        if renamed and not place_random.is_random(pending):
+            self._show_pending_name(pending, self._owner_pick_name(pending), None)
         self.selection_card.set_civ(self._portrait_civ(self.unit_field_editors["player"].currentData()))
         self._on_placing_art(self._team_rgb(self.owner_combo.currentData()), placing)
 

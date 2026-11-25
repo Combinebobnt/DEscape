@@ -52,7 +52,7 @@ Cliffs belong to GAIA, so unticking **Filters > Show GAIA** hides them.
 
 ## Eraser
 
-Drag to remove the objects under the brush that match a ticked entry in the Targets menu: Units, Buildings, Trees, Terrain Overlay (the layered terrain), Invisible Objects and Gaia Objects. Everything ticks those six. Cliffs is a separate tick, because erasing one piece breaks its chain. Objects that Filters hide are never erased, and erasing a building also erases what it garrisons. When you let go, the walls left beside an erased wall or gate reshape to fit their remaining neighbours. The Eraser works the same way in Units mode.
+Drag to remove the objects under the brush that match a ticked entry in the Targets menu: Units, Buildings, Trees, Terrain Overlay (the layered terrain), Invisible Objects and Gaia Objects. Everything ticks those six. Cliffs is a separate tick, because erasing one piece breaks its chain. Objects that Filters hide are never erased, and erasing a building also erases what it garrisons. When you let go, the walls left beside an erased wall or gate reshape to fit their remaining neighbours. A cliff run left with one neighbour gets its end cap back, as with the Cliff tool's right-click. The Eraser works the same way in Units mode.
 
 ## Regions: copy, paste and turn
 
@@ -66,7 +66,7 @@ A region you have just pasted stays live until your next edit:
 - **Edit > Rotate Selection** turns it a quarter turn, and so does the mouse wheel's rotate binding.
 - **Edit > Flip Selection** mirrors it across its own edges: **Flip West ↔ North** or **Flip West ↔ South** swaps those two corners, and the region keeps its place and shape.
 
-Walls, gates and unit facings turn with the block, and pasted walls join the walls they land beside; the paste plus every move and turn of it stay one undo step.
+Walls, gates, bridges (except the wooden ones and the DE bridge pieces), chains, longhouses, blockers and unit facings turn with the block (a bridge's end pieces stay at its ends), and pasted walls join the walls they land beside; the paste plus every move and turn of it stay one undo step.
 
 A selected region that you did not just paste is flipped or turned in place: **Edit > Flip Selection** mirrors it, and **Edit > Rotate Selection** (any of its turn entries) turns it a quarter turn, as long as no units are selected in Units mode. Its terrain, its elevation and the units standing on it move together, and the units stay the same units, so triggers that name them still work. A region that is not square turns about its own centre: the tiles it no longer covers keep what they had, and the selection follows the turned rectangle. A run of flips and turns is one undo step; press Enter to keep it, or Esc to put the region back as it was. The turn is refused if part of the region would leave the map, on a map that is not square, or where the file's terrain can't be edited. The mouse wheel's rotate binding still turns only a just-pasted region.
 

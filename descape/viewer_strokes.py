@@ -408,7 +408,7 @@ class _ViewerStrokesMixin:
         # would send a unit pick to _commit_wall_run() and its refusal.
         if latch is not None:
             if latch.branch == unit_shape.WALL:
-                self._commit_wall_run(tiles, latch.consts[0], owner=latch.owner)
+                self._commit_wall_run(tiles, latch.consts[0], owner=latch.owner, rules=latch.rules)
             else:
                 self._commit_unit_shape(tiles, latch)
             return
@@ -568,21 +568,22 @@ class _ViewerStrokesMixin:
                     splices.append(UnitSplice(GAIA_PLAYER_ID, position[id(unit)], unit, own, None, tiles, ()))
         with perf_trace.sub_phase("unit_plan", "begin"):
             model.begin_unit_edit([GAIA_PLAYER_ID])
-        with perf_trace.sub_phase("unit_plan", "model"):
-            try:
+        try:
+            with perf_trace.sub_phase("unit_plan", "model"):
                 if plan.removes:
                     model.remove_many(plan.removes)
                 added = model.add_many(GAIA_PLAYER_ID, plan.adds) if plan.adds else []
-            except Exception:
-                model.abort_unit_edit()
-                raise
-        if splices is not None:
-            with perf_trace.sub_phase("unit_plan", "splices"):
-                # add_many() appends, so the new units are the list's last len(added).
-                base = len(gaia) - len(added)
-                for offset, unit in enumerate(added):
-                    own, tiles = self._unit_footprint(unit)
-                    splices.append(UnitSplice(GAIA_PLAYER_ID, base + offset, unit, None, own, (), tiles))
+            if splices is not None:
+                with perf_trace.sub_phase("unit_plan", "splices"):
+                    # add_many() appends, so the new units are the list's last len(added).
+                    base = len(gaia) - len(added)
+                    for offset, unit in enumerate(added):
+                        own, tiles = self._unit_footprint(unit)
+                        splices.append(UnitSplice(GAIA_PLAYER_ID, base + offset, unit, None, own, (), tiles))
+        except Exception:
+            # The whole gesture goes back, its tiles included (TASK-503).
+            self._roll_back_tool_edit(model, tile_record)
+            raise
         with perf_trace.sub_phase("unit_plan", "commit"):
             unit_record = model.commit_unit_edit(tile_record.label, self.edit_history, push=False)
         return CompositeDiffRecord(tile_record.label, children=[tile_record, unit_record]), splices
@@ -1042,7 +1043,7 @@ class _ViewerStrokesMixin:
             self.eraser_target_actions[name].setChecked(True)
 
     def _begin_erase_stroke(
-        self, targets: eraser.EraseTargets | None = None, cursor_only: bool = False, cliff_ends: bool = False
+        self, targets: eraser.EraseTargets | None = None, cursor_only: bool = False, cliff_tool: bool = False
     ) -> eraser.EraseStroke:
         """Opens an Eraser stroke: the menu's targets and the brush by default,
         or the Cliff tool's right-button erase (_begin_cliff_erase())."""
@@ -1053,7 +1054,7 @@ class _ViewerStrokesMixin:
         if targets is None:
             targets = self._erase_targets()
         stroke = eraser.EraseStroke(
-            targets=targets, overlay=targets.overlay, cursor_only=cursor_only, cliff_ends=cliff_ends
+            targets=targets, overlay=targets.overlay, cursor_only=cursor_only, cliff_tool=cliff_tool
         )
         # Tile stroke first: if it raises, no unit edit is left open behind it.
         if stroke.overlay:
@@ -1076,14 +1077,9 @@ class _ViewerStrokesMixin:
         view.set_unit_ghost()
         view.set_cliff_footprint(None)
         self._cliff_hover_memo = None
-        # Before any removal: the release judges the survivors on the map the press saw.
-        cliffs = self._cliff_existing()
-        stroke = self._begin_erase_stroke(
-            targets=eraser.EraseTargets(units=False, buildings=False, cliffs=True), cursor_only=True, cliff_ends=True
+        self._begin_erase_stroke(
+            targets=eraser.EraseTargets(units=False, buildings=False, cliffs=True), cursor_only=True, cliff_tool=True
         )
-        stroke.cliffs = cliffs
-        stroke.scenario_ref = weakref.ref(self.scenario)
-        stroke.expected_gen = self.scenario.unit_gen
 
     def _erase_stroke_tiles(self, tiles) -> None:
         """One MapView event's cursor path: every brush tile not yet visited this drag."""
@@ -1153,6 +1149,13 @@ class _ViewerStrokesMixin:
             )
         # A warm armed by the last flush walks the lists remove_many() edits (TASK-326).
         self._cancel_warms()
+        # GH #286: the first batch with a cliff in it snapshots the map; the release judges its survivors on it.
+        if stroke.targets.cliffs and stroke.cliffs is None:
+            cliff_consts = unit_sprites.cliff_consts()
+            if any(e.unit.unit_const in cliff_consts for e in removable):
+                stroke.cliffs = self._cliff_existing()
+                stroke.scenario_ref = weakref.ref(self.scenario)
+                stroke.expected_gen = self.scenario.unit_gen
         # Anything else that changed the units since (an undo, a redo, a swap) turns the end rewrites off.
         if stroke.expected_gen is not None and (
             stroke.scenario_ref() is not self.scenario or self.scenario.unit_gen != stroke.expected_gen
@@ -1203,7 +1206,7 @@ class _ViewerStrokesMixin:
         try:
             self._commit_erase_stroke(stroke)
         finally:
-            if stroke.cliff_ends:
+            if stroke.cliff_tool:
                 # The Cliff hover ghost comes back at the cursor without a mouse move.
                 self.map_view.refresh_cliff_ghost()
 
@@ -1220,28 +1223,27 @@ class _ViewerStrokesMixin:
         self._log_status("Erase: the document changed during the drag, so nothing was recorded")
 
     def _rewrite_cliff_ends(self, stroke: eraser.EraseStroke) -> bool:
-        """The Cliff erase's end rewrites, inside its still-open unit edit
-        (docs/WRITE_RULES.md's Cliff drag exception, erase trigger). Returns whether any
-        was attempted, i.e. whether the repaint has to be wholesale."""
+        """The end rewrites of a stroke that erased a cliff (the Cliff tool's
+        right button or the Eraser's Cliffs target), inside its still-open
+        unit edit (docs/WRITE_RULES.md's Cliff drag exception, erase
+        trigger). Returns whether any was attempted, i.e. whether the repaint
+        has to be wholesale."""
         scenario = stroke.scenario_ref() if stroke.scenario_ref is not None else None
         if stroke.expected_gen is None or scenario is not self.scenario or scenario.unit_gen != stroke.expected_gen:
             stroke.ends_note = "the map's units changed during the drag, so no cliff ends were reshaped"
             return False
-        # All of it, plan included: a raise must still reach commit_unit_edit(), the removals are live.
+        # The plan too: a raise must still reach commit_unit_edit(), the removals are live.
         try:
             existing, index = stroke.cliffs
-            erased = {k for k, cliff in enumerate(existing) if id(cliff.unit) in stroke.erased_ids}
-            rewrites, stroke.left_alone = cliff_chain.erase_rewrites(existing, index, erased)
-            rewrites = [(existing[r.existing_index].unit, r.rotation) for r in rewrites]
-            rewrites = [(unit, frame) for unit, frame in rewrites if unit is not None]
-            for unit, frame in rewrites:
-                stroke.model.set_cliff_frame(unit, frame)
-                stroke.reshaped += 1
+            rewrites, stroke.left_alone = cliff_chain.erase_rewrites_for_units(existing, index, stroke.erased_ids)
         except Exception as e:  # noqa: BLE001
             stroke.ends_note = f"reshaping the cliff ends stopped: {type(e).__name__}: {e}"
-            # Unknown how far it got: repaint wholesale.
             return True
-        return bool(rewrites)
+        stroke.reshaped, note = self._apply_cliff_end_rewrites(stroke.model, rewrites)
+        if note is not None:
+            stroke.ends_note = note
+        # Unknown how far a raise got: repaint wholesale.
+        return bool(stroke.reshaped) or note is not None
 
     def _rewrite_wall_ends(self, stroke: eraser.EraseStroke) -> bool:
         """The walls left beside the walls and gates this stroke erased take
@@ -1259,7 +1261,9 @@ class _ViewerStrokesMixin:
                 stroke.model.set_wall_variant(unit, variant)
                 stroke.walls_reshaped += 1
         except Exception as e:  # noqa: BLE001
-            stroke.ends_note = f"reshaping the walls beside the erased ones stopped: {type(e).__name__}: {e}"
+            note = f"reshaping the walls beside the erased ones stopped: {type(e).__name__}: {e}"
+            # Appended: a cliff note from the same release must survive it.
+            stroke.ends_note = f"{stroke.ends_note}; {note}" if stroke.ends_note else note
             return True
         return bool(rewrites)
 
@@ -1273,7 +1277,7 @@ class _ViewerStrokesMixin:
             stroke.ends_note = "the document changed during the drag, so nothing was recorded"
         count = stroke.erased
         if count:
-            noun = ("cliff", "cliffs") if stroke.cliff_ends else ("object", "objects")
+            noun = ("cliff", "cliffs") if stroke.cliff_tool else ("object", "objects")
             label = f"Erase {noun[0]}" if count == 1 else f"Erase {count} {noun[1]}"
         else:
             label = _STROKE_LABELS["eraser"]
@@ -1284,7 +1288,7 @@ class _ViewerStrokesMixin:
         wholesale = False
         if stroke.model is not None:
             if count:
-                if stroke.cliff_ends:
+                if stroke.cliffs is not None:
                     wholesale = self._rewrite_cliff_ends(stroke)
                 if stroke.wall_vacated:
                     wholesale = self._rewrite_wall_ends(stroke) or wholesale
@@ -1318,24 +1322,25 @@ class _ViewerStrokesMixin:
         """The stroke's status line. Trigger references are warned, never
         refused, like Delete and Find's Delete; counted only when triggers
         are already parsed, since the parse can take seconds. A Cliff tool
-        erase (`cliff_ends`) words it as cliffs, with its end rewrites."""
+        erase (`cliff_tool`) words it as cliffs, so its end rewrites need no noun."""
         parts = []
         if stroke.erased:
             carried = f" ({stroke.cascaded} garrisoned)" if stroke.cascaded else ""
-            parts.append(f"Erased {stroke.erased} {'cliff' if stroke.cliff_ends else 'object'}(s){carried}")
+            parts.append(f"Erased {stroke.erased} {'cliff' if stroke.cliff_tool else 'object'}(s){carried}")
+        noun = "" if stroke.cliff_tool else " cliff(s)"
         if stroke.reshaped:
-            parts.append(f"{stroke.reshaped} reshaped to end caps")
+            parts.append(f"{stroke.reshaped}{noun} reshaped to end caps")
         if stroke.walls_reshaped:
             parts.append(f"{stroke.walls_reshaped} adjacent wall(s) reshaped")
         if stroke.left_alone:
-            parts.append(f"{stroke.left_alone} left as they were (a corner there needs a different-size piece)")
+            parts.append(f"{stroke.left_alone}{noun} left as they were (a corner there needs a different-size piece)")
         cleared = len(tile_record.changes) if tile_record is not None else 0
         if cleared:
             parts.append(f"cleared layered terrain on {cleared} tile(s)")
         if not parts:
             hidden = ""
             # With a note (the swap backstop's) the filter is not why nothing was erased.
-            hint = stroke.cliff_ends and not stroke.ends_note
+            hint = stroke.cliff_tool and not stroke.ends_note
             if hint and not self._unit_filter.show_gaia:
                 hidden = " (Show GAIA is off)"
             elif hint and self._unit_filter.players is not None:

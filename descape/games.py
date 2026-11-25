@@ -75,6 +75,8 @@ AOE2 = Game(
     id="aoe2",
     display_name="Age of Empires II",
     tables_dir=_PACKAGE_DIR,
+    # The antiquity civs' units, buildings and techs are named in the paphos file only.
+    strings_files=("key-value-strings-utf8.txt", "key-value-paphos-strings-utf8.txt"),
     blank_template="blank_120x120.aoe2scenario",
 )
 ROR = Game(

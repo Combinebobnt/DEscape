@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
+    settings,
     trigger_fields,
     trigger_organize,
 )
@@ -296,6 +297,10 @@ class _TriggerPanelOrganizeMixin:
         # Re-expands what an active filter matches, so its hits stay visible.
         self._apply_filter()
 
+    def forget_collapse_state(self) -> None:
+        """Every section expanded at the next populate (a section-header rule change)."""
+        self._collapsed_keys = set()
+
     def expand_all_sections(self) -> None:
         self._filter_expanded = False
         self.tree.expandAll()
@@ -478,9 +483,9 @@ class _TriggerPanelOrganizeMixin:
         """GH #279: the double-clicked row's inline editor, for one selected
         trigger on an editable document. A section header with members keeps
         double-click for collapse, and has the menu's Rename (GH #370) and
-        Rename Section… for its title."""
+        Rename Section… for its title. Settings > General can switch it off."""
         index = item.data(self._ROLE_COL, Qt.UserRole)
-        if index is None or item.childCount():
+        if index is None or item.childCount() or not settings.get_trigger_rename_double_click():
             return
         self._open_name_editor(index)
 

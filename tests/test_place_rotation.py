@@ -27,6 +27,7 @@ EIGHT_FRAMES = 1956  # ANGLE, 8 frames
 SIX_FRAMES = 2431  # ANGLE, 6 frames
 OAK = 349  # cyclable, 42 variants
 PINE = 350  # cyclable, 27 variants
+WFALL = 896  # cyclable, 3 particle runs (GH #330)
 STONE_GATE = 64
 HOUSE = 33  # INERT
 STONE_WALL = 117
@@ -108,6 +109,16 @@ def test_a_variant_wraps_at_its_count() -> None:
     assert rotation_for(state, OAK, P1) == 41.0
     state, _, _ = step(state, OAK, P1, 1)
     assert rotation_for(state, OAK, P1) == 0.0
+
+
+def test_a_waterfall_places_a_literal_run_index() -> None:
+    """GH #330: a waterfall cycles through its ImageAngles runs, written as the
+    literal integer the game stored on every corpus placement."""
+    state, const, outcome = step(PlaceRotation(), WFALL, GAIA, 2)
+    assert (const, outcome) == (WFALL, CYCLED)
+    assert rotation_for(state, WFALL, GAIA) == 2.0
+    state, _, _ = step(state, WFALL, GAIA, 1)
+    assert rotation_for(state, WFALL, GAIA) == 0.0
 
 
 def test_a_variant_resets_on_a_different_const() -> None:
@@ -237,3 +248,69 @@ def test_only_a_type_10_variants_frame_takes_its_index() -> None:
     assert (tree, port) == (7.0, 5.0) and facing != 0.0
     assert frame_for(OAK, tree) == 7
     assert [frame_for(c, r) for c, r in ((PORT, port), (ARCHER, facing), (STONE_WALL, 0.0), (STONE_GATE, 0.0), (_cliff(), 0.0))] == [0] * 5
+
+
+# --- roll(): Place Unit's Random facing/variant state (TASK-367) -----------------
+
+
+@pytest.mark.parametrize("const", [ARCHER, EIGHT_FRAMES, SIX_FRAMES])
+@pytest.mark.parametrize("owner", [P1, GAIA])
+def test_a_rolled_facing_is_on_the_consts_own_grid(const, owner) -> None:
+    from descape.place_rotation import roll
+
+    count = unit_rotation.angle_count_for(const)
+    seen = set()
+    for seed in SEEDS:
+        state = roll(random.Random(seed), const)
+        assert state.variant_const is None
+        value = rotation_for(state, const, owner)
+        facing = unit_rotation.rotation_to_facing(value, count)
+        assert value == pytest.approx(unit_rotation.facing_to_rotation(facing, count), abs=1e-12)
+        seen.add(facing)
+    assert seen == set(range(count))
+
+
+@pytest.mark.parametrize("owner", [P1, GAIA])
+def test_a_rolled_variant_is_a_literal_index_on_its_own_const(owner) -> None:
+    from descape.place_rotation import roll
+
+    count = unit_variant.variant_count_for(OAK)
+    seen = set()
+    for seed in SEEDS:
+        state = roll(random.Random(seed), OAK)
+        assert state.variant_const == OAK and 0 <= state.variant < count
+        value = rotation_for(state, OAK, owner)
+        assert value == float(state.variant)
+        seen.add(state.variant)
+    assert len(seen) > count // 2
+
+
+@pytest.mark.parametrize("const", [HOUSE_2X2, HOUSE, STONE_WALL, STONE_GATE, "cliff"])
+def test_roll_gives_the_empty_state_and_draws_nothing_for_every_other_const(const) -> None:
+    from descape.place_rotation import roll
+
+    const = _cliff() if const == "cliff" else const
+    rng = random.Random(9)
+    before = rng.getstate()
+    assert roll(rng, const) == PlaceRotation()
+    assert rng.getstate() == before
+
+
+@pytest.mark.parametrize("const", [ARCHER, SIX_FRAMES, OAK, PINE, HOUSE, STONE_WALL, STONE_GATE])
+@pytest.mark.parametrize("owner", [P1, GAIA])
+def test_random_rotation_is_rotation_for_of_roll_and_keeps_the_brush_stream(const, owner) -> None:
+    """The Unit Brush's stream through the refactor: the same draws in the
+    same order as before roll() existed, spelled out independently here."""
+    from descape.place_rotation import roll
+
+    for seed in range(50):
+        assert random_rotation(random.Random(seed), const, owner) == rotation_for(roll(random.Random(seed), const), const, owner)
+        old = random.Random(seed)
+        if unit_rotation.rotation_is_angle(const):
+            count = unit_rotation.angle_count_for(const)
+            expected = rotation_for(PlaceRotation(facing=unit_rotation.facing_to_rotation(old.randrange(count), count)), const, owner)
+        elif unit_variant.is_cyclable(const):
+            expected = float(old.randrange(unit_variant.variant_count_for(const)))
+        else:
+            expected = 0.0
+        assert random_rotation(random.Random(seed), const, owner) == expected

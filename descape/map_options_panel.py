@@ -177,7 +177,7 @@ class MapOptionsPanel(QWidget):
     # the scalars). A file can legitimately land on either side of one gate and
     # the other side of the other, so the panel is handed the resolved set of
     # field ids rather than a boolean it would have to interpret.
-    _ALL_READ_ONLY_NOTE = "Read-only for this file -- nothing here can be written back."
+    _ALL_READ_ONLY_NOTE = "Read-only for this file: nothing here can be written back."
     _SOME_READ_ONLY_NOTE = "{count} of {total} settings are read-only for this file."
     # Why a row can be absent rather than merely greyed: presence is read per
     # file from the parsed retriever, never inferred from the scenario
@@ -189,7 +189,7 @@ class MapOptionsPanel(QWidget):
     # why it is not a checkbox. See _is_representable().
     _AS_STORED_NOTE = (
         "{count} setting{s} hold{verb} a value no editor could show truthfully "
-        "and {is_are} listed as stored -- hover for details."
+        "and {is_are} listed as stored. Hover for details."
     )
 
     def __init__(self, on_option_field=None):
@@ -513,7 +513,7 @@ class MapOptionsPanel(QWidget):
             widget.setToolTip(
                 f"Stored as unset. Shows {spec.sentinel_display}, the same "
                 "default the in-game editor fills in the first time you "
-                "switch to this victory condition -- type a value to set it "
+                "switch to this victory condition. Type a value to set it "
                 "explicitly."
             )
         return widget

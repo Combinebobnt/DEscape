@@ -314,9 +314,9 @@ def test_a_composite_piece_without_x2_stays_x1_at_the_same_offset(install):  # n
 def test_translucent_walls_key_on_the_flag(install):  # noqa: F811
     _pair(install)
     entry = unit_sprites.graphic_map()[CONST]
-    off = unit_sprites._wall_draw(CONST, entry, 0.0, 0, ENLARGED, None, 0.5)
+    off = unit_sprites._faded_draw(CONST, entry, 0.0, 0, ENLARGED, 1.0, None, False, 0.5)
     unit_sprites.set_hi_res(True)
-    on = unit_sprites._wall_draw(CONST, entry, 0.0, 0, ENLARGED, None, 0.5)
+    on = unit_sprites._faded_draw(CONST, entry, 0.0, 0, ENLARGED, 1.0, None, False, 0.5)
     assert (off.rgba[0, 0, 0], on.rgba[0, 0, 0]) == (_red(X1_BASE), _red(X2_BASE))
 
 
@@ -390,10 +390,16 @@ def test_box_resize_keeps_a_flat_colour_and_adds_none_from_transparent_px():
     assert out[0, 0].tolist() == [255, 0, 0, 170] and out[0, 1].tolist() == [0, 255, 0, 170]
 
 
-def test_box_resize_falls_back_to_nearest_on_a_growing_axis():
-    rng = np.random.default_rng(0)
-    rgba = rng.integers(0, 256, (4, 4, 4), dtype=np.uint8)
-    assert np.array_equal(unit_sprites._box_resize_rgba(rgba, 6, 3), unit_sprites._resize_rgba(rgba, 6, 3))
+def test_box_resize_area_upscales_a_growing_axis():
+    """Enlarging too: a flat colour stays flat, and a transparent px adds no
+    colour to the seams it shares (3 px to 4, so the middle two blend)."""
+    assert (unit_sprites._box_resize_rgba(np.full((6, 3, 4), 200, np.uint8), 4, 8) == 200).all()
+    row = np.zeros((1, 3, 4), np.uint8)
+    row[0, 0] = (255, 0, 0, 255)
+    row[0, 1] = (0, 0, 255, 0)
+    row[0, 2] = (0, 255, 0, 255)
+    out = unit_sprites._box_resize_rgba(row, 4, 1)[0].tolist()
+    assert out == [[255, 0, 0, 255], [255, 0, 0, 85], [0, 255, 0, 85], [0, 255, 0, 255]]
 
 
 def test_a_shrunk_x2_draw_is_box_filtered(install, monkeypatch):  # noqa: F811

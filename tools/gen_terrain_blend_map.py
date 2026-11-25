@@ -59,6 +59,8 @@ def _blend_table(terrains: list) -> tuple[dict[str, dict], list[str]]:
                 _game_root.refuse(
                     f"terrain blend invariant: {line.strip()}",
                     "left out of the blend table: it does not blend onto its neighbours",
+                    kind="terrain_blend",
+                    subject=i,
                 )
             continue
         violations += found

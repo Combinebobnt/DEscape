@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from descape import asset_source, iso_geometry, native_composite, render_iso, render_sloped
+from descape import asset_source, composite_backend, iso_geometry, native_composite, render_iso, render_sloped
 from descape.render_cache import FlatChunkCache, IsoChunkCache, SlopedChunkCache
 from descape.render_paint import tile_pixels_for_map
 from descape.view_layers import LayerState
@@ -257,3 +257,46 @@ def test_only_texture_sampling_moved(builder, coord_texture) -> None:
         assert np.array_equal(before["on"], after["on"]), "Flat blits whole crops and must not move"
     else:
         assert not np.array_equal(before["on"], after["on"]), "the legacy swap did not reach the render"
+
+
+@pytest.mark.parametrize("tile_px", [64, 128])
+def test_the_angled_prefilter_runs_along_the_axis_stepped_skips_texels_on(tile_px):
+    """TASK-691: Stepped's diamond reads one texel in four, and never a sampled texel's
+    neighbour along asset_source.ANGLED_PREFILTER's axis, which is screen-down's texel step.
+    A basis change fails here rather than silently filtering the wrong way. Sloped's quads
+    warp the lattice on slopes and are left to the ground_texture pack."""
+    from collections import Counter
+
+    (ar, ac), _weights = asset_source.ANGLED_PREFILTER
+    dst_y, dst_x, src_y, src_x = iso_geometry.diamond_indices(tile_px)
+    sampled = set(zip(src_y.tolist(), src_x.tolist(), strict=True))
+    assert len(sampled) * 4 == tile_px * tile_px
+    assert not {(r + ar, c + ac) for r, c in sampled} & sampled, "the filter's taps are themselves sampled"
+    dst = zip(dst_y.tolist(), dst_x.tolist(), strict=True)
+    at = dict(zip(dst, zip(src_y.tolist(), src_x.tolist(), strict=True), strict=True))
+    steps = Counter((at[(y + 1, x)][0] - r, at[(y + 1, x)][1] - c) for (y, x), (r, c) in at.items() if (y + 1, x) in at)
+    (dr, dc), _count = steps.most_common(1)[0]
+    assert dr * ac - dc * ar == 0 and (dr, dc) != (0, 0), (steps.most_common(3), (ar, ac))
+
+
+@pytest.mark.parametrize("backend", composite_backend.BACKENDS)
+@pytest.mark.parametrize(
+    ("builder", "elevation", "angled"),
+    [(_flat_cache, _sloping, False), (_iso_cache, _sloping, True), (_iso_cache, lambda x, y: 0, True), (_sloped_cache, _sloping, True)],
+)
+def test_each_style_reads_the_texture_variant_it_samples(builder, elevation, angled, backend, coord_texture, monkeypatch) -> None:
+    """TASK-691: Stepped (flattened too) and Sloped crop the prefiltered texture on either
+    backend, and top-down Flat the sharp one."""
+    if backend == "native" and not composite_backend.available():
+        pytest.skip(composite_backend.unavailable_reason)
+    real = asset_source.terrain_texture_at
+    seen: set = set()
+
+    def texture_at(tid, size, angled=False):
+        seen.add(angled)
+        return real(tid, size, angled=angled)
+
+    monkeypatch.setattr(asset_source, "terrain_texture_at", texture_at)
+    with composite_backend.use_backend(backend):
+        _level_canvas(builder(_scenario(elevation)))
+    assert seen == {angled}

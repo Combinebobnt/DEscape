@@ -71,6 +71,19 @@ def on_point(scale: float, points: Sequence[float]) -> int | None:
     return None
 
 
+def widest_landing(points: Sequence[float], coarser_stop: float, floor: float | None = None) -> float | None:
+    """The widest scale a wheel zoom-out lands on that is still past
+    `coarser_stop` (the next coarser level's own stop, which that level
+    draws): the first point past it, or `floor` when the floor lies between
+    the two, since a step past the floor lands on it. None when neither is."""
+    bound = coarser_stop * (1.0 + ON_POINT_TOL)
+    i = bisect.bisect_right(points, bound)
+    first = points[i] if i < len(points) else None
+    if floor is not None and floor > bound and (first is None or floor < first):
+        return floor
+    return first
+
+
 def notch_target(current: float, notches: int, points: Sequence[float]) -> float | None:
     """The scale `notches` points away from `current` (positive: in). On a
     point, the first move is to its neighbour; off one, to the first point

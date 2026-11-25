@@ -33,8 +33,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache, update_wrapper
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from descape import games
+
+if TYPE_CHECKING:
+    from descape.dat_derive import DeriveWarning
 
 # The two games' ids, as plain strings for set_active() callers.
 AOE2 = "aoe2"
@@ -71,7 +75,7 @@ class DataModTables:
     name, unique per mod .dat and derivation inputs; `root` the mod folder, for
     its strings; `title` what the window title shows; `mod_only_ids` the unit
     consts its .dat defines and the install's does not; `warnings` what the
-    lenient derive simplified (GH #262); `side_key` a hash of its side files
+    lenient derive simplified (GH #262), as dat_derive.DeriveWarning records; `side_key` a hash of its side files
     (GH #263), compared so that editing one is a new overlay for cache()."""
 
     key: str
@@ -80,7 +84,7 @@ class DataModTables:
     title: str
     mod_only_ids: frozenset[int] = frozenset()
     # Outside the hash game_dataset.cache takes on every call; `key` already identifies the derive.
-    warnings: tuple[str, ...] = field(default=(), compare=False)
+    warnings: tuple[DeriveWarning, ...] = field(default=(), compare=False)
     side_key: str = ""
 
 

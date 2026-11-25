@@ -85,13 +85,14 @@ _PAGE_TITLES = {
 }
 
 
-def _name(id_: int, kind: str) -> str:
-    return object_catalog.tech_name(id_) if kind == TECH else object_catalog.display_name(id_)
+def _name(id_: int, kind: str, civ: int | None = None) -> str:
+    """A tech's name, or a unit's as civ's player sees it (an Athenian Archer reads Bowman)."""
+    return object_catalog.tech_name(id_) if kind == TECH else object_catalog.owner_name(id_, civ)
 
 
-def listing(items) -> str:
-    """One name per line, cut at _MORE_LIMIT."""
-    lines = [_name(id_, kind) for id_, kind in items[:_MORE_LIMIT]]
+def listing(items, civ: int | None = None) -> str:
+    """One name per line, cut at _MORE_LIMIT; units named as civ's player sees them."""
+    lines = [_name(id_, kind, civ) for id_, kind in items[:_MORE_LIMIT]]
     if len(items) > _MORE_LIMIT:
         lines.append(f"+{len(items) - _MORE_LIMIT} more")
     return "\n".join(lines)
@@ -431,7 +432,8 @@ class ButtonGrid(QWidget):
             return "A villager's build buttons move only when trained at the builder (118), not the female builder (212)."
         if not command_buttons.has_buttons(building) and not object_catalog.is_building(building):
             # A building with none still takes trained units (an Army Tent): it shows empty.
-            return f"{building_name(building)} is not a building and has no command buttons in the game data."
+            name = building_name(building, civ=self.context.portrait_civ)
+            return f"{name} is not a building and has no command buttons in the game data."
         return ""
 
     def _header(self) -> str:
@@ -439,7 +441,7 @@ class ButtonGrid(QWidget):
         if building < 0:
             return ""
         where = "Researched at" if self.kind == TECH else "Trained at"
-        return f"{where}: {building_name(building)}{self._civ_note()}"
+        return f"{where}: {building_name(building, civ=self.context.portrait_civ)}{self._civ_note()}"
 
     def _civ_note(self) -> str:
         """" (Spanish)", or why nothing is filtered; "" without a context."""
@@ -515,14 +517,14 @@ class ButtonGrid(QWidget):
         for edit in placed:
             problem = self._placed_problem(cell.items, edit.item)
             problems.append(bool(problem))
-            notes.append(f"{edit.label}: {_name(*edit.item)} here{problem}")
+            notes.append(f"{edit.label}: {self._label(*edit.item)} here{problem}")
         for edit in applied.unavailable.get(button, ()) if applied is not None else ():
             problems.append(True)
-            why = self.context.missing_text(edit.mover, edit.kind, _name(*edit.item))
-            notes.append(f"{edit.label}: {_name(*edit.item)} here, but {why}")
+            why = self.context.missing_text(edit.mover, edit.kind, self._label(*edit.item))
+            notes.append(f"{edit.label}: {self._label(*edit.item)} here, but {why}")
             if cell.ghost is None:
                 cell.ghost = edit.item
-        notes += [f"{edit.label}: {_name(*edit.item)} moved away" for edit in removed]
+        notes += [f"{edit.label}: {self._label(*edit.item)} moved away" for edit in removed]
         cell.notes = tuple(notes)
         cell.frame = "" if not problems else FRAME_PROBLEM if any(problems) else FRAME_OK
 
@@ -550,37 +552,38 @@ class ButtonGrid(QWidget):
             cell.setToolTip("\n".join([*lines, *cell.notes]))
             if cell.ghost is not None and cell.icon().isNull():
                 cell.setToolButtonStyle(Qt.ToolButtonTextOnly)
-                cell.setText(cell.fontMetrics().elidedText(_name(*cell.ghost), Qt.ElideRight, CELL_PX - 4))
+                cell.setText(cell.fontMetrics().elidedText(self._label(*cell.ghost), Qt.ElideRight, CELL_PX - 4))
             elif cell.ghost is not None:
                 cell.setToolButtonStyle(Qt.ToolButtonIconOnly)
             return
         base_id, base_kind = cell.items[0]
         if cell.icon().isNull():
             cell.setToolButtonStyle(Qt.ToolButtonTextOnly)
-            name = _name(base_id, base_kind)
+            name = self._label(base_id, base_kind)
             cell.setText(cell.fontMetrics().elidedText(name, Qt.ElideRight, CELL_PX - 4))
         else:
             cell.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        tip = listing(cell.items)
+        civ = self.context.portrait_civ
+        tip = listing(cell.items, civ)
         if cell.dimmed:
             mover = (self.mover(), self.kind)
-            rest = listing(tuple(item for item in cell.items if item != mover))
-            tip = f"Moved away: {_name(*mover)}\n{rest}".rstrip()
+            rest = listing(tuple(item for item in cell.items if item != mover), civ)
+            tip = f"Moved away: {self._label(*mover)}\n{rest}".rstrip()
         if cell.shared:
             tip += "\nTechs in one slot take turns: the first one researchable shows, then the next."
         if cell.blocked and self.kind == TECH:
             tip += (
-                f"\nHidden here: {_name(self.mover(), self.kind)} (a unit in the slot covers it). "
-                f"Move or disable {_name(*cell.items[0])} to free the slot."
+                f"\nHidden here: {self._label(self.mover(), self.kind)} (a unit in the slot covers it). "
+                f"Move or disable {self._label(*cell.items[0])} to free the slot."
             )
         elif cell.blocked:
             tip += (
-                f"\nHidden here: {_name(self.mover(), self.kind)} (the lower id shows). "
-                f"Move or disable {_name(*cell.items[0])} to free the slot."
+                f"\nHidden here: {self._label(self.mover(), self.kind)} (the lower id shows). "
+                f"Move or disable {self._label(*cell.items[0])} to free the slot."
             )
         covered = [item for item in cell.replaced if item[1] == TECH]
         if covered:
-            names = ", ".join(_name(*item) for item in covered)
+            names = ", ".join(self._label(*item) for item in covered)
             tip += f"\nCovers {names}: can't be researched while this unit is here."
         if cell.unavailable:
             tip += "\n" + self._unavailable_tip()
@@ -590,9 +593,12 @@ class ButtonGrid(QWidget):
 
     def _unavailable_tip(self) -> str:
         mover, kind = self.mover(), self.kind
-        tip = f"No button: {self.context.missing_text(mover, kind, _name(mover, kind))}."
+        tip = f"No button: {self.context.missing_text(mover, kind, self._label(mover, kind))}."
         how = train_locations.enable_hint(self.context.missing(mover, kind), kind)
         return f"{tip} Enable it with {how} to show it." if how else tip
+
+    def _label(self, id_: int, kind: str) -> str:
+        return _name(id_, kind, self.context.portrait_civ)
 
     _RESERVED_TIP = "The menu's own {} button. A building put here has no visible button; its hotkey still works."
 
@@ -642,7 +648,8 @@ class ButtonGrid(QWidget):
         homes = command_buttons.home_slots(self.mover(), self.kind)
         if homes:
             page = command_buttons.villager_page(self.mover()) if self.kind == UNIT else None
-            places = (f"{building_name(b, page)}, {command_buttons.slot_label(n)}" for b, n in homes)
+            civ = self.context.portrait_civ
+            places = (f"{building_name(b, page, civ)}, {command_buttons.slot_label(n)}" for b, n in homes)
             lines.append("Now at: " + "; ".join(places))
         return "\n".join(lines)
 

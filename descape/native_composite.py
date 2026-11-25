@@ -867,7 +867,8 @@ def _textures(
     sizes = np.zeros(max(uniq.size, 1), dtype=np.int64)
     size = asset_source.terrain_texture_size(tile_px)
     for i, tid in enumerate(uniq.tolist()):
-        tex = asset_source.terrain_texture_at(tid, size) if textures else None
+        # Native composites Stepped and Sloped only: always the angled variant, as their _top_block() reads.
+        tex = asset_source.terrain_texture_at(tid, size, angled=True) if textures else None
         if tex is None:
             flat[i] = color_for_terrain_id(tid)
             arrays.append(None)

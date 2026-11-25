@@ -188,7 +188,7 @@ _F32_EXACT_RANGE_FIELDS = frozenset({"food", "wood", "stone", "gold", "pop_limit
 _F32_EXACT_RANGE = 16_777_216
 _F32_EXACT_RANGE_TOOLTIP = (
     "Limited to {range}, the largest integer this field's "
-    "f32 mirror can represent exactly -- a larger value would desync the two "
+    "f32 mirror can represent exactly. A larger value would desync the two "
     "stored copies."
 )
 
@@ -656,7 +656,7 @@ class PlayersPanel(QWidget):
         self.status.setToolTip(
             "Settings this scenario version does not store are not listed. "
             "A setting the file stores as a value no editor could show "
-            "truthfully is shown as stored instead -- hover it for details."
+            "truthfully is shown as stored instead. Hover it for details."
         )
 
     # -- building the form ------------------------------------------------

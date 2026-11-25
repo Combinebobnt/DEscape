@@ -32,6 +32,7 @@ from descape.render_cache import (
 from descape.render_iso import elevations_and_proj
 from descape.render_paint import flat_dirty_rects, tile_pixels_for_map
 from descape.render_sloped import sloped_elevations_and_proj
+from descape.viewer_common import _rects_bbox
 
 # How long a placeholder may wait with no warm active before the watchdog settles it.
 PLACEHOLDER_STUCK_MS = 1500
@@ -56,12 +57,9 @@ STEPPED_FULL_RERENDER_THRESHOLD = 20_000
 
 # Top-down Flat patches a terrain edit's rects at the visible level only, and evicts their bbox instead once
 # they cover more tiles than this multiple of the tiles an eviction recomposites: the visible-level chunks
-# under the bbox that the viewport shows. tools/bench_stroke_end.py --flat-ratio.
+# under the bbox that the viewport shows. A batch unit edit takes the same rule (TASK-442,
+# _patch_unit_edit_cache()). tools/bench_stroke_end.py --flat-ratio.
 _FLAT_EVICT_RATIO = 1.0
-
-
-def _rects_bbox(rects) -> tuple[int, int, int, int]:
-    return min(r[0] for r in rects), min(r[1] for r in rects), max(r[2] for r in rects), max(r[3] for r in rects)
 
 
 class _ViewerRenderMixin:
@@ -350,7 +348,9 @@ class _ViewerRenderMixin:
         viewport shows, a ragged edge chunk at its real size (TASK-338). Both
         sides price one level, since the patch evicts the others too. A bbox
         wholly off screen evicts at any finite ratio: nothing is composited
-        now. `target` is viewport_chunk_target(); False with none, or no rects."""
+        now. `target` is viewport_chunk_target(); False with none, or no rects.
+        Callers: the terrain branch above, and a `batch` unit edit's rects
+        (_patch_unit_edit_cache(), TASK-442)."""
         if target is None or not rects:
             return False
         mip, vx0, vy0, vx1, vy1 = target
@@ -654,7 +654,7 @@ class _ViewerRenderMixin:
         # GH #326: each level crops its own texture size, so the levels about to build load theirs on the pool.
         if self._layers.terrain_textures:
             tile_pxs = [self._cache.mip_tile_px(m) for m in (anchor, *mips)]
-            asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs)
+            asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs, angled=self._render_style != "flat")
         if self._pending_level() == anchor:
             # D6: the level a placeholder waits on warms first and alone; refine re-arms the rest.
             mips, pack_only = [anchor], ()
@@ -1176,7 +1176,7 @@ class _ViewerRenderMixin:
         if self._cache is None or not self._layers.terrain_textures or not settings.get_preload_zoom_levels():
             return
         tile_pxs = [self._cache.mip_tile_px(m) for m in self._cache.mip_levels()]
-        asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs, back=True)
+        asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs, back=True, angled=self._render_style != "flat")
 
     def _prefetch_textures(self, tile_pxs) -> None:
         """Prefetches this map's textures (_texture_prefetch_ids()) at each
@@ -1184,7 +1184,8 @@ class _ViewerRenderMixin:
         with Terrain Textures off."""
         if self._layers.terrain_textures:
             self._texture_ids = self._texture_prefetch_ids()
-            asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs)
+            # Stepped and Sloped read the angled variant (TASK-691), top-down Flat the sharp one.
+            asset_source.prefetch_terrain_textures(self._texture_ids, tile_pxs, angled=self._render_style != "flat")
 
     def _texture_prefetch_ids(self) -> list[int]:
         """The terrain ids a render of self.scenario textures: every tile's,

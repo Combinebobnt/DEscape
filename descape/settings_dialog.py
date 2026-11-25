@@ -76,6 +76,7 @@ from descape.settings_dialog_apply import _SettingsDialogApplyMixin
 from descape.spin_boxes import keep_cursor_before_suffix
 from descape.tool_defaults_page import ToolDefaultsPage
 from descape.trigger_details_page import TriggerDetailsPage
+from descape.trigger_header_settings import TriggerHeaderSettings
 from descape.viewer_common import (
     LabelFitButton,
     NoWheelComboBox,
@@ -290,6 +291,20 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         divider.setFrameShadow(QFrame.Sunken)
         layout.addWidget(divider)
 
+        self.trigger_header_settings = TriggerHeaderSettings(self._window)
+        layout.addWidget(self.trigger_header_settings)
+        self._add_section_divider(layout)
+        # GH #279 follow-up: the Triggers panel's double-click rename.
+        self.trigger_rename_double_click_check = QCheckBox("Double-click a trigger to rename it")
+        self.trigger_rename_double_click_check.setChecked(settings.get_trigger_rename_double_click())
+        self.trigger_rename_double_click_check.setToolTip(
+            "Off, a double-click in the Triggers panel only selects; right-click > Rename still renames. "
+            "A section header with triggers under it collapses on a double-click either way."
+        )
+        self.trigger_rename_double_click_check.toggled.connect(self._on_trigger_rename_double_click_toggled)
+        layout.addWidget(self.trigger_rename_double_click_check)
+        self._add_section_divider(layout)
+
         self._add_install_section(layout)
 
         if sys.platform.startswith("linux"):
@@ -340,6 +355,10 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self._window.map_view.set_zoom_anchor_mode(centered_on_cursor)
         mode = "centered on mouse cursor" if centered_on_cursor else "overall (view center)"
         self._window._log_status(f"Zoom mode: {mode}")
+
+    def _on_trigger_rename_double_click_toggled(self, enabled: bool) -> None:
+        settings.set_trigger_rename_double_click(enabled)
+        self._window._log_status(f"Double-click trigger rename: {'on' if enabled else 'off'}")
 
     def _add_settings_file_section(self, layout: QVBoxLayout) -> None:
         """GH #268: Export settings… / Import settings…, and the line for an import staged for the next launch."""
@@ -531,7 +550,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         for preset_id, (preset_label, _colors) in themes.PRESETS.items():
             self.theme_combo.addItem(preset_label, preset_id)
         self.theme_combo.setToolTip(
-            "App chrome only (menus, dialogs, toolbars) -- the map view's own "
+            "App chrome only (menus, dialogs, toolbars). The map view's own "
             "colors (real terrain textures, unit dots, hover highlights) are "
             "unaffected, since they represent game data or are already dark. "
             "The tool overlay colours below are separate and never change with it."
@@ -572,7 +591,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         keep_cursor_before_suffix(self.ui_font_size_spin)
         ui_font_tooltip = (
             "App chrome only (menus, dialogs, panels, toolbars, the status "
-            "log) -- the map view's own overlay text (ruler readout, "
+            "log). The map view's own overlay text (ruler readout, "
             "distance-tick numbers, stacked-unit badges) keeps its own fixed "
             "sizes, since it is measured in device pixels against fixed label "
             "boxes. Reset returns both to the platform default."
@@ -635,8 +654,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self.graphics_quality_slider.setSingleStep(1)
         self.graphics_quality_slider.setPageStep(1)
         self.graphics_quality_slider.setToolTip(
-            "Scales map render resolution (see render.tile_pixels_for_map) -- "
-            "applies to the next render. Enhanced only doubles resolution on "
+            "Scales map render resolution (see render.tile_pixels_for_map). "
+            "Applies to the next render. Enhanced only doubles resolution on "
             "large maps (already-downscaled); on small maps it's a no-op, "
             "since doubling their base resolution is well past what's been "
             "measured safe for memory. With the game's free Enhanced Graphics "
@@ -644,8 +663,9 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             "high-resolution art when zoomed in; without it, they use their "
             "regular art. Return of Rome scenarios use Return of Rome's own "
             "high-resolution art, which needs no DLC. Default and Enhanced "
-            "also draw zoomed-out units and buildings with smooth shrinking, "
-            "when the native renderer is built."
+            "also resize units and buildings smoothly when they are drawn "
+            "smaller, or larger by an uneven factor, when the native renderer "
+            "is built."
         )
         self.graphics_quality_slider.setValue(settings.get_graphics_quality())
         self.graphics_quality_label = QLabel()
@@ -774,6 +794,13 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         distance_tick_font_row.addWidget(self.distance_tick_font_spin, stretch=0)
         distance_tick_font_row.addStretch(1)
         layout.addLayout(distance_tick_font_row)
+        self.distance_ticks_behind_check = QCheckBox("Draw distance ticks behind elevated terrain")
+        self.distance_ticks_behind_check.setToolTip(
+            "In Stepped and Sloped, hide the View > Distance Ticks ruler where raised terrain covers the map border"
+        )
+        self.distance_ticks_behind_check.setChecked(settings.get_distance_ticks_behind_terrain())
+        self.distance_ticks_behind_check.toggled.connect(self._on_distance_ticks_behind_terrain_toggled)
+        layout.addWidget(self.distance_ticks_behind_check)
 
         # GH #100: where each stacked-unit count badge sits on its tile.
         stack_badge_row = QHBoxLayout()
@@ -936,6 +963,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
 
     def done(self, result: int) -> None:
         # Accepted keeps every change; Rejected (Cancel, Discard) puts them back (GH #191).
+        # The prefix field's focus loss as the dialog hides would apply a cancelled edit.
+        self.trigger_header_settings.detach(apply=result == QDialog.Accepted)
         try:
             self._finish(result)
         finally:
@@ -1479,6 +1508,11 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         settings.set_distance_tick_font_px(value)
         self._window.map_view.apply_distance_tick_font()
         self._window._log_status(f"Distance ticks label size: {value}px")
+
+    def _on_distance_ticks_behind_terrain_toggled(self, checked: bool) -> None:
+        settings.set_distance_ticks_behind_terrain(checked)
+        self._window.map_view.apply_distance_ticks_behind_terrain()
+        self._window._log_status(f"Draw distance ticks behind elevated terrain: {'on' if checked else 'off'}")
 
     def _on_favorite_star_changed(self, index: int) -> None:
         settings.set_favorite_star_style(self.favorite_star_combo.itemData(index))
@@ -2205,7 +2239,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             ok, message = asset_source.validate_install_path(existing_install)
             self._set_install_status(message, ok=ok)
         else:
-            self._set_install_status("No install path configured -- using flat fallback colors.", ok=False)
+            self._set_install_status("No install path configured. Using flat fallback colors.", ok=False)
 
     def browse_install_path(self) -> None:
         start_dir = self.install_path_edit.text().strip() or str(Path.home())
@@ -2239,7 +2273,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         remaining = asset_source.get_install_path()  # only AOE2DE_INSTALL_PATH can still set one
         if remaining is None:
             self.install_path_edit.clear()
-            self._set_install_status("No install path configured -- using flat fallback colors.", ok=False)
+            self._set_install_status("No install path configured. Using flat fallback colors.", ok=False)
             self._window._log_status(f"Install path cleared{_sync_hi_res()}")
         else:
             self.install_path_edit.setText(str(remaining))
@@ -2275,7 +2309,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
     def _add_profile_section(self, layout: QVBoxLayout) -> None:
         """The AoE2:DE profile folder row (GH #126), same shape as the install
         row, plus a read-only list of every folder content_roots scans."""
-        profile_label = QLabel("AoE2DE profile folder (optional, for custom AIs from your profile and mods):")
+        profile_label = QLabel("AoE2DE profile folder (optional, for scenarios, custom AIs and mod art from your profile and mods):")
         profile_label.setWordWrap(True)
         layout.addWidget(profile_label)
 

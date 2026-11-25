@@ -60,6 +60,8 @@ _OTHER = "Other"
 # migrates them on read; each takes its successor's label.
 PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "zoom_centered_on_cursor": (_GENERAL, "Mouse wheel zoom"),
+    "trigger_section_headers": (_GENERAL, "Trigger section headers"),
+    "trigger_rename_double_click": (_GENERAL, "Double-click a trigger to rename it"),
     "mod_art_excluded": (_MODS, "Mod art left unticked"),
     "mod_art_included": (_MODS, "Mod art ticked while disabled in game"),
     "data_mod_hide_unchanged": (_MODS, "Hide a data mod's unchanged objects"),
@@ -81,6 +83,7 @@ PORTABLE_KEYS: dict[str, tuple[str, str]] = {
     "overlay_opacity": (_APPEARANCE, "Tool overlay opacity"),
     "ruler_label_font_px": (_APPEARANCE, "Ruler label size"),
     "distance_tick_font_px": (_APPEARANCE, "Distance ticks label size"),
+    "distance_ticks_behind_terrain": (_APPEARANCE, "Draw distance ticks behind elevated terrain"),
     "stack_badge_position": (_APPEARANCE, "Stacked-unit badge position"),
     "favorite_star_style": (_APPEARANCE, "Favorite star"),
     "trigger_details_bottom_layout": (_APPEARANCE, "Trigger Details under the map"),

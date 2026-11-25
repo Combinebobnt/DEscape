@@ -72,6 +72,7 @@ from descape import (
     composite_backend,
     debug_log,
     editor_markers,
+    flat_deproject,
     game_dataset,
     games,
     gate_orientation,
@@ -125,7 +126,7 @@ NATIVE_TILE_W = 96
 MAX_SPRITE_REACH_LEFT = 404   # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_RIGHT = 424  # b_scen_cathedral_rubble_x1
 MAX_SPRITE_REACH_UP = 700     # b_west_wonder_burgundians_x1
-MAX_SPRITE_REACH_DOWN = 316   # margin; measured 200, b_scen_colosseum_x1 (see above)
+MAX_SPRITE_REACH_DOWN = 316   # margin; measured 212 with unit art, b_afri_wonder_malians_rubble_x1 (see above)
 
 # How far the stored angle set is rotated from the scenario's own `rotation`
 # field, in degrees, and which way the index walks as rotation increases.
@@ -141,54 +142,49 @@ MAX_SPRITE_REACH_DOWN = 316   # margin; measured 200, b_scen_colosseum_x1 (see a
 # correction at all: it would rotate most units by 22.5 degrees while rotating
 # a handful by 45.
 #
-# The magnitude comes from a live-window observation: units rendered 45 degrees
-# to the RIGHT of where the real editor puts them, uniformly. Uniformly is the
-# load-bearing word -- a wrong ANGLE_DIRECTION would MIRROR the facing about an
-# axis, so the error would vary with rotation instead of being constant. That
-# it is constant is what says the direction is already right and only the zero
-# point was off.
+# **Both values are measured against the running game.** A GH #167 tester
+# played control units of three graphics (16, 8 and 32 angles) at known
+# rotations, and a template match of the screenshots against the raw frames
+# read every control as exactly the stored frame angle_index() picks; the 28
+# readings are tests/test_ingame_angle_mapping.py. A wrong ANGLE_DIRECTION
+# would mirror them, +45 would shift each by 45 degrees and a 180 degree error
+# by half a turn, so both constants hold mod 360 at all three angle counts:
+# **AoE2's rotation field grows CLOCKWISE on screen.** Angle counts that are
+# not a multiple of 8 have no game reading (the whole-step guard in
+# angle_index() decides those).
 #
-# **The sign is -45, confirmed against the running game, and it is worth
-# knowing WHY it is not +45.** Correcting a "units face 45 degrees too far
-# right" error means adding 45 degrees if the game's `rotation` grows
-# counter-clockwise and subtracting it if clockwise. Nothing in the .sld, the
-# .dat or openage states which, so +45 was tried first on the reasoning that a
-# radians field usually follows the maths convention. That put units 90 degrees
-# out -- the signature of a sign error, being exactly twice the offset -- so
-# **AoE2's rotation field grows CLOCKWISE on screen.** Recorded here because it
-# cost a round trip to a human with the game open, and nothing else in this
-# codebase pins it.
+# History, which explains the sign: a live window first showed units 45
+# degrees to the RIGHT of the real editor, uniformly (a wrong direction would
+# have mirrored them instead), and +45 was tried first on the reasoning that a
+# radians field usually follows the maths convention. That put units 90
+# degrees out, exactly twice the offset, the signature of a sign error.
 ANGLE_ZERO_OFFSET_DEG = -45.0
 ANGLE_DIRECTION = 1
 
-# Flat's non-isometric counterpart, and it is a MEASURED zero rather than the
+# Flat's non-isometric counterpart, and it is a DERIVED zero rather than the
 # absence of a correction. Named, and threaded as a parameter with two values,
 # rather than written as "Flat just skips the offset": the test that pins it
 # derives its expectation from this value, and a flag would leave nothing to
 # re-measure against.
 #
-# **Geometric derivation.** iso_geometry.tile_screen_origin() is
-# sx = origin_x + (x+y)*half_w, sy = origin_y + (y-x)*half_h, so world +x
+# **Derivation, which carries the mod-360 sign.** Flat draws the iso art, so
+# its offset is the iso offset plus the iso-to-Flat screen turn times the
+# sense the stored index walks in on screen. iso_geometry.tile_screen_origin()
+# is sx = origin_x + (x+y)*half_w, sy = origin_y + (y-x)*half_h, so world +x
 # projects to screen up-right and +y to down-right: unsquashed, the iso screen
-# is the world rotated -45 degrees. Flat's top-down grid instead puts +x at 0
-# degrees and +y at +90, so Flat is iso plus 45 degrees of apparent facing, and
-# since the index walks clockwise as rotation grows (ANGLE_DIRECTION == 1) that
-# is +45 in the same units as the offset: -45 + 45 = 0.
+# is the world rotated -45 degrees, and Flat's grid (+x at 0, +y at +90) is
+# iso turned +45. The index walks clockwise (measured below), so that is +45
+# in the offset's units, and the iso offset is game-measured mod 360 (above):
+# -45 + 45 = 0. tests/test_ingame_angle_mapping.py pins the sum.
 #
 # **Empirical**, decoded from the real install (u_shp_war_galley_x1, const 21,
 # angle_count 16, frame_count 1, so frame index == angle index). Per-frame
 # principal-axis angle of the alpha mask, clockwise from screen-right, y down,
-# mod 180: index 0 measures 179.42 and index 4 measures 89.85. So at offset 0.0
-# a rotation of 0 reads screen-horizontal (flat +x) and pi/2 reads
-# screen-vertical (flat +y), both exact. The -90.0 candidate is ruled out by
-# the same table: it would stand the boat upright at rotation 0.
-#
-# **The sign is pinned to mod 360, not just mod 180**, which matters because a
-# principal axis is direction-blind. Closed separately by decoding
-# u_cav_knight_idleC_x1: angle 0's horse faces screen-RIGHT and angle 8 faces
-# LEFT. That is the check worth having done, because ANGLE_ZERO_OFFSET_DEG's
-# own comment above records a confident first derivation of exactly this sign
-# being wrong and costing a round trip to a human with the game open.
+# mod 180: index 0 measures 179.42 and index 4 measures 89.85, so at offset
+# 0.0 rotation 0 reads flat +x and pi/2 flat +y, which rules out -90.0. All 16
+# consecutive frames step clockwise, by 12.41 degrees at the least: that is
+# the measured sense. Corroborating, not load-bearing: u_cav_knight_idleC_x1's
+# angle 0 horse faces screen-RIGHT and angle 8 LEFT, skews of opposite sign.
 #
 # The residual is the iso camera's own 2:1 vertical squash, which no frame
 # choice removes: exact at the four cardinals, off by at most 18.43 degrees at
@@ -232,6 +228,16 @@ def flat_art(unit_const: int, rotation: float) -> tuple[int, float]:
     if gate_orientation.is_gate(unit_const):
         return gate_orientation.cycle_const(unit_const, FLAT_RUN_STEPS), rotation
     return unit_const, rotation
+
+
+# Cliffs have no frame to turn to (TASK-350): every frame's arms are tile-cardinal
+# (cliff_connectivity.json's shapes), none runs along a tile diagonal, and a family's
+# consts differ by footprint, not direction. So Flat de-projects the thin straights
+# instead (flat_deproject): 1x3 frames 7/8 run along y, 3x1 frames 10/11 along x, and
+# keep 0.75 to 0.95 of their ink inside the footprint. Tall pieces smear (0.39 to 0.81)
+# and thin corners and caps vary by family, so every other frame keeps the contain-fit.
+# Draw-only, like flat_art().
+FLAT_DEPROJECT_CLIFF_FRAMES = frozenset({7, 8, 10, 11})
 
 # resources/_common/palettes/spritecolors.json's TeamColors block, as RGB.
 # Index is the scenario's own player id: 0 is GAIA, 1..8 the real players.
@@ -590,7 +596,8 @@ def clear_slice_cache() -> None:
 # Draw x2 where x1 would be enlarged (Graphics Quality Enhanced); set by the viewer.
 _hi_res = False
 _hi_res_generation = 0
-# Box-filter art drawn below its native size (Graphics Quality Default and above, GH #254); set by the viewer.
+# Area-resample art shrunk or enlarged by a non-whole factor (Graphics Quality Default and above, GH #254);
+# set by the viewer.
 _smooth_shrink = False
 
 # Cached in place of a sprite when a key resolves to nothing.
@@ -646,8 +653,9 @@ def hi_res() -> bool:
 
 
 def set_smooth_shrink(flag: bool) -> bool:
-    """Whether to shrink art with a box (area-average) filter rather than a
-    nearest gather wherever it is drawn below its native size (GH #254).
+    """Whether to resample art with a box (area-average) filter rather than a
+    nearest gather wherever it is drawn below its native size or enlarged by
+    a non-whole factor (GH #254, _area_path()).
     Module state like set_hi_res(), whose generation a change bumps, so every
     memo keyed on what draws misses. True when the flag changed."""
     global _smooth_shrink, _hi_res_generation
@@ -744,7 +752,7 @@ def clear_caches(changed: frozenset[str] | None = None) -> None:
     editor_markers.clear_caches()
 
 
-_KEY_MARKERS = frozenset({"wall", "install", "mod"})  # key-shape tags, never stems
+_KEY_MARKERS = frozenset({"wall", "install", "mod", "deproject"})  # key-shape tags, never stems
 
 
 def _drop_install_lacking_draws() -> None:
@@ -800,6 +808,9 @@ class BuildingArt(NamedTuple):
     max_age: int = 5  # a lookup clamps its age to this; a table without the key is 5
     # const -> {age: {art civ, 0 = Gaia: entry}}, the Satrapy TCs' per-age annexes (TASK-205 Slice 2)
     age_art: Mapping[int, dict[int, dict[int, dict]]] = MappingProxyType({})
+    # civ index -> {non-building const: entry}, and const -> its lookup group (TASK-140)
+    unit_art: Mapping[int, dict[int, dict]] = MappingProxyType({})
+    unit_groups: Mapping[int, str] = MappingProxyType({})
 
 
 def _upgrade_rows(rows: dict) -> dict[int, dict[int, int]]:
@@ -827,6 +838,11 @@ def building_art() -> BuildingArt:
             }
             for const, by_age in data.get("age_art", {}).items()
         },
+        unit_art={
+            int(civ): {int(const): entries[index] for const, index in art.items()}
+            for civ, art in data.get("unit_art", {}).items()
+        },
+        unit_groups={int(const): group for const, group in data.get("unit_groups", {}).items()},
     )
 
 
@@ -1613,7 +1629,10 @@ def _mod_only_index(file_name: str):
 def drawn_frame_count(file_name: str) -> int | None:
     """How many frames drawing may index: the install file's
     (sld_frame_count()), else a data mod's own file's (_mod_only_index()),
-    else None. Draw-only: write paths keep sld_frame_count()."""
+    else None. Draw-only: write paths keep sld_frame_count(). None for a
+    particle stem, which has no file (the dispatch falls back to angle_count)."""
+    if file_name in _particle_stems():
+        return None
     count = sld_frame_count(file_name)
     if count is not None:
         return count
@@ -2006,12 +2025,13 @@ def _x2_native_frame(file_name: str, frame_index: int):
 def referenced_entries() -> list[tuple[str, int, int]]:
     """Every (file_name, dx, dy) a unit can draw: unit_graphic_map.json's
     entries, pieces and garrison flags (GH #203) plus every per-civ building
-    entry, each at its own offset from the unit's anchor
+    and unit entry, each at its own offset from the unit's anchor
     (tools/scan_sprite_reach.py's input)."""
     entries: set[tuple[str, int, int]] = set()
     art_table = building_art()
     per_civ = [e for art in art_table.civ_art.values() for e in art.values()]
     per_civ += [e for by_age in art_table.age_art.values() for by_civ in by_age.values() for e in by_civ.values()]
+    per_civ += [e for art in art_table.unit_art.values() for e in art.values()]
     for entry in [*graphic_map().values(), *per_civ]:
         # A single-graphic entry's own dx/dy (a fish body, GH #178) moves it like a piece's.
         entries.add((entry["file_name"], *_body_offset(entry)))
@@ -2245,9 +2265,9 @@ def _tinted(main: np.ndarray, playercolor: np.ndarray | None, team: tuple[int, i
 
 
 def _resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Nearest-neighbour resample of an (H, W, 4) uint8 array: every
-    enlargement, and every x1 shrink while smooth_shrink() is off (Graphics
-    Quality Potato and below). Deliberately not Pillow: this
+    """Nearest-neighbour resample of an (H, W, 4) uint8 array: every resize
+    while smooth_shrink() is off (Graphics Quality Potato and below), and every
+    whole-factor enlargement (_area_path()). Deliberately not Pillow: this
     module stays Qt-free and image-library-free like the rest of the render
     path.
 
@@ -2277,14 +2297,12 @@ def _area_taps(src: int, dst: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _box_resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Premultiplied box shrink of an (H, W, 4) uint8 array (GH #241's x2 art
-    at the top level, and any art below its native size while smooth_shrink()
-    holds, GH #254), so a transparent px adds no colour to its neighbours.
-    Falls back to _resize_rgba() on any axis that would grow. The native
-    kernel's box_shrink_rgba() is the same float32 math, op for op."""
+    """Premultiplied area resample of an (H, W, 4) uint8 array, either way on
+    each axis (_area_path() says where), so a transparent px adds no colour to
+    its neighbours. Enlarging, each source px becomes an even block blended
+    only at its seams. The native kernel's box_shrink_rgba() is the same
+    float32 math, op for op."""
     src_h, src_w = rgba.shape[:2]
-    if width > src_w or height > src_h:
-        return _resize_rgba(rgba, width, height)
     ys, wy = _area_taps(src_h, height)
     xs, wx = _area_taps(src_w, width)
     kernel = composite_backend.native
@@ -2299,6 +2317,16 @@ def _box_resize_rgba(rgba: np.ndarray, width: int, height: int) -> np.ndarray:
     a = out[..., 3:4]
     rgb = out[..., :3] * 255.0 / np.where(a > 0, a, 1.0)
     return np.clip(np.concatenate([rgb, a], axis=2) + 0.5, 0, 255).astype(np.uint8)
+
+
+def _area_path(scale: float, from_x2: bool) -> bool:
+    """Whether art drawn at `scale` is area-resampled (tinted at native, then
+    _box_resize_rgba()) rather than gathered: every x2 shrink, and while
+    smooth_shrink() holds every other shrink and every enlargement by a
+    non-whole factor. A whole factor stays nearest: the bytes are equal."""
+    if scale < 1.0:
+        return from_x2 or _smooth_shrink
+    return _smooth_shrink and scale > 1.0 and not float(scale).is_integer()
 
 
 def sprite_scale(half_w: int) -> float:
@@ -2503,9 +2531,10 @@ def _draw_for_entry(
     # want_x2 (GH #241): x1 enlarged at Enhanced draws the _x2 art instead, and so does x1 at
     # exactly 1:1 (the native tier, TASK-599): x2 halved by the box filter on the same pixel grid.
     # blank_mod_fallback: one stem can be a piece (a gap) and a single graphic (the install's art).
-    # smooth (GH #254): x1 shrunk at Default and above is box-filtered, so half_w alone collides across qualities.
+    # smooth (GH #254): x1 resized at Default and above is area-resampled, so half_w alone collides across
+    # qualities. Keyed before from_x2 is known; a whole factor's two keys hold equal bytes.
     want_x2 = _hi_res and scale >= 1.0
-    smooth = _smooth_shrink and scale < 1.0
+    smooth = _smooth_shrink and scale != 1.0
     key = (
         entry["file_name"], index, team_index % len(TEAM_COLORS), half_w, tree_scale, hero_glow, offset,
         art_scale, want_x2, blank_mod_fallback, smooth,
@@ -2529,9 +2558,9 @@ def _draw_for_entry(
 
     width = max(1, round(main.shape[1] * scale))
     height = max(1, round(main.shape[0] * scale))
-    if (from_x2 or smooth) and scale < 1.0:
-        # A nearest gather drops whole rows and columns and breaks thin lines. Tinted at native:
-        # an area average does not commute with the tint's per-pixel coverage multiply.
+    if _area_path(scale, from_x2):
+        # A nearest gather drops whole rows and columns shrinking (thin lines break), or doubles every few
+        # enlarging (uneven blocks). Tinted at native: an area average does not commute with the tint's multiply.
         rgba = _box_resize_rgba(_tinted(main, playercolor, team), width, height)
     else:
         # The nearest path tints the decimated pair: a gather and a per-pixel tint commute
@@ -2617,7 +2646,7 @@ def sprite_pieces_for(
     unit_const: int, rotation: float, team_index: int, half_w: int, tree_scale: float = 1.0,
     seed: int | None = None, hero_glow: bool = False,
     art: tuple[int | None, int, int | None] | None = None,
-    wall_alpha: float = 1.0,
+    alpha: float = 1.0,
 ) -> list[SpritePiece]:
     """The full ordered composite for unit_const: ready-to-paste pieces, each
     with its own (dx, dy) screen offset from the unit's own anchor. Empty on
@@ -2656,10 +2685,10 @@ def sprite_pieces_for(
 
     `art` as sprite_for()'s.
 
-    `wall_alpha` (View > Layers > Translucent Walls, GH #35) below 1.0
-    returns _wall_draw()'s one flattened piece at (0, 0) instead, or [] if it
-    fails. tree_scale and hero_glow are ignored there; the caller decides
-    which consts get each.
+    `alpha` below 1.0 (Translucent Walls, GH #35, and a non-Alive Unit
+    State's fade, unit_state.py) returns _faded_draw()'s one flattened piece
+    at (0, 0) instead, or [] if it fails. The caller decides which units get
+    it. An editor marker above never fades.
     """
     category = unit_kind.invisible_category(unit_const)
     if category is not None:
@@ -2668,8 +2697,8 @@ def sprite_pieces_for(
     entry = _entry_for_art(unit_const, art)
     if entry is None:
         return []
-    if wall_alpha < 1.0:
-        draw = _wall_draw(unit_const, entry, rotation, team_index, half_w, seed, wall_alpha)
+    if alpha < 1.0:
+        draw = _faded_draw(unit_const, entry, rotation, team_index, half_w, tree_scale, seed, hero_glow, alpha)
         return [] if draw is None else [SpritePiece(draw=draw, dx=0, dy=0)]
     return _opaque_pieces(unit_const, entry, rotation, team_index, half_w, tree_scale, seed, hero_glow)
 
@@ -2704,7 +2733,7 @@ def _opaque_pieces(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int, tree_scale: float,
     seed: int | None, hero_glow: bool,
 ) -> list[SpritePiece]:
-    """sprite_pieces_for()'s pieces for a resolved entry, with no wall alpha."""
+    """sprite_pieces_for()'s pieces for a resolved entry, with no alpha."""
     pieces_data = entry.get("pieces")
     if not pieces_data:
         draw = _draw_for_entry(
@@ -2873,44 +2902,45 @@ def _assembled_with_origin(pieces: list[SpritePiece]) -> tuple[np.ndarray, int, 
     return out, ox, oy
 
 
-def _wall_draw(
+def _faded_draw(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
-    seed: int | None, alpha: float,
+    tree_scale: float, seed: int | None, hero_glow: bool, alpha: float,
 ) -> SpriteDraw | None:
-    """A wall or gate's whole composite as one tinted, scaled SpriteDraw with
-    Translucent Walls' alpha applied (GH #35). None on any failure
-    sprite_for() lists, or a lost parent piece.
+    """A unit's whole composite as one tinted, scaled SpriteDraw with `alpha`
+    applied (Translucent Walls, GH #35, or a Unit State fade). None on any
+    failure sprite_for() lists, or a lost parent piece.
 
     The opaque path's own scaled pieces, flattened, so the alpha is uniform
     within the unit and a flag over a tower or a pillar over a gate does not
     stack. Flattening after the resize keeps every pixel where the layer-off
     draw puts it; a native-scale flatten rounds one union hotspot instead of
-    each piece's, which moved composites by up to 1px. No wall or gate piece
-    has a depth slot, so flattening changes no draw order. Then the alpha
-    multiply, as round(a * alpha).
+    each piece's, which moved composites by up to 1px. A flattened piece
+    loses any depth slot, so a faded composite paints at its anchor. Then the
+    alpha multiply, as round(a * alpha). tree_scale and hero_glow reach the
+    pieces as on the opaque path.
 
     Cached in _scaled_cache under a key of its own, for the reasons
     _draw_for_entry() gives for its own. _frame_key() resolves every piece's
     frame, a seeded one included; _art_key() tells two owners' art apart."""
     team_slot = team_index % len(TEAM_COLORS)
     key = (
-        "wall", unit_const, _art_key(entry), _body_offset(entry),
-        _frame_key(unit_const, entry, rotation, seed=seed), team_slot, half_w, alpha, _hi_res, _smooth_shrink,
+        "fade", unit_const, _art_key(entry), _body_offset(entry), _frame_key(unit_const, entry, rotation, seed=seed),
+        team_slot, half_w, tree_scale, hero_glow, alpha, _hi_res, _smooth_shrink,
     )
     hit = _scaled_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
-    draw = _build_wall_draw(unit_const, entry, rotation, team_slot, half_w, seed, alpha)
+    draw = _build_faded_draw(unit_const, entry, rotation, team_slot, half_w, tree_scale, seed, hero_glow, alpha)
     _scaled_cache.put(key, _MISS if draw is None else draw)  # see _MISS
     return draw
 
 
-def _build_wall_draw(
+def _build_faded_draw(
     unit_const: int, entry: dict, rotation: float, team_index: int, half_w: int,
-    seed: int | None, alpha: float,
+    tree_scale: float, seed: int | None, hero_glow: bool, alpha: float,
 ) -> SpriteDraw | None:
-    """_wall_draw()'s uncached body."""
-    pieces = _opaque_pieces(unit_const, entry, rotation, team_index, half_w, 1.0, seed, False)
+    """_faded_draw()'s uncached body."""
+    pieces = _opaque_pieces(unit_const, entry, rotation, team_index, half_w, tree_scale, seed, hero_glow)
     assembled = _assembled_with_origin(pieces)
     if assembled is None:
         return None
@@ -3005,6 +3035,8 @@ def icon_for(
     rotation_variant_eligible() consts, and what goes down is a literal index
     0..4. Cliffs, trees and doodads pass through verbatim, and the cache key
     needs no change since it already holds the resolved art and frames.
+    A cliff's thin straight (FLAT_DEPROJECT_CLIFF_FRAMES) is de-projected onto
+    its footprint instead of contain-fitted (_deprojected_icon()), draw-only.
 
     `art` as sprite_for()'s. The cache is keyed on the resolved art
     (_art_key()), not the const, so one owner's art is never served to
@@ -3021,21 +3053,54 @@ def icon_for(
         return None
 
     team_slot = team_index % len(TEAM_COLORS)
+    frames = _frame_key(art_const, entry, art_rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed)
+    # Tagged: cliff membership is the const's, which _art_key() (file names only) does not carry.
+    deproject = art_const in cliff_const_set() and len(frames) == 1 and frames[0] in FLAT_DEPROJECT_CLIFF_FRAMES
     key = (
-        _art_key(entry),
-        _frame_key(art_const, entry, art_rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, seed),
-        team_slot, footprint_w, footprint_h, _hi_res, _smooth_shrink,
+        _art_key(entry), frames, team_slot, footprint_w, footprint_h, _hi_res, _smooth_shrink,
+        *(("deproject",) if deproject else ()),
     )
     hit = _icon_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
 
-    draw = _build_icon(
-        art_const, entry, art_rotation, TEAM_COLORS[team_slot], footprint_w, footprint_h,
-        FLAT_ANGLE_ZERO_OFFSET_DEG, seed,
-    )
+    team = TEAM_COLORS[team_slot]
+    draw = _deprojected_icon(art_const, entry, art_rotation, team, footprint_w, footprint_h) if deproject else None
+    if draw is None:
+        draw = _build_icon(
+            art_const, entry, art_rotation, team, footprint_w, footprint_h, FLAT_ANGLE_ZERO_OFFSET_DEG, seed,
+        )
     _icon_cache.put(key, _MISS if draw is None else draw)  # see _MISS
     return draw
+
+
+def _deprojected_icon(unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int) -> SpriteDraw | None:
+    """A cliff piece's frame de-projected onto its fw x fh footprint
+    (flat_deproject), or None to contain-fit it: a composite, or no ink. The
+    frame is tinted at native, then resized so one tile's diamond is 2 * tile
+    px wide, by _build_icon()'s rules: x2 art at Enhanced when that enlarges
+    x1 (GH #241), area-resampled by _area_path() (GH #254), else nearest."""
+    if entry.get("pieces"):
+        return None
+    span_x, span_y = terrain_palette.tile_span(unit_const, (1, 1))
+    # One scale on both axes: a footprint clamped at the map edge loses tiles, not size.
+    tile = max(fw / span_x, fh / span_y)
+    pieces = _native_pieces_for(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG)
+    k = 1
+    if _hi_res and tile > NATIVE_TILE_W / 2:
+        pieces_x2 = _native_pieces_for(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG, x2=True)
+        if pieces_x2:
+            pieces, k = pieces_x2, 2
+    if len(pieces) != 1:
+        return None
+    main, playercolor, hx, hy = pieces[0][:4]
+    src_h, src_w = main.shape[:2]
+    scale = tile / (k * NATIVE_TILE_W / 2)
+    w, h = max(1, round(src_w * scale)), max(1, round(src_h * scale))
+    rgba = _tinted(main, playercolor, team)
+    rgba = _box_resize_rgba(rgba, w, h) if _area_path(scale, k == 2) else _resize_rgba(rgba, w, h)
+    out = flat_deproject.deprojected(rgba, hx * w / src_w, hy * h / src_h, tile, tile, fw, fh)
+    return SpriteDraw(rgba=out, hotspot_x=0, hotspot_y=0) if out[..., 3].any() else None
 
 
 def _build_icon(
@@ -3043,8 +3108,9 @@ def _build_icon(
     angle_offset_deg: float = ANGLE_ZERO_OFFSET_DEG, seed: int | None = None,
 ) -> SpriteDraw | None:
     """icon_for()'s uncached body. At Enhanced an icon that would enlarge its
-    x1 ink is built from the _x2 art instead (GH #241); one that shrinks it
-    is box-filtered while smooth_shrink() holds (GH #254)."""
+    x1 ink is built from the _x2 art instead (GH #241); one that shrinks it,
+    or enlarges it by a non-whole factor, is area-resampled while
+    smooth_shrink() holds (GH #254, _area_path())."""
     pieces = _native_pieces_for(unit_const, entry, rotation, angle_offset_deg, seed)
     if not pieces:
         return None
@@ -3072,8 +3138,8 @@ def _build_icon(
     # icon inside its footprint at all.
     iw = min(fw, max(1, round(ink_w * scale)))
     ih = min(fh, max(1, round(ink_h * scale)))
-    if (from_x2 or _smooth_shrink) and scale < 1.0:
-        # Shrinking x2, or x1 at Default and above: box-filtered and tinted at native, as _draw_for_entry() does.
+    if _area_path(scale, from_x2):
+        # Shrinking x2, or resized at Default and above: area-resampled and tinted at native, as _draw_for_entry().
         tinted = ink if len(pieces) > 1 else _tinted(ink, ink_pc, team)
         return SpriteDraw(rgba=_box_resize_rgba(tinted, iw, ih), hotspot_x=0, hotspot_y=0)
     if len(pieces) > 1:

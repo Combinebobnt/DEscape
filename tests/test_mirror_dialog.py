@@ -1180,3 +1180,27 @@ def test_read_only_units_untick_but_are_remembered(monkeypatch) -> None:
     finally:
         window.edit_history.mark_saved()
         window.close()
+
+
+def test_summary_counts_reoriented_objects_apart_from_gates_and_unsquare_spans() -> None:
+    """TASK-329: a bridge piece and a blocker take their orientation siblings
+    under mode 1's axis swap and are counted as objects; a mole has none."""
+    from descape import render_units
+
+    window = _mirror_window()
+    try:
+        _place(window, 605, *render_units.span_anchor(10, 10, 2, 3))
+        _place(window, 2423, *render_units.span_anchor(20, 10, 1, 3))
+        dialog = _units_dialog(window, 1)
+        text = dialog.summary_label.text()
+        assert "2 object(s) reoriented" in text
+        assert "gate(s) reoriented" not in text and "non-square footprint" not in text
+        _place(window, 2421, *render_units.span_anchor(10, 20, 3, 1))
+        dialog.reject()
+        dialog = _units_dialog(window, 1)
+        text = dialog.summary_label.text()
+        assert "2 object(s) reoriented" in text and "1 non-square footprint(s) cannot be reflected" in text
+        dialog.reject()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()

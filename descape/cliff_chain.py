@@ -47,8 +47,10 @@ that gains exactly one neighbour from the run takes the frame the table
 gives its new arms at its own size (`rewrites()`). Where that needs a
 different-size piece it is left alone and counted (`unjoined()`).
 
-**An erase re-caps the ends it leaves, as narrowly** (GH #247,
-`erase_rewrites()`). A surviving cliff that was joined to an erased one and
+**A removal re-caps the ends it leaves, as narrowly** (`erase_rewrites()`):
+the Cliff tool's right-button erase (GH #247), and the Eraser's Cliffs
+target, Delete, Cut Units and Find and Replace's Delete (GH #286, through
+`erase_rewrites_for_units()`). A surviving cliff that was joined to a removed one and
 is left joined to exactly one neighbour takes the end cap the table gives
 that arm at its own size. "Joined" is the drag's own test: a shared edge,
 legs of the same type, and each piece's stored frame shaped for that side
@@ -331,6 +333,21 @@ def erase_rewrites(
         elif cliff.rotation not in frames:
             rewrites.append(ChainRewrite(k, _twin(frames, (cliff.bounds[0], cliff.bounds[2]))))
     return rewrites, left
+
+
+def erase_rewrites_for_units(
+    existing: list[ExistingCliff], index: _TileIndex, removed_ids: set[int]
+) -> tuple[list[tuple[ExistingCliff, int]], int]:
+    """`erase_rewrites()` for removing the units whose `id()` is in
+    `removed_ids`: (cliff, frame) per rewrite, any with no live `unit`
+    dropped, and the left-alone count. ([], 0) when no cliff of `existing`
+    was removed."""
+    erased = {k for k, cliff in enumerate(existing) if id(cliff.unit) in removed_ids}
+    if not erased:
+        return [], 0
+    rewrites, left = erase_rewrites(existing, index, erased)
+    pairs = [(existing[r.existing_index], r.rotation) for r in rewrites]
+    return [(cliff, frame) for cliff, frame in pairs if cliff.unit is not None], left
 
 
 def path_dirsets(steps: list[Direction]) -> list[frozenset[Direction]]:

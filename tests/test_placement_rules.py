@@ -483,6 +483,92 @@ def test_a_gates_own_corner_pieces_never_block_its_move() -> None:
             assert placement_rules.move_refused(scenario, gate, 10.5, 11, **kwargs) == (reason is not None)
 
 
+def test_companions_by_gate_finds_each_moving_gates_pieces_per_owner() -> None:
+    """TASK-531: both ends' pieces, stacked copies included, per gate across
+    two owners. Another owner's piece, a piece off the gate's boxes and a
+    non-corner const are not a gate's; a move with no A/B gate scans nothing."""
+    gate1, gate2 = _unit(GATE_RUN_Y, 10.5, 10), _unit(GATE_RUN_Y, 5.5, 18)
+    ends1 = [_unit(GATE_RUN_Y_CORNER, 10.5, 8.5), _unit(GATE_RUN_Y_CORNER, 10.5, 8.5), _unit(GATE_RUN_Y_CORNER, 10.5, 11.5)]
+    ends2 = [_unit(GATE_RUN_Y_CORNER, 5.5, 16.5), _unit(GATE_RUN_Y_CORNER, 5.5, 19.5)]
+    off_box, not_corner = _unit(GATE_RUN_Y_CORNER, 10.5, 12.5), _unit(VILLAGER, 10.5, 9.5)
+    theirs = _unit(GATE_RUN_Y_CORNER, 10.5, 9.5)
+    scenario = _scenario([[theirs], [gate1, *ends1, off_box, not_corner], [ends2[0], gate2, ends2[1]]])
+
+    def ids(found):
+        return {gate: [(player_id, id(p)) for player_id, p in rows] for gate, rows in found.items()}
+
+    found = placement_rules.companions_by_gate(scenario, [(1, gate1), (2, gate2), (1, not_corner)])
+
+    assert ids(found) == {id(gate1): [(1, id(p)) for p in ends1], id(gate2): [(2, id(p)) for p in ends2]}
+    # The same match as TASK-340's per-gate rule.
+    assert ids(placement_rules.companions_by_gate(scenario, [(1, gate1)])) == {
+        id(gate1): [(1, id(p)) for p in placement_rules.gate_companions(scenario, gate1)]
+    }
+    assert placement_rules.companions_by_gate(_scenario([[], [gate1]]), [(1, gate1)]) == {}
+
+    class _NoScan:
+        @property
+        def unit_manager(self):
+            raise AssertionError("scanned with no gate moving")
+
+    assert placement_rules.companions_by_gate(_NoScan(), [(1, not_corner), (1, ends1[0])]) == {}
+
+
+def test_end_tiles_are_each_orientations_run_extremes() -> None:
+    """TASK-532: the stone family at low corner (10, 10), low end first along A +x, C +x+y, B +y, D +x-y."""
+    from descape import gate_orientation
+    from descape.render_units import span_anchor
+    from descape.terrain_palette import tile_span
+
+    def at_corner(const):
+        return placement_rules.end_tiles(const, *span_anchor(10, 10, *tile_span(const, (1, 1))))
+
+    assert gate_orientation.orientation_siblings(64) == (64, 659, 88, 667)
+    assert at_corner(64) == ((10, 10), (13, 10))
+    assert at_corner(659) == ((10, 10), (13, 13))
+    assert at_corner(88) == ((10, 10), (10, 13))
+    assert at_corner(667) == ((10, 13), (13, 10))
+    with pytest.raises(ValueError):
+        placement_rules.end_tiles(VILLAGER, 10.5, 10.5)
+
+
+def test_companion_landing_round_trips_and_keeps_each_pieces_offset() -> None:
+    """TASK-532: four single steps and two quarter turns bring both ends' pieces,
+    a stacked copy's sub-tile offset included, back to their first point and
+    const, every step landing on an end tile of the gate's new footprint."""
+    from descape import gate_orientation
+    from descape.unit_model import reanchored
+
+    gate = _unit(GATE_RUN_Y, 10.5, 10)
+    pieces = [_unit(GATE_RUN_Y_CORNER, 10.5, 8.5), _unit(GATE_RUN_Y_CORNER, 10.25, 8.75), _unit(GATE_RUN_Y_CORNER, 10.5, 11.5)]
+    first = [(p.unit_const, p.x, p.y) for p in pieces]
+    for steps, count in ((1, 4), (2, 2), (-1, 4)):
+        for _ in range(count):
+            new_const = gate_orientation.cycle_const(gate.unit_const, steps)
+            new_x, new_y = reanchored(gate, new_const)
+            landed = [placement_rules.companion_landing(gate, new_const, new_x, new_y, p) for p in pieces]
+            ends = placement_rules.end_tiles(new_const, new_x, new_y)
+            for p, (const, x, y) in zip(pieces, landed, strict=True):
+                assert const == gate_orientation.corner_piece(new_const)
+                assert (int(x), int(y)) in ends
+                p.unit_const, p.x, p.y = const, x, y
+            gate.unit_const, gate.x, gate.y = new_const, new_x, new_y
+            assert (pieces[0].x - int(pieces[0].x), pieces[1].x - int(pieces[1].x)) == (0.5, 0.25)
+        assert [(p.unit_const, p.x, p.y) for p in pieces] == first, steps
+    # B 88 to D 667, one step: the low end goes to the diagonal's (low x, high y) tip.
+    assert placement_rules.companion_landing(gate, 667, *reanchored(gate, 667), pieces[0]) == (671, 10.5, 11.5)
+    assert placement_rules.companion_landing(gate, 667, *reanchored(gate, 667), pieces[2]) == (671, 13.5, 8.5)
+
+
+def test_companion_landing_takes_the_nearer_end_and_refuses_a_foreign_sibling() -> None:
+    gate = _unit(GATE_RUN_Y, 10.5, 10)
+    mid_low, mid_high = _unit(GATE_RUN_Y_CORNER, 10.5, 9.25), _unit(GATE_RUN_Y_CORNER, 10.5, 10.75)
+    assert placement_rules.companion_landing(gate, 64, 10, 8.5, mid_low) == (81, 8.5, 8.25)
+    assert placement_rules.companion_landing(gate, 64, 10, 8.5, mid_high) == (81, 11.5, 8.75)
+    with pytest.raises(ValueError):
+        placement_rules.companion_landing(gate, 64, 10, 8.5, _unit(VILLAGER, 10.5, 8.5))
+
+
 def test_refused_builds_no_message(monkeypatch) -> None:
     """Pins "no message" without a timing: the two name lookups raise."""
     scenario, consts, points, _house = _refused_cases()
@@ -622,3 +708,78 @@ def test_real_placements_mostly_satisfy_both_rules(corpus_files, request) -> Non
     for kind, ceilings in _OVERLAP_CEILING.items():
         assert measured["overlap"][kind] < ceilings[scope], measured
     assert measured["shore"] >= _SHORE_FLOOR, measured
+
+
+# --- TerrainGaps (TASK-328: wall runs follow the terrain rule) --------------------
+
+SEA_WALL = 788  # row 21: refuses land
+MAP_REVEALER = 0  # no restriction row
+
+
+def _terrain_row(ids) -> FakeScenario:
+    tiles = [SyntheticTile(x, 0, 0, terrain_id) for x, terrain_id in enumerate(ids)]
+    return FakeScenario(len(tiles), 1, tiles, [[]])
+
+
+def test_terrain_gaps_agree_with_terrain_refusal_for_every_wall_const_on_every_terrain() -> None:
+    from descape import unit_sprites
+
+    ids = sorted(object_catalog.dat_terrains())
+    scenario = _terrain_row(ids)
+    walls = unit_sprites.wall_family_consts()
+    assert len(walls) >= 8, walls
+    for const in walls:
+        gaps = placement_rules.TerrainGaps(scenario, const)
+        for tx, terrain_id in enumerate(ids):
+            refused = placement_rules.terrain_refusal(scenario, const, tx + 0.5, 0.5) is not None
+            assert ((tx, 0) in gaps) == refused, (const, terrain_id)
+
+
+def test_terrain_gaps_hold_water_for_a_stone_wall_and_land_for_a_sea_wall() -> None:
+    scenario = _terrain_row([GRASS, WATER_SHALLOW])
+    stone = placement_rules.TerrainGaps(scenario, STONE_WALL)
+    sea = placement_rules.TerrainGaps(scenario, SEA_WALL)
+    assert (1, 0) in stone and (0, 0) not in stone
+    assert (0, 0) in sea and (1, 0) not in sea
+    assert stone and sea
+
+
+def test_an_off_map_tile_is_never_a_terrain_gap() -> None:
+    gaps = placement_rules.TerrainGaps(_terrain_row([WATER_DEEP, WATER_DEEP]), STONE_WALL)
+    assert (0, 0) in gaps
+    for tile in [(-1, 0), (2, 0), (0, -1), (0, 1)]:
+        assert tile not in gaps, tile
+
+
+def test_a_const_with_no_restriction_row_has_no_terrain_gaps() -> None:
+    scenario = _terrain_row([WATER_DEEP, GRASS])
+    for const in (MAP_REVEALER, 999_999):
+        gaps = placement_rules.TerrainGaps(scenario, const)
+        assert not gaps
+        assert (0, 0) not in gaps and (1, 0) not in gaps
+
+
+# Percent of wall-family placements on terrain their own row refuses: measured 0.10% (8 of 8,369), 2026-10-29.
+_WALL_TERRAIN_CEILING = 0.5
+
+
+@pytest.mark.corpus
+def test_real_wall_placements_mostly_stand_where_terrain_gaps_allow(corpus_files, request) -> None:
+    """A wall run gaps where TerrainGaps says (TASK-328), so what authors
+    really placed must overwhelmingly pass it. A ceiling, never an equality."""
+    from descape import scenario_io, unit_sprites
+
+    conftest.require_reference_corpus(request.config)
+    walls = frozenset(unit_sprites.wall_family_consts())
+    placed = refused = 0
+    for path in corpus_files:
+        loaded = scenario_io.load_map_and_units(path)
+        gaps = {const: placement_rules.TerrainGaps(loaded, const) for const in walls}
+        for units in loaded.unit_manager.units:
+            for unit in units:
+                if unit.unit_const not in walls:
+                    continue
+                placed += 1
+                refused += (int(unit.x), int(unit.y)) in gaps[unit.unit_const]
+    assert placed >= 1000, placed
+    assert 100 * refused / placed < _WALL_TERRAIN_CEILING, (refused, placed)

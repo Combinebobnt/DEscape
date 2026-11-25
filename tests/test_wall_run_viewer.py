@@ -2936,7 +2936,8 @@ def test_a_wall_cut_from_a_run_and_pasted_back_joins_it_again():
         assert (row[34].rotation, pasted.rotation, row[36].rotation) == (0.0, 0.0, 0.0)
         assert len(window.edit_history.records) == records + 1
         assert window.edit_history.peek_undo().label == "Paste Units"
-        assert _last_status(window) == f"Pasted 1 unit at (35, {_DEL_ROW}), reshaping 2 adjacent"
+        assert _last_status(window) == f"Pasted 1 unit at (35, {_DEL_ROW}), IDs kept, reshaping 2 adjacent"
+        assert pasted.reference_id == row[35].reference_id
         window.undo()
         assert (row[34].rotation, row[36].rotation) == (2.0, 2.0)
         assert _walls_on(window, {(35, _DEL_ROW)}) == []

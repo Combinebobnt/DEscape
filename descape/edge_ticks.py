@@ -13,12 +13,17 @@ Anchors are grid CORNERS, not tile centers, and always at elevation 0. That
 is the same ground-plane reference ground_outline_corners uses, and for the
 same reason: anchoring to the rendered silhouette instead would make the
 ruler a ragged staircase that moved whenever a border tile was raised.
+terrain_overhang() is the other side of that choice: the raised silhouette
+past that border, which the item clips out when the ruler is drawn behind
+elevated terrain.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+
+import numpy as np
 
 from descape import iso_geometry
 
@@ -297,3 +302,165 @@ def edge_runs(
     if tile_px is None:
         raise ValueError("edge_runs needs either proj (iso) or tile_px (flat)")
     return _flat_runs(map_w, map_h, interval, tile_px)
+
+
+# --- Settings > Appearance "Draw distance ticks behind elevated terrain" ----
+
+# How far below the elevation-0 border an overhang hole reaches. A tick's
+# root pixel has its centre just inside the map, so a hole that stopped at
+# the border left that one pixel as a stray dot on the terrain.
+ROOT_PX = 1
+
+
+def stepped_corner_rise(elevations: np.ndarray, proj: iso_geometry.IsoProjection) -> np.ndarray:
+    """Stepped's (h+1, w+1) per-corner rise in px: the highest flat top face
+    touching each grid corner, elevation * elev_step over its up-to-4 tiles.
+    Elevations are never negative, so a zero pad stands in for off-map."""
+    # In uint8 (elevations stop at iso_geometry.MAX_ELEVATION): about 25x
+    # faster than int64 on a 480x480, which keeps an edit's refresh near 1 ms.
+    padded = np.pad(elevations.astype(np.uint8), 1)
+    top = np.maximum(np.maximum(padded[:-1, :-1], padded[:-1, 1:]), np.maximum(padded[1:, :-1], padded[1:, 1:]))
+    return top.astype(np.int64) * proj.elev_step
+
+
+def _band_depth(corner_rise: np.ndarray, proj: iso_geometry.IsoProjection) -> int:
+    """Rows in from an upper edge that terrain can still reach the border
+    from: depth d sits 2 * d * half_h below it, plus one row of margin. 0
+    when nothing rises at all."""
+    max_rise = int(corner_rise.max()) if corner_rise.size else 0
+    if max_rise <= 0:
+        return 0
+    return -(-max_rise // (2 * proj.half_h)) + 1
+
+
+def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Inclusive (start, end) index pairs of each maximal True run."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], mask.astype(np.int8), [0]))))
+    return list(zip(edges[0::2].tolist(), (edges[1::2] - 1).tolist(), strict=True))
+
+
+def _stepped_overhang(corner_rise: np.ndarray, proj: iso_geometry.IsoProjection) -> tuple[np.ndarray, ...]:
+    h1, w1 = corner_rise.shape
+    w, h = w1 - 1, h1 - 1
+    depth = _band_depth(corner_rise, proj)
+    if depth == 0:
+        return ()
+    band = np.zeros(corner_rise.shape, dtype=bool)
+    band[: depth + 1, :] = True
+    band[:, max(0, w - depth) :] = True
+    j, i = np.nonzero(band)
+    k = i + j
+    lifted = proj.origin_y + (j - i) * proj.half_h + proj.half_h - corner_rise[j, i]
+    env = np.full(w + h + 1, np.iinfo(np.int64).max, dtype=np.int64)
+    np.minimum.at(env, k, lifted)
+    lattice = np.arange(w + h + 1)
+    # The upper boundary: corner (k, 0) up to the top tip, then (w, k - w).
+    ground = proj.origin_y + proj.half_h - proj.half_h * np.minimum(lattice, 2 * w - lattice)
+    xs = (proj.origin_x + lattice * proj.half_w).astype(np.float64)
+    polys = []
+    for start, end in _runs(env < ground):
+        # Bracketed by the lattice points either side, so the edge crossings are covered.
+        lo, hi = max(start - 1, 0), min(end + 1, w + h)
+        top = np.column_stack((xs[lo : hi + 1], env[lo : hi + 1]))
+        bottom = np.column_stack((xs[lo : hi + 1], ground[lo : hi + 1] + ROOT_PX))[::-1]
+        polys.append(np.concatenate((top, bottom)).astype(np.float64))
+    return tuple(polys)
+
+
+def sloped_envelope(
+    corner_rise: np.ndarray, proj: iso_geometry.IsoProjection
+) -> tuple[np.ndarray, np.ndarray]:
+    """(env, ground), one entry per scene-px column of the canvas: the
+    topmost painted Sloped row over the band tiles, and the topmost row the
+    same tiles paint at elevation 0. A column no band tile covers holds the
+    int64 max in both.
+
+    Each top is _sloped_column_runs' run_start, broadcast over the tiles,
+    placed at the base_x/base_y render_sloped paints at (elevation-0
+    tile_screen_origin, less d_min). test_edge_ticks.py pins it against
+    iso_geometry.sloped_tile_outline, so the two cannot drift silently."""
+    h1, w1 = corner_rise.shape
+    w, h = w1 - 1, h1 - 1
+    half_w, half_h = proj.half_w, proj.half_h
+    big = np.iinfo(np.int64).max
+    env = np.full(proj.canvas_w, big, dtype=np.int64)
+    ground = np.full(proj.canvas_w, big, dtype=np.int64)
+    cols, tops, _lens, _starts, _order = iso_geometry._diamond_column_runs(proj.tile_px)
+    tops = tops[cols]
+
+    def tiles(depth: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        mask = np.zeros((h, w), dtype=bool)
+        mask[:depth, :] = True
+        mask[:, max(0, w - depth) :] = True
+        y, x = np.nonzero(mask)
+        base_x = (proj.origin_x + (x + y) * half_w)[:, None] + cols
+        return y, x, base_x, proj.origin_y + (y - x) * half_h
+
+    _y, _x, base_x, base_y = tiles(1)
+    np.minimum.at(ground, base_x.ravel(), (base_y[:, None] + tops).ravel())
+
+    y, x, base_x, base_y = tiles(max(_band_depth(corner_rise, proj), 1))
+    nw, ne = corner_rise[y, x], corner_rise[y, x + 1]
+    sw, se = corner_rise[y + 1, x], corner_rise[y + 1, x + 1]
+    d_min = np.minimum(np.minimum(nw, ne), np.minimum(sw, se))
+    nw, ne, se = (nw - d_min)[:, None], (ne - d_min)[:, None], (se - d_min)[:, None]
+    left = cols < half_w
+    k = np.where(left, cols, cols - half_w)
+    a_up = np.where(left, nw, ne)
+    b_up = np.where(left, ne, se)
+    r_up = a_up + iso_geometry._round_div(2 * k * (b_up - a_up), 2 * (half_w - 1))
+    np.minimum.at(env, base_x.ravel(), ((base_y - d_min)[:, None] + tops - r_up).ravel())
+    return env, ground
+
+
+def _staircase(start: int, values: np.ndarray) -> np.ndarray:
+    """The pixel-exact top edge of columns start, start+1, ...: one
+    horizontal segment per run of equal values."""
+    change = np.flatnonzero(values[1:] != values[:-1]) + 1
+    seg_start = np.concatenate(([0], change))
+    seg_end = np.concatenate((change, [len(values)]))
+    level = values[seg_start]
+    return np.column_stack(
+        (np.column_stack((seg_start, seg_end)).ravel() + start, np.repeat(level, 2))
+    ).astype(np.float64)
+
+
+def _sloped_overhang(corner_rise: np.ndarray, proj: iso_geometry.IsoProjection) -> tuple[np.ndarray, ...]:
+    if _band_depth(corner_rise, proj) == 0:
+        return ()
+    env, ground = sloped_envelope(corner_rise, proj)
+    polys = []
+    for start, end in _runs(env < ground):
+        top = _staircase(start, env[start : end + 1])
+        bottom = _staircase(start, ground[start : end + 1] + ROOT_PX)[::-1]
+        polys.append(np.concatenate((top, bottom)))
+    return tuple(polys)
+
+
+def terrain_overhang(
+    corner_rise: np.ndarray, proj: iso_geometry.IsoProjection, sloped: bool = False
+) -> tuple[np.ndarray, ...]:
+    """Scene-space polygons, each a float64 (N, 2) array, covering the
+    projected terrain that lies outside the elevation-0 border the ruler
+    is anchored on, down to ROOT_PX below that border. `corner_rise` is a
+    (h+1, w+1) per-grid-corner rise in px: Sloped's cache.corner_rise (with
+    `sloped`), or Stepped's stepped_corner_rise(). Rise only lifts terrain,
+    so only the two upper edges (y0 and x1) can ever overhang, and a flat
+    elevation-0 map gives ().
+
+    Stepped works on the half_w corner lattice: per lattice x the highest
+    lifted corner against the border corner's elevation-0 y. Each top-face
+    edge spans one lattice interval, so interpolating those minima sits at
+    or above the true envelope: the clip hides slightly more ruler, never
+    less. Sloped cuts each screen column on its own, so it takes the
+    per-px-column tops instead (sloped_envelope()). That is exact at the
+    target level; a coarser Sloped level paints from its own corner_rise at
+    its own projection, so there the clip can sit up to one level pixel off.
+
+    A map whose minimum elevation is above 0 overhangs along both upper
+    edges in full, by min_elev * elev_step scene px. That hides that much of
+    every tick there, which is intended: the terrain really is painted over
+    that strip."""
+    if sloped:
+        return _sloped_overhang(corner_rise, proj)
+    return _stepped_overhang(corner_rise, proj)

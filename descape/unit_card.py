@@ -120,6 +120,8 @@ class UnitCard(QWidget):
         self._team_rgb: tuple[int, int, int] = PORTRAIT_COLORS[0]
         # The owner's portrait civ (GH #372, civ_art.portrait_civ()); None shows GAIA's.
         self._civ: int | None = None
+        # The shown name's prefix while show_const() derived the name, so set_civ() can rename; None otherwise.
+        self._derived_prefix: str | None = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -192,10 +194,12 @@ class UnitCard(QWidget):
     # -- what the card shows ----------------------------------------------------
 
     def show_const(self, const: int, *, prefix: str = "", name: str | None = None, const_text: str | None = None) -> None:
-        """Name line `prefix` plus `name` (display_name() by default), then
-        Unit ID (`const_text`, or the const), stats and portrait."""
+        """Name line `prefix` plus `name` (by default the owner's own name,
+        object_catalog.owner_name(), kept in step by set_civ()), then Unit ID
+        (`const_text`, or the const), stats and portrait."""
         self._shown_const = const
-        self.name_label.setText(prefix + (name or object_catalog.display_name(const)))
+        self._derived_prefix = None if name else prefix
+        self.name_label.setText(prefix + (name or object_catalog.owner_name(const, self._civ)))
         self.const_label.setText(str(const) if const_text is None else const_text)
         self._set_const_row_visible(True)
         self._apply_stats(const)
@@ -238,13 +242,19 @@ class UnitCard(QWidget):
             self._set_portrait(icon, source, art)
 
     def set_civ(self, civ: int | None) -> None:
-        """The owner's portrait civ (GH #372); re-shows the portrait only when the shown const's own one changes."""
+        """The owner's portrait civ (GH #372); re-shows the portrait, and a
+        derived name, only when the shown const's own one changes."""
         if civ == self._civ:
             return
         old, self._civ = self._civ, civ
         const = self._shown_const
-        if const is not None and object_catalog.portrait_civ_key(const, old) != object_catalog.portrait_civ_key(const, civ):
+        if const is None:
+            return
+        if object_catalog.portrait_civ_key(const, old) != object_catalog.portrait_civ_key(const, civ):
             self._show_portrait(const)
+        derived = self._derived_prefix is not None
+        if derived and object_catalog.name_civ_key(const, old) != object_catalog.name_civ_key(const, civ):
+            self.name_label.setText(self._derived_prefix + object_catalog.owner_name(const, civ))
 
     def _set_const_row_visible(self, visible: bool) -> None:
         self.const_caption.setVisible(visible)

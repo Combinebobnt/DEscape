@@ -94,6 +94,25 @@ def test_sprite_shrink_pack_check_passes() -> None:
 
 
 @pytest.mark.corpus
+def test_sprite_grow_pack_check_passes() -> None:
+    """Needs the real install: real art enlarged 4/3 and on Flat icons by the area resample and
+    both injects, and the 2x frames byte-identical under every inject."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen._shrink_prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("sprite_grow")
+
+
+def test_sprite_grow_text_leaks_nothing_and_lands_in_a_neutral_directory() -> None:
+    gen = conftest.load_verify_module("gen_review_pack")
+    spec = gen.PACKS["sprite_grow"]()
+    rp.validate_spec(spec)
+    assert rp.leaks(spec) == []
+    assert "grow" not in gen._PACK_DIRS["sprite_grow"], "REVIEW.md prints this directory"
+
+
+@pytest.mark.corpus
 def test_garrison_flags_pack_check_passes() -> None:
     """Needs examples/blank_map.aoe2scenario and the real install's building
     and flag art (TASK-264, GH #203)."""
@@ -117,12 +136,23 @@ def test_particle_doodads_pack_check_passes() -> None:
 @pytest.mark.corpus
 def test_native_tier_pack_check_passes() -> None:
     """Needs examples/ and the real install: the 96 px tier beside 64 and 128,
-    and furrowed ground whose crops straddle the texture's wrap (TASK-599)."""
+    and furrowed ground at 96, where column-shift puts a band of cells' furrows
+    out of step (TASK-599)."""
     gen = conftest.load_verify_module("gen_review_pack")
     reason = gen._native_prerequisites()
     if reason:
         pytest.skip(reason)
     gen.check("native_tier")
+
+
+@pytest.mark.corpus
+def test_unit_state_pack_check_passes() -> None:
+    """Needs examples/8tp3w9j.aoe2scenario and the real install: units in a Unit State other than Alive, faded."""
+    gen = conftest.load_verify_module("gen_review_pack")
+    reason = gen.unit_state_pack.prerequisites()
+    if reason:
+        pytest.skip(reason)
+    gen.check("unit_state")
 
 
 @pytest.mark.corpus

@@ -297,6 +297,10 @@ class _MapViewHighlightMixin:
                 self._set_highlight_tiles(list(self._cliff_footprint), key)
             return
         key = (tile_x, tile_y, self._brush_size, self._brush_shape, self._brush_thickness)
+        # TASK-086: a multi-tile Create Objects template highlights only its anchor tiles.
+        step = self._stamp_step_query() if self._tool == "create_objects" else (1, 1)
+        if step != (1, 1):
+            key = ("stamp", *key, step)
         if key == self._highlight_key:
             return
         if self._map_width is None or self._map_height is None:
@@ -306,6 +310,8 @@ class _MapViewHighlightMixin:
                 tile_x, tile_y, self._brush_size, self._brush_shape, self._map_width, self._map_height,
                 self._brush_thickness,
             )
+        if step != (1, 1):
+            tiles = brush.lattice_tiles(tiles, (tile_x, tile_y), step)
         self._set_highlight_tiles(tiles, key)
 
     def _set_highlight_tiles(self, tiles: list[tuple[int, int]], key) -> None:

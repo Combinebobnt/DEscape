@@ -109,9 +109,10 @@ class EraseStroke:
     pending_stale_levels: set[int] = field(default_factory=set)
     # The Cliff tool's right-button erase (GH #247): the cursor tiles alone, no brush.
     cursor_only: bool = False
-    # Re-caps the cliff ends the erase leaves at release (cliff_chain.erase_rewrites()).
-    cliff_ends: bool = False
-    cliffs: tuple | None = None  # (the press's ExistingCliff list, its tile index)
+    # The Cliff tool's right-button erase: its cliff wording and its hover ghost's return.
+    cliff_tool: bool = False
+    # (ExistingCliff list, tile index) before the first cliff removed; set, the release re-caps the ends.
+    cliffs: tuple | None = None
     scenario_ref: object | None = None  # weakref to the scenario the press saw
     # unit_gen after this stroke's own last removal; None once something else changed the units.
     expected_gen: int | None = None

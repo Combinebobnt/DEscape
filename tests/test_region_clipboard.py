@@ -433,18 +433,47 @@ def test_unit_paste_targets_breaks_mutual_cycle_to_minus_one() -> None:
     assert all(t.holder_slot == -1 for t in targets)
 
 
-def test_unit_paste_targets_holder_slot_minus_one_when_holder_clipped_but_occupant_isnt() -> None:
-    # Impossible on a real file (measured: occupant always shares the
-    # holder's exact tile) -- only reachable via a hand-built RegionBlock.
+def test_unit_paste_targets_drops_an_occupant_whose_host_is_clipped() -> None:
+    """TASK-341 item 8: an occupant rides with its host, so a host the
+    paste drops off the map drops its on-map occupant too, not pasted loose."""
     holder = _ru(dx=0, dy=0, garrison_slot=-1)
     occupant = _ru(dx=10, dy=0, garrison_slot=0)
+    free = _ru(dx=10, dy=0, garrison_slot=-1)
     block = RegionBlock(
-        width=11, height=1, terrain_ids=(0,) * 11, elevations=(0,) * 11, layers=(-1,) * 11, units=(holder, occupant)
+        width=11, height=1, terrain_ids=(0,) * 11, elevations=(0,) * 11, layers=(-1,) * 11,
+        units=(holder, occupant, free),
     )
 
     targets = unit_paste_targets(block, -5, 0, 20, 20)
-    assert [t.slot for t in targets] == [1]
-    assert targets[0].holder_slot == -1
+    assert [t.slot for t in targets] == [2], "only the free unit at the same spot survives"
+
+
+def test_unit_paste_targets_puts_an_off_map_occupant_on_its_host() -> None:
+    """TASK-341 item 5: an occupant stored past the edge lands on its host's
+    pasted x, y and z, never at its own off-map coordinate."""
+    host = RegionUnit(
+        player=1, unit_const=79, dx=0.5, dy=0.5, z=2.0, rotation=0.0, status=2, initial_animation_frame=0,
+        caption_string_id=-1, caption_string="", garrison_slot=-1,
+    )
+    off = _ru(dx=-3.5, dy=0.5, garrison_slot=0)
+    on = _ru(dx=2.25, dy=0.75, garrison_slot=0)
+    block = RegionBlock(width=1, height=1, terrain_ids=(), elevations=(), layers=(), units=(host, off, on))
+
+    targets = {t.slot: t for t in unit_paste_targets(block, 1, 5, 20, 20)}
+
+    assert set(targets) == {0, 1, 2}
+    assert (targets[1].x, targets[1].y, targets[1].z, targets[1].holder_slot) == (1.5, 5.5, 2.0, 0)
+    # An on-map occupant keeps its own offset and its own z.
+    assert (targets[2].x, targets[2].y, targets[2].z, targets[2].holder_slot) == (3.25, 5.75, 0.0, 0)
+    assert (targets[0].x, targets[0].y, targets[0].z) == (1.5, 5.5, 2.0)
+
+
+def test_unit_paste_targets_still_drops_an_off_map_top_level_unit() -> None:
+    block = RegionBlock(
+        width=1, height=1, terrain_ids=(), elevations=(), layers=(),
+        units=(_ru(dx=-1.5, dy=0.5, garrison_slot=-1), _ru(dx=0.5, dy=0.5, garrison_slot=-1)),
+    )
+    assert [t.slot for t in unit_paste_targets(block, 0, 0, 20, 20)] == [1]
 
 
 # -- copy_units: a block without tiles (GH #192) ----------------------------
@@ -559,6 +588,53 @@ def test_copy_units_matches_by_identity_not_by_reference_id() -> None:
     assert len(block.units) == 1
     assert (block.width, block.height) == (1, 1)
     assert (block.units[0].dx, block.units[0].dy) == (0.5, 0.5)
+
+
+def test_only_a_cut_keeps_the_units_reference_ids() -> None:
+    loaded = _load()
+    host = _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=500, garrisoned_in_id=-1, unit_const=79)
+    _add_raw_unit(loaded, player=1, x=10.5, y=10.5, reference_id=501, garrisoned_in_id=500)
+
+    cut = copy_units(loaded.unit_manager, [host], cut_doc_id="d")
+    copied = copy_units(loaded.unit_manager, [host])
+
+    assert cut.cut_doc_id == "d"
+    assert sorted(u.cut_reference_id for u in cut.units) == [500, 501]
+    assert copied.cut_doc_id == ""
+    assert all(u.cut_reference_id == -1 for u in copied.units)
+
+
+class _FakeIds:
+    def __init__(self, next_unit_id: int, live: set[int]):
+        self.next_unit_id = next_unit_id
+        self._live = live
+
+    def reference_id_in_use(self, ref: int) -> bool:
+        return ref in self._live
+
+
+def _cut_block(*refs: int, doc: str = "d") -> RegionBlock:
+    units = tuple(
+        RegionUnit(
+            player=1, unit_const=4, dx=0.5, dy=0.5, z=0.0, rotation=0.0, status=2, initial_animation_frame=0,
+            caption_string_id=-1, caption_string="", garrison_slot=-1, cut_reference_id=ref,
+        )
+        for ref in refs
+    )
+    return RegionBlock(width=1, height=1, terrain_ids=(), elevations=(), layers=(), units=units, cut_doc_id=doc)
+
+
+def test_reusable_cut_ids_keeps_each_free_id_below_the_counter_once() -> None:
+    block = _cut_block(10, 11, 12, 100, -1, 10)
+    model = _FakeIds(next_unit_id=100, live={11})
+
+    assert region_clipboard.reusable_cut_ids(block, "d", model) == {0: 10, 2: 12}
+
+
+def test_reusable_cut_ids_is_empty_for_another_document_or_a_copy() -> None:
+    model = _FakeIds(next_unit_id=100, live=set())
+    assert region_clipboard.reusable_cut_ids(_cut_block(10), "other", model) == {}
+    assert region_clipboard.reusable_cut_ids(_cut_block(10, doc=""), "", model) == {}
 
 
 def test_unit_paste_targets_on_a_block_without_tiles_orders_holders_first() -> None:

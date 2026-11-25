@@ -1510,12 +1510,12 @@ def test_reach_chunks_take_the_larger_axis_and_drop_cached_and_excluded_chunks()
     ]
 
 
-def _reach_window(style: str):
+def _reach_window(style: str, width: int = 1360, height: int = 1030):
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
 
     window = conftest.stepped_window(FIXTURE_PATH, size=1360)
-    window.resize(1360, 1030)
+    window.resize(width, height)
     QApplication.processEvents()
     if style == "Flat":
         window.iso_action.setChecked(True)
@@ -1529,23 +1529,27 @@ def _reach_window(style: str):
 
 @pytest.mark.gui
 @pytest.mark.parametrize("style", ["Stepped", "Flat"])
-@pytest.mark.parametrize(("edge", "level"), [(False, -1), (True, -1), (False, 2)], ids=["centred", "edge", "native"])
+@pytest.mark.parametrize(
+    ("edge", "level"), [(False, -1), (True, -1), (False, 1), (False, 2)], ids=["centred", "edge", "native", "no-notch"],
+)
 def test_the_reach_holds_the_widest_view_a_zoom_out_shows_at_its_level(style, edge, level) -> None:
     """D1 against a real view: at residual 0.98, the reach is the chunks a
-    paint reads once a zoom about the anchor reaches the widest view still
-    on the level. Level -1 centred on the map's middle with the anchor at
-    the viewport centre, and past the map's bottom-right corner with the
+    paint reads once the wheel, notch by notch about the anchor, reaches the
+    last notch still on the level (TASK-611: the lattice's, not the coarser
+    level's stop). Level -1 centred on the map's middle with the anchor at
+    the viewport centre, and over the map's bottom-right corner with the
     anchor at the top-left, where the scrollbars clamp the zoom-out (level
     -1, since at level 0 this fixture's overscroll margin outgrows the
-    widest view). Level 2 sits above the native tier (TASK-599), so its
-    widest scale is 1.5, not a power of two. Iso Flat is an IsoChunkCache
-    on zero elevations."""
+    widest view). Level 1 is the native tier (TASK-599), whose last notch
+    is 1.22, not a power of two. No notch lands on level 2 below 1.96, so
+    its reach is the view. Iso Flat is an IsoChunkCache on zero elevations."""
     from PyQt5.QtCore import QPoint, QPointF
 
-    from descape import zoom_preframe
+    from descape import zoom_preframe, zoom_stops
     from descape.render_cache import IsoChunkCache
 
-    window = _reach_window(style)
+    # Wider at the edge: a clamped view shows only the map its width outgrows the margin by, at 0.315x here.
+    window = _reach_window(style, *((2000, 1400) if edge else (1360, 1030)))
     try:
         view = window.map_view
         item = view._canvas_item
@@ -1553,15 +1557,27 @@ def test_the_reach_holds_the_widest_view_a_zoom_out_shows_at_its_level(style, ed
         assert isinstance(cache, IsoChunkCache), "not an iso cache -- the Flat case needs Isometric View"
         levels = cache.mip_levels()
         assert levels == [-2, -1, 0, 1, 2, 3], "the fixture's ladder moved"
-        if level == 2:
-            assert 1.0 / cache.mip_scale(level - 1) != 2.0 ** (level - 1), "no native tier -- vacuous"
+        if level == 1:
+            assert 1.0 / cache.mip_scale(level) != 2.0**level, "no native tier -- vacuous"
         scale = 0.98 / cache.mip_scale(level)
         factor = scale / view.view_device_scale()
         view.scale(factor, factor)
         bounds = item.boundingRect()
         vp = view.viewport().rect()
         w, h = vp.width() / scale, vp.height() / scale
-        view.centerOn(bounds.bottomRight() + QPointF(0.3 * w, 0.3 * h) if edge else bounds.center())
+        centre = bounds.center()
+        if edge:
+            # The view's top-left inside the map's corner by a quarter of what the last notch overshoots by.
+            points, _per = view._wheel_lattice()
+            land, nxt = scale, zoom_stops.notch_target(scale, -1, points)
+            while nxt is not None and cache.mip_for_scale(nxt) == level:
+                land, nxt = nxt, zoom_stops.notch_target(nxt, -1, points)
+            scene = view.sceneRect()
+            gap_x = vp.width() / land - (scene.right() - bounds.right())
+            gap_y = vp.height() / land - (scene.bottom() - bounds.bottom())
+            assert gap_x > 0 and gap_y > 0, "the overscroll margin outgrows the widest view -- no clamp"
+            centre = QPointF(bounds.right() - gap_x / 4 + w / 2, bounds.bottom() - gap_y / 4 + h / 2)
+        view.centerOn(centre)
         anchor = QPoint(8, 8) if edge else vp.center()
         view.set_zoom_anchor_mode(True)
         view._last_zoom_anchor = anchor
@@ -1571,18 +1587,68 @@ def test_the_reach_holds_the_widest_view_a_zoom_out_shows_at_its_level(style, ed
         assert reach is not None
         assert view.viewport_reach_target(levels[0]) is None, "the coarsest level has a reach"
 
-        widest = 1.0 / cache.mip_scale(level - 1)
-        zoom_preframe.zoom_about(view, widest * 1.001 / view.view_device_scale(), anchor)
+        notches = 0
+        while True:
+            view._end_wheel_gesture()
+            step = view._wheel_zoom_factor(-1)
+            assert step is not None, "the wheel is at the floor -- vacuous"
+            if cache.mip_for_scale(view.view_device_scale() * step) != level:
+                break
+            zoom_preframe.zoom_about(view, step, anchor)
+            notches += 1
         assert view.viewport_chunk_target()[0] == level, "the zoom left the level"
+        assert (notches == 0) == (level == 2), f"{notches} notches out stay on level {level} -- the lattice moved"
         if edge:
             hbar, vbar = view.horizontalScrollBar(), view.verticalScrollBar()
             assert hbar.value() == hbar.maximum() and vbar.value() == vbar.maximum(), "no clamp -- vacuous"
         shown = item.view_chunks(level, view._current_scene_rect(), view.view_device_scale())
-        x0, y0, x1, y1 = reach
-        sx0, sy0, sx1, sy1 = shown
-        assert x0 <= sx0 and y0 <= sy0 and sx1 <= x1 and sy1 <= y1, f"view {shown} outside the reach {reach}"
-        assert sx0 - x0 <= 1 and sy0 - y0 <= 1 and x1 - sx1 <= 1 and y1 - sy1 <= 1, f"reach {reach} loose on {shown}"
-        grown = (x1 - x0 + 1) * (y1 - y0 + 1)
-        assert grown > (start[3] - start[1] + 1) * (start[4] - start[2] + 1), "the reach is no wider than the view"
+        # Exact: the coarser stop's wider view (the reach before TASK-611) is a chunk looser on every case here.
+        assert reach == shown, f"the reach {reach} is not the last notch's view {shown}"
+        if level == -1:  # Level 1's 1.2x notch can stay inside the view's chunks.
+            x0, y0, x1, y1 = reach
+            grown = (x1 - x0 + 1) * (y1 - y0 + 1)
+            assert grown > (start[3] - start[1] + 1) * (start[4] - start[2] + 1), "the reach is no wider than the view"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@pytest.mark.parametrize("style", ["Stepped", "Flat"])
+def test_an_off_lattice_view_whose_first_notch_out_leaves_the_level_reaches_only_itself(style) -> None:
+    """TASK-611 review: off the lattice, the wheel's first step out skips any
+    point nearer than MIN_OFF_LATTICE_STEP, so a view just inside the
+    level's widest notch steps straight to the coarser level. Its reach is
+    the view itself, not that notch's wider view."""
+    from descape import zoom_stops
+
+    window = _reach_window(style)
+    try:
+        view = window.map_view
+        item = view._canvas_item
+        cache = window._cache
+        level = -1
+        points, per = view._wheel_lattice()
+        floor = None if view._min_linear_scale is None else per * view._min_linear_scale
+        landing = zoom_stops.widest_landing(points, 1.0 / cache.mip_scale(level - 1), floor)
+        scale = landing * 1.11  # inside MIN_OFF_LATTICE_STEP (1.118), wide enough to change the chunks
+        assert zoom_stops.on_point(scale, points) is None and cache.mip_for_scale(scale) == level
+        factor = scale / view.view_device_scale()
+        view.scale(factor, factor)
+        view.set_zoom_anchor_mode(True)
+        view._last_zoom_anchor = view.viewport().rect().center()
+        view._end_wheel_gesture()
+        step = view._wheel_zoom_factor(-1)
+        assert step is not None and cache.mip_for_scale(view.view_device_scale() * step) != level, "vacuous"
+        centre = item.boundingRect().center()
+        # Slide until the landing notch's wider view would read more chunks than the view, so the check can fail.
+        for dx in range(0, 1600, 40):
+            view.centerOn(centre.x() + dx, centre.y())
+            shown = item.view_chunks(level, view._current_scene_rect(), view.view_device_scale())
+            wide = view.zoomed_scene_rect(landing / scale, view.zoom_anchor_scene()).intersected(item.boundingRect())
+            if item.view_chunks(level, wide, landing) != shown:
+                break
+        else:
+            raise AssertionError("the landing notch's view never reads more chunks -- vacuous")
+        assert view.viewport_reach_target(level) == shown
     finally:
         conftest.close_window(window)
