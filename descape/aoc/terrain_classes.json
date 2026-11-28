@@ -1,0 +1,210 @@
+{
+  "_comment": "terrain_id -> {raw is_water byte, family, climate}. Pure factual classification extracted from the game's own data table via genieutils-py, not game asset content itself. family is one of medium_water/deep_water/shallow_water/shallows/beach/land/obsolete; climate is temperate/ice/snow. Regenerate with tools/gen_terrain_classes.py.",
+  "classes": {
+    "0": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "1": {
+      "climate": "temperate",
+      "family": "shallow_water",
+      "raw": 4
+    },
+    "10": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "11": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "12": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "13": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "14": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "15": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "16": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "17": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "18": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "19": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "2": {
+      "climate": "temperate",
+      "family": "beach",
+      "raw": 16
+    },
+    "20": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "21": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "22": {
+      "climate": "temperate",
+      "family": "deep_water",
+      "raw": 2
+    },
+    "23": {
+      "climate": "temperate",
+      "family": "medium_water",
+      "raw": 1
+    },
+    "24": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "25": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "26": {
+      "climate": "ice",
+      "family": "shallows",
+      "raw": 72
+    },
+    "27": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "28": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "29": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "3": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "30": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "31": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "32": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "33": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "34": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "35": {
+      "climate": "ice",
+      "family": "land",
+      "raw": 96
+    },
+    "36": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "37": {
+      "climate": "ice",
+      "family": "beach",
+      "raw": 80
+    },
+    "38": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "39": {
+      "climate": "snow",
+      "family": "land",
+      "raw": 160
+    },
+    "4": {
+      "climate": "temperate",
+      "family": "shallows",
+      "raw": 8
+    },
+    "40": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "5": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "6": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "7": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "8": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    },
+    "9": {
+      "climate": "temperate",
+      "family": "land",
+      "raw": 32
+    }
+  }
+}

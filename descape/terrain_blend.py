@@ -330,7 +330,8 @@ def influences(tid_mirror: np.ndarray, layer_mirror: np.ndarray, xs, ys) -> list
             n_tid = int(n_tids[bit, i])
             by_terrain[n_tid] = by_terrain.get(n_tid, 0) | (1 << bit)
         entries = []
-        for n_tid in sorted(by_terrain, key=lambda t: int(prio_lut[t])):
+        # Id breaks a priority tie, which only the 1999 table has.
+        for n_tid in sorted(by_terrain, key=lambda t: (int(prio_lut[t]), t)):
             mode = MODE_TABLE[int(type_lut[own_tid])][int(type_lut[n_tid])]
             entries.extend((n_tid, mode, tile) for tile in tile_indices(by_terrain[n_tid], int(xs[i]), int(ys[i])))
         keys[i] = (own_tid, int(layer[i]), tuple(entries))

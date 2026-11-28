@@ -10,8 +10,8 @@ import numpy as np
 
 from descape import (
     game_dataset,
-    games,
     iso_geometry,
+    legacy_import,
     unit_kind,
     unit_rotation,
     unit_sprites,
@@ -41,7 +41,7 @@ def player_art_for(scenario, player_id: int) -> tuple[int | None, int, int | Non
     art = getattr(scenario, "player_art", None)
     if art is None or not 0 <= player_id < len(art):
         return None
-    if games.for_scenario(scenario).id != game_dataset.active():
+    if game_dataset.file_game(scenario).id != game_dataset.active():
         return None
     return art[player_id]
 
@@ -249,6 +249,15 @@ def unit_tile_bounds(unit, tile_w: int, tile_h: int) -> tuple[int, int, int, int
     tile_x0, tile_x1 = max(0, x0), min(tile_w, x0 + span_x)
     tile_y0, tile_y1 = max(0, y0), min(tile_h, y0 + span_y)
     return tile_x0, tile_x1, tile_y0, tile_y1
+
+
+def unit_tile_clip(unit, bounds: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """(left, right, top, bottom): the tiles unit_tile_bounds()' clamp cut
+    off each side of this unit's footprint, all 0 for one wholly on the map."""
+    span_x, span_y = tile_span(unit.unit_const, NON_BUILDING_SPAN)
+    x0, y0 = _span_start(unit.x, span_x), _span_start(unit.y, span_y)
+    tile_x0, tile_x1, tile_y0, tile_y1 = bounds
+    return tile_x0 - x0, x0 + span_x - tile_x1, tile_y0 - y0, y0 + span_y - tile_y1
 
 
 def unit_at(unit, x: float, y: float):
@@ -478,7 +487,8 @@ def garrison_host_ids(scenario) -> frozenset[int]:
 
 def wall_variant_rotation_overrides(scenario) -> dict[tuple[int, int], float]:
     """Memoized wrapper (Batch D's D1b) around _wall_variant_rotation_
-    overrides_uncached() below -- signature unchanged, so
+    overrides_uncached() below, plus a legacy file's tree variants
+    (_wall_overrides_and_verdict()) -- signature unchanged, so
     tests/test_wall_connectivity.py's `"unit_filter" not in inspect.
     signature(wall_variant_rotation_overrides)` assertion still holds."""
     return _wall_overrides_and_verdict(scenario)[0]
@@ -493,9 +503,15 @@ def walls_file_is_radian(scenario) -> bool:
 
 
 def _wall_overrides_and_verdict(scenario) -> tuple[dict[tuple[int, int], float], bool]:
-    return _unit_gen_cached(
-        _WALL_OVERRIDES_MEMO, scenario, lambda: _wall_overrides_and_verdict_uncached(scenario)
-    )
+    """Every draw-only rotation override: wall shapes, plus a legacy file's
+    tree variants (legacy_import.drawn_rotation_overrides()). Keys cannot
+    collide: no tree const is rotation_variant_eligible()."""
+    def compute():
+        overrides, radian = _wall_overrides_and_verdict_uncached(scenario)
+        trees = legacy_import.drawn_rotation_overrides(scenario)
+        return ({**overrides, **trees} if trees else overrides), radian
+
+    return _unit_gen_cached(_WALL_OVERRIDES_MEMO, scenario, compute)
 
 
 def _wall_variant_rotation_overrides_uncached(scenario) -> dict[tuple[int, int], float]:

@@ -22,11 +22,13 @@ from descape import (
     debug_log,
     diplomacy_fields,
     disables_fields,
+    legacy_write,
     option_fields,
     perf_trace,
     player_fields,
     player_labels,
     player_swap,
+    scenario_compat,
 )
 from descape.disables_dialog import DisablesDialog
 from descape.edit_history import (
@@ -166,6 +168,8 @@ class _ViewerOptionsMixin:
         """
         if self.scenario is None:
             self.map_options_panel.clear_document()
+            return
+        if self._show_settings_unknown(self.map_options_panel):
             return
         triggers_ok = parse_triggers(self.scenario) is not None
         self.map_options_panel.show_scenario(
@@ -392,7 +396,7 @@ class _ViewerOptionsMixin:
         if spec.field_id == _SCRIPT_NAME_FIELD:
             self._update_technical_info()
 
-    def _ensure_option_edits(self) -> OptionsEditModel | None:
+    def _ensure_option_edits(self, family: str | None = None) -> OptionsEditModel | None:
         """The document's OptionsEditModel, built on first use.
 
         Deferred to the first real edit exactly as _ensure_trigger_edits() is,
@@ -400,9 +404,9 @@ class _ViewerOptionsMixin:
         byte-identically. Returns None for a file the model refuses, which the
         panel's gate should already have kept unreachable -- reported rather
         than swallowed, since silently ignoring an edit the user made is the
-        worse failure.
+        worse failure. `family` is the legacy_write family a pre-DE document is asked for.
         """
-        if self._refuse_locked_edit():
+        if self._refuse_locked_edit(family):
             return None
         if self.option_edits is not None:
             return self.option_edits
@@ -504,6 +508,15 @@ class _ViewerOptionsMixin:
         if self.mode == "map_options":
             self._show_map_options()
 
+    def _show_settings_unknown(self, panel) -> bool:
+        """TASK-057: a compatibility-mode document whose map settings are Unknown shows
+        one label in `panel`, never the donor template's values. True when it did."""
+        if not scenario_compat.settings_unknown(self.scenario):
+            return False
+        panel.clear_document()
+        panel.status.setText(f"{scenario_compat.UNKNOWN}.")
+        return True
+
     def _show_players(self) -> None:
         """Populate the Players panel -- the single repopulate path for
         Players mode (mode entry, a new document, an edit, an undo/redo, or
@@ -520,6 +533,8 @@ class _ViewerOptionsMixin:
         """
         if self.scenario is None:
             self.players_panel.clear_document()
+            return
+        if self._show_settings_unknown(self.players_panel):
             return
         self.players_panel.show_scenario(
             self.scenario,
@@ -898,7 +913,7 @@ class _ViewerOptionsMixin:
         view as P{n}'s starting camera."""
         tile = self.map_view.viewport_centre_tile()
         if tile is None:
-            self._log_status("View centre is off the map -- Set View wrote nothing")
+            self._log_status("View centre is off the map, so Set View wrote nothing")
             return
         self._write_player_view(player_id, tile[0], tile[1], f"Set P{player_id} Point of View")
 
@@ -1380,6 +1395,8 @@ class _ViewerOptionsMixin:
         if self.scenario is None:
             self.diplomacy_panel.clear_document()
             return
+        if self._show_settings_unknown(self.diplomacy_panel):
+            return
         specs = self._diplomacy_option_specs()
         spec_ids = {spec.field_id for spec in specs}
         editable = self._editable_diplomacy_fields() | (
@@ -1423,8 +1440,8 @@ class _ViewerOptionsMixin:
         independent in the other direction: a Diplomacy-section-only failure
         must not grey out Map Options or Players mode.
         """
-        if self.game_data_lock_reason() is not None:
-            return frozenset()  # GH #67
+        if self.game_data_lock_reason(legacy_write.DIPLOMACY) is not None:
+            return frozenset()  # GH #67; a pre-DE band without DIPLOMACY (TASK-520)
         if self.scenario is None:
             return frozenset()
         if not options_write_supported(self.scenario, option_fields.specs_for(self.scenario)):
@@ -1432,7 +1449,7 @@ class _ViewerOptionsMixin:
         if not diplomacy_write_supported(self.scenario):
             return frozenset()
         cells = _all_diplomacy_cell_ids(self.scenario)
-        if not allied_victory_write_supported(self.scenario):
+        if not allied_victory_write_supported(self.scenario) or self._file_is_legacy():  # stances only
             cells -= frozenset(diplomacy_fields.allied_victory_offsets(self.scenario))
         return cells
 
@@ -1463,10 +1480,13 @@ class _ViewerOptionsMixin:
             and not allied_victory_write_supported(self.scenario)
         )
         reasons = {}
+        legacy = self.game_data_lock_reason() if self._file_is_legacy() else None
         for cell_id in _all_diplomacy_cell_ids(self.scenario):
             if cell_id in editable:
                 continue
-            if not carrier_ok:
+            if legacy:
+                reasons[cell_id] = legacy
+            elif not carrier_ok:
                 reasons[cell_id] = self._DIPLOMACY_CARRIER_GATE_REASON
             elif mirror_only and cell_id.startswith("allied_victory:"):
                 reasons[cell_id] = self._ALLIED_VICTORY_MIRROR_REASON
@@ -1496,7 +1516,7 @@ class _ViewerOptionsMixin:
         1), so this needs no exec-order-style fan-out -- there is only ever
         one destination.
         """
-        model = self._ensure_option_edits()
+        model = self._ensure_option_edits(legacy_write.DIPLOMACY if cell_id.startswith("stance:") else None)
         if model is None:
             self._repopulate_diplomacy()
             return
@@ -1520,6 +1540,8 @@ class _ViewerOptionsMixin:
         "trusted."
     )
 
+    _LEGACY_STRING_ID_REASON = "An older-format scenario keeps its language-file string: the old games' ids differ."
+
     def _repopulate_messages(self) -> None:
         """Populate the Messages panel -- the single repopulate path for
         Messages mode (mode entry, a new document, an edit, an undo/redo, or
@@ -1536,12 +1558,15 @@ class _ViewerOptionsMixin:
         if self.scenario is None:
             self.messages_panel.clear_document()
             return
-        editable = self.scenario.messages_write_supported and self.game_data_lock_reason() is None
+        if self._show_settings_unknown(self.messages_panel):
+            return
+        lock = self.game_data_lock_reason(legacy_write.MESSAGES)
+        editable = self.scenario.messages_write_supported and lock is None
+        reasons = {} if editable else {"*": lock or self._MESSAGES_READ_ONLY_REASON}
+        if editable and self._file_is_legacy():  # DE string-table ids mean nothing to the old games
+            reasons = {f"{spec.field_id}_id": self._LEGACY_STRING_ID_REASON for spec in MESSAGE_FIELDS}
         self.messages_panel.show_scenario(
-            self.scenario,
-            values=self._pending_message_values(),
-            editable=editable,
-            read_only_reasons={} if editable else {"*": self._MESSAGES_READ_ONLY_REASON},
+            self.scenario, values=self._pending_message_values(), editable=editable, read_only_reasons=reasons
         )
 
     def _pending_message_values(self) -> dict[str, str | int]:
@@ -1557,6 +1582,10 @@ class _ViewerOptionsMixin:
     def set_message_field(self, field_id: str, value: str | int) -> None:
         """MessagesPanel's one callback: the user set `field_id` (a text
         field id, or an "<id>_id" string-table id) to raw `value`."""
+        if field_id.endswith("_id") and self._file_is_legacy():
+            self._log_status(self._LEGACY_STRING_ID_REASON, level=debug_log.WARNING)
+            self._repopulate_messages()
+            return
         model = self._ensure_message_edits()
         if model is None:
             self._repopulate_messages()
@@ -1590,7 +1619,7 @@ class _ViewerOptionsMixin:
         rather than swallowed, since silently ignoring an edit the user made
         is the worse failure.
         """
-        if self._refuse_locked_edit():
+        if self._refuse_locked_edit(legacy_write.MESSAGES):
             return None
         if self.message_edits is not None:
             return self.message_edits

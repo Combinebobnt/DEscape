@@ -78,8 +78,8 @@ def fast_spy(monkeypatch) -> _Spy:
     spy = _Spy()
     original = scenario_io._load_units_fast
 
-    def wrapped(scenario, data_igen):
-        result = original(scenario, data_igen)
+    def wrapped(scenario, data_igen, absent):
+        result = original(scenario, data_igen, absent)
         spy.results.append(result)
         return result
 

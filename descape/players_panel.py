@@ -78,7 +78,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import ai_scripts, player_labels
+from descape import ai_scripts, player_labels, scenario_compat
 from descape.ai_scripts import AiChoice
 from descape.map_options_panel import FitHost
 from descape.player_fields import (
@@ -95,6 +95,7 @@ from descape.player_fields import (
     defined_player_count,
     defined_player_ids,
     pov_bounds,
+    shown_value,
     specs_for_player,
     starting_age_choices,
     starting_age_tooltip,
@@ -631,7 +632,8 @@ class PlayersPanel(QWidget):
             self._specs = specs_for_player(self._loaded, self._player_id)
             self._values = {
                 spec.field_id: self._pending_values.get(spec.field_id, {}).get(
-                    self._player_id, current_value(self._loaded, spec, self._player_id)
+                    # shown_value(): a legacy starting age in DE's encoding, all else raw.
+                    self._player_id, shown_value(self._loaded, spec, self._player_id)
                 )
                 for spec in self._specs
             }
@@ -645,7 +647,7 @@ class PlayersPanel(QWidget):
         # subtracting its size reported "-1 read-only" on a file where every
         # row is editable.
         read_only = sum(1 for spec in self._specs if spec.field_id not in self._editable_fields)
-        version = self._loaded.scenario_version
+        version = scenario_compat.display_version(self._loaded)
         who = "GAIA" if self._player_id == 0 else f"P{self._player_id}"
         summary = f"{total} setting{'' if total == 1 else 's'} for {who} — scenario {version}"
         if read_only == total and total:
@@ -1038,8 +1040,9 @@ class PlayersPanel(QWidget):
         return self._widgets.get(field_id)
 
     def current_values(self) -> dict[str, int | str]:
-        """Raw value per field_id, as currently shown for the selected
-        player. Number of Players is deliberately absent -- it is
+        """Value per field_id, as currently shown for the selected player:
+        raw, except a measured legacy file's starting age, DE-encoded
+        (player_fields.shown_value()). Number of Players is deliberately absent -- it is
         scenario-wide, not one of this player's settings; see
         current_player_count()."""
         return dict(self._values)

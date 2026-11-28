@@ -4,7 +4,7 @@ Dumb the same way TriggerPanel is -- it reports what the user did
 through the callbacks ViewerWindow constructs it with and never
 reaches back up into the window.
 
-MapView is this module's class plus six mixins, one module per area:
+MapView is this module's class plus seven mixins, one module per area:
 
 - map_view.py: the class constants (the Z-order ladder among them),
   __init__, tool and brush config, the mode and tool switches, cursors,
@@ -22,12 +22,13 @@ MapView is this module's class plus six mixins, one module per area:
   outlined map labels' constructor and their cache refresh in paintEvent().
 - map_view_highlight.py: cliff and place ghosts, tile geometry, the brush
   highlight, shape preview and pan highlight.
+- map_view_stroke_tick.py: the Spray Can's timed dabs while its button is held.
 
 Rules of the split (tests/test_map_view_split.py checks them):
 
 - A mixin defines no __init__ and no signal: all instance state is created
   in MapView.__init__.
-- No name is defined by two of the seven classes.
+- No name is defined by two of the eight classes.
 - The mixins precede QGraphicsView in MapView's bases, and no mixin module
   imports this one.
 
@@ -40,7 +41,7 @@ from collections.abc import Callable, Container
 from typing import ClassVar
 
 import numpy as np
-from PyQt5.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, QTimer
+from PyQt5.QtCore import QElapsedTimer, QEvent, QPoint, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import (
     QColor,
     QPainter,
@@ -65,6 +66,7 @@ from descape import (
     outline_chunks,
     ruler,
     settings,
+    spray,
     unit_shape,
     zoom_preframe,
 )
@@ -72,6 +74,7 @@ from descape.instruction_overlay import InstructionOverlay
 from descape.map_view_highlight import _HOVER_GHOST_TOOLS, _MapViewHighlightMixin
 from descape.map_view_input import _MapViewInputMixin
 from descape.map_view_overlays import _MapViewOverlaysMixin
+from descape.map_view_stroke_tick import _MapViewStrokeTickMixin
 from descape.map_view_triggers import _MapViewTriggersMixin, _RingEntry
 from descape.map_view_units import _MapViewUnitsMixin
 from descape.map_view_viewport import _MapViewViewportMixin
@@ -109,7 +112,7 @@ from descape.viewer_common import (
 class MapView(
     _MapViewInputMixin, _MapViewUnitsMixin, _MapViewOverlaysMixin,
     _MapViewTriggersMixin, _MapViewViewportMixin, _MapViewHighlightMixin,
-    QGraphicsView,
+    _MapViewStrokeTickMixin, QGraphicsView,
 ):
     # How far past each map edge the view is allowed to scroll, as a fraction of
     # that edge's length -- e.g. 0.4 lets you pan 40% of the map's width past its
@@ -724,6 +727,11 @@ class MapView(
         # Its highlight's tiles in place of the brush diamond, see set_cliff_footprint().
         self._cliff_footprint: tuple[tuple[int, int], ...] | None = None
         self._cliff_hover = None
+        # GH #285's Clone Stamp, set by set_clone_hooks(): a Ctrl+press's source, the tiles the marker
+        # outlines for a hover (or ()), and the marker item, nulled with every scene().clear().
+        self._on_clone_source: Callable[[tuple[int, int]], None] = lambda tile: None
+        self._clone_marker_query: Callable[[tuple[int, int] | None], tuple] = lambda hover: ()
+        self._clone_marker_item: QGraphicsPathItem | None = None
         # The Move tool's press and GH #75's group test, set by set_unit_drag_hooks() for the same reason.
         self._on_move_press: Callable = lambda pos, modifiers: None
         self._is_group_drag: Callable[[tuple[int, int]], bool] = lambda key: False
@@ -910,6 +918,11 @@ class MapView(
         self._stroke_touched: set[tuple[int, int]] = set()
         # Cursor tile of the stroke's last _touch_tile, where the next gap-fill starts.
         self._stroke_last_tile: tuple[int, int] | None = None
+        # The Spray Can's dab timer and its nozzle, the stroke cursor's last viewport position.
+        self._stroke_tick_timer = QTimer(self)
+        self._stroke_tick_timer.setInterval(spray.SPRAY_TICK_MS)
+        self._stroke_tick_timer.timeout.connect(self._on_stroke_tick)
+        self._stroke_nozzle_pos: QPoint | None = None
         # Brush footprint for the hover-preview highlight -- ViewerWindow
         # keeps the authoritative (size, shape) and pushes it here via
         # set_brush() whenever the toolbar spinbox/combo changes. Size 1 /
@@ -1140,6 +1153,7 @@ class MapView(
         # Same reasoning as the tool switch: a pending measurement has no owner
         # in the next mode. Pinned rulers stay.
         self._clear_ruler()
+        self.refresh_clone_marker(None, hide=True)
         if mode != "units":
             self._clear_unit_hover()
             # Not the selection: ViewerWindow keeps it across modes and hides or re-pushes it (TASK-359).
@@ -1202,6 +1216,7 @@ class MapView(
             self._cliff_hover = None
             self._clear_unit_ghost()
         self._tool = tool
+        self.refresh_clone_marker(None)
         # Whichever highlight belonged to the tool being left is no longer
         # valid -- mouseMoveEvent's next move re-creates the right one for
         # the new tool, but a stale one from before the switch (e.g. Pan's
@@ -1311,6 +1326,7 @@ class MapView(
         self._highlight_fill_item = None
         self._pan_highlight_item = None
         self._highlight_key = None
+        self._clone_marker_item = None
         # scene().clear() destroyed these too -- see show_mirror_overlay()'s
         # own docstring for why MirrorDialog must re-create rather than
         # reuse after any re-render.
@@ -1416,6 +1432,7 @@ class MapView(
         self._region_overlay_rect = None
         self._region_ant_timer.stop()
         self.resume_stroke_gc()
+        self.stop_stroke_tick()
         self._stroke_active = False
         self._stroke_touched = set()
         self._stroke_last_tile = None
@@ -1534,6 +1551,7 @@ class MapView(
         self._highlight_fill_item = None
         self._pan_highlight_item = None
         self._highlight_key = None
+        self._clone_marker_item = None
         self._mirror_overlay_outline_item = None
         self._mirror_overlay_fill_item = None
         self._mirror_axis_items = []

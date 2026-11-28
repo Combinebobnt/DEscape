@@ -148,14 +148,18 @@ def release_notes_url(version: str) -> str:
     return f"{REPO_URL}/releases/tag/v{version}"
 
 
-def report_bug_url(version: str, os_text: str, build_kind: str) -> str:
+def report_bug_url(version: str, os_text: str, build_kind: str, addons_text: str = "") -> str:
     """A new-issue link with the environment filled in. Never a path, user
-    name or scenario name: the body is built from these three values only."""
+    name or scenario name: the body is built from these values only.
+    `addons_text` is addons.count_text(), since --no-addons is the first
+    bisection step for a bug."""
+    addon_line = [f"Addons: {addons_text}"] if addons_text else []
     body = "\n".join(
         [
             f"DEscape version: {version}",
             f"OS: {os_text}",
             f"Build: {build_kind}",
+            *addon_line,
             "",
             "What happened:",
             "",

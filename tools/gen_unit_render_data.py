@@ -365,7 +365,7 @@ _HERO_MODE_GLOW_BITS = 1 | 64
 
 def _is_glowing_hero(unit) -> bool:
     creatable = getattr(unit, "creatable", None)
-    if creatable is None:
+    if creatable is None or creatable.hero_mode is None:  # the 1997 .dat has no hero mode
         return False
     return bool((creatable.hero_mode & 0xFF) & _HERO_MODE_GLOW_BITS) and (
         creatable.hero_glow_graphic in _HERO_GLOW_GRAPHICS
@@ -413,11 +413,43 @@ _ROR_VALUES: dict[str, object] = {
 }
 
 
+# The 1999 game's values, measured on its Conquerors .dat (2026-11-26).
+_AOC_VALUES: dict[str, object] = {
+    "_BLOCKER_SPAN_CONSTS": (),  # DE's blocker consts are past the 1999 unit table
+    "_FISH_SPAN_CONSTS": (53, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461),  # its whole class 5
+    "_STATIC_TYPES": (),  # the static rule awaits a re-measure, as for RoR
+    "_HERO_GLOW_GRAPHICS": (),  # no hero glow in the 1999 game
+}
+# Age of Empires with Rise of Rome, measured on data2/empires.dat (2026-11-27).
+_AOE1_VALUES: dict[str, object] = {
+    "_BLOCKER_SPAN_CONSTS": (),
+    # Class 5 but the whale 370, whose outline (1x1) is not its clearance (3x3).
+    "_FISH_SPAN_CONSTS": (52, 53, 260, 263),
+    "_STATIC_TYPES": (),
+    "_HERO_GLOW_GRAPHICS": (),
+    "_GATE_CLASS": -1,  # no gates in the 1997 game: its class 39 is the slinger
+}
+# HD Edition, measured on its empires2_x2_p1.dat (2026-11-27).
+_HD_VALUES: dict[str, object] = {
+    **_AOC_VALUES,
+}
+
+
 def _select_dataset(dataset: str) -> None:
-    """Swaps every hand-measured const list for its RoR value (_ROR_VALUES), for a RoR run."""
-    if dataset == _game_root.ROR:
-        assert _ROR_VALUES.keys() <= globals().keys(), "a _ROR_VALUES key names no list"
-        globals().update(_ROR_VALUES)
+    """Swaps every hand-measured const list for its RoR, 1999, 1997 or HD value
+    (_ROR_VALUES, _AOC_VALUES, _AOE1_VALUES, _HD_VALUES)."""
+    values = {
+        _game_root.ROR: _ROR_VALUES, _game_root.AOC: _AOC_VALUES, _game_root.AOE1: _AOE1_VALUES, _game_root.HD: _HD_VALUES,
+    }.get(dataset)
+    if values is not None:
+        assert values.keys() <= globals().keys(), "a dataset's values name no list"
+        globals().update(values)
+
+
+def _team_colors(data, palette: list[tuple[int, int, int]]) -> tuple[tuple[int, int, int], ...]:
+    """unit_sprites' TEAM_COLORS shape from the .dat's player colour table: white for GAIA,
+    then each player's minimap colour through the palette (the 1999 game's literal)."""
+    return ((255, 255, 255), *(palette[colour.minimap_color] for colour in data.player_colours[:8]))
 
 
 def main() -> None:
@@ -434,21 +466,33 @@ def main() -> None:
         help="Where to write unit_render_data.json (default: descape/)",
     )
     _game_root.add_dataset_argument(parser)
+    parser.add_argument(
+        "--print-team-colors",
+        action="store_true",
+        help="print the team colour tuple from the .dat's player colours and write nothing (for --dataset aoc)",
+    )
     args = parser.parse_args()
     _game_root.set_lenient(args.lenient)
     _select_dataset(args.dataset)
 
-    from genieutils.datfile import DatFile
-
     dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
-    pal_path = _game_root.resource(args.aoe2de_root, args.dataset, "resources/_common/palettes/original.pal")
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
-    if not pal_path.is_file():
-        raise SystemExit(f"Not found: {pal_path}")
+    if args.dataset in _game_root.SLP_ART:
+        try:
+            palette = _game_root.slp_palette(args.aoe2de_root, args.dataset)
+        except FileNotFoundError as exc:
+            raise SystemExit(f"Not found: {exc}") from None
+    else:
+        pal_path = _game_root.resource(args.aoe2de_root, args.dataset, "resources/_common/palettes/original.pal")
+        if not pal_path.is_file():
+            raise SystemExit(f"Not found: {pal_path}")
+        palette = _load_palette(pal_path)
 
-    data = DatFile.parse(str(dat_path))
-    palette = _load_palette(pal_path)
+    data = _game_root.parse_dat(dat_path)
+    if args.print_team_colors:
+        print(_team_colors(data, palette))
+        return
     units = data.civs[0].units
 
     buildings: dict[str, list[int]] = {}

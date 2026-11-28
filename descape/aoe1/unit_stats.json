@@ -1,0 +1,1578 @@
+{
+  "_comment": "unit_const -> base in-game stats -- see tools/gen_unit_stats.py",
+  "stats": {
+    "0": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "1": {
+      "hp": 20,
+      "attack": 4,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "4": {
+      "hp": 35,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 5.0,
+      "max_range": 5.0,
+      "pierce_armour": 0
+    },
+    "5": {
+      "hp": 40,
+      "attack": 4,
+      "melee_armour": 0,
+      "range": 6.0,
+      "max_range": 6.0,
+      "pierce_armour": 0
+    },
+    "6": {
+      "hp": 45,
+      "attack": 5,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 0
+    },
+    "9": {
+      "hp": 1,
+      "attack": 4,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "10": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 100,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "11": {
+      "hp": 55,
+      "attack": 40,
+      "melee_armour": 0,
+      "range": 9.0,
+      "max_range": 9.0,
+      "pierce_armour": 0
+    },
+    "12": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "13": {
+      "hp": 45,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "14": {
+      "hp": 75,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "15": {
+      "hp": 200,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "16": {
+      "hp": 250,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "17": {
+      "hp": 150,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "18": {
+      "hp": 200,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "19": {
+      "hp": 120,
+      "attack": 5,
+      "melee_armour": 0,
+      "range": 5.0,
+      "max_range": 5.0,
+      "pierce_armour": 0
+    },
+    "20": {
+      "hp": 160,
+      "attack": 8,
+      "melee_armour": 0,
+      "range": 6.0,
+      "max_range": 6.0,
+      "pierce_armour": 0
+    },
+    "21": {
+      "hp": 200,
+      "attack": 12,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 0
+    },
+    "22": {
+      "hp": 1
+    },
+    "23": {
+      "hp": 1
+    },
+    "24": {
+      "hp": 1
+    },
+    "25": {
+      "hp": 600,
+      "attack": 5,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 0
+    },
+    "26": {
+      "hp": 15
+    },
+    "27": {
+      "hp": 15
+    },
+    "28": {
+      "hp": 15
+    },
+    "29": {
+      "hp": 15
+    },
+    "30": {
+      "hp": 15
+    },
+    "31": {
+      "hp": 15
+    },
+    "32": {
+      "hp": 15
+    },
+    "34": {
+      "hp": 10,
+      "attack": 30,
+      "melee_armour": 0,
+      "range": 25.0,
+      "max_range": 25.0
+    },
+    "35": {
+      "hp": 75,
+      "attack": 50,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "36": {
+      "hp": 75,
+      "attack": 60,
+      "melee_armour": 0,
+      "range": 12.0,
+      "max_range": 12.0,
+      "pierce_armour": 0
+    },
+    "37": {
+      "hp": 150,
+      "attack": 8,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "38": {
+      "hp": 150,
+      "attack": 10,
+      "melee_armour": 1,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 1
+    },
+    "39": {
+      "hp": 60,
+      "attack": 7,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 2
+    },
+    "40": {
+      "hp": 100,
+      "attack": 7,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "41": {
+      "hp": 70,
+      "attack": 4,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 0
+    },
+    "45": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "46": {
+      "hp": 600,
+      "attack": 15,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "47": {
+      "hp": 15
+    },
+    "48": {
+      "hp": 45,
+      "attack": 10,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "49": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "50": {
+      "hp": 50,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "54": {
+      "hp": 15
+    },
+    "55": {
+      "hp": 15
+    },
+    "56": {
+      "hp": 25
+    },
+    "65": {
+      "hp": 8,
+      "attack": 3,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "68": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "69": {
+      "hp": 200,
+      "attack": 6,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 4
+    },
+    "70": {
+      "hp": 75,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "71": {
+      "hp": 600,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "72": {
+      "hp": 200,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 3
+    },
+    "73": {
+      "hp": 40,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "74": {
+      "hp": 50,
+      "attack": 5,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "75": {
+      "hp": 60,
+      "attack": 7,
+      "melee_armour": 1,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "76": {
+      "hp": 70,
+      "attack": 9,
+      "melee_armour": 1,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "77": {
+      "hp": 80,
+      "attack": 11,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "79": {
+      "hp": 100,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 5.0,
+      "max_range": 5.0,
+      "pierce_armour": 3
+    },
+    "80": {
+      "hp": 1
+    },
+    "82": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "83": {
+      "hp": 25,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "84": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "86": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "87": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "89": {
+      "hp": 40,
+      "attack": 10,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "90": {
+      "hp": 60,
+      "attack": 15,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "93": {
+      "hp": 120,
+      "attack": 17,
+      "melee_armour": 5,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "94": {
+      "hp": 120,
+      "attack": 20,
+      "melee_armour": 7,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "95": {
+      "hp": 4
+    },
+    "96": {
+      "hp": 4
+    },
+    "100": {
+      "hp": 1,
+      "attack": 10,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "101": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "103": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "104": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "105": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "106": {
+      "hp": 20
+    },
+    "108": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 100,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "109": {
+      "hp": 600,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "110": {
+      "hp": 75,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "113": {
+      "hp": 25
+    },
+    "114": {
+      "hp": 25
+    },
+    "115": {
+      "hp": 30
+    },
+    "116": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "117": {
+      "hp": 300,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 4
+    },
+    "121": {
+      "hp": 25
+    },
+    "125": {
+      "hp": 25,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "126": {
+      "hp": 20,
+      "attack": 2,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "129": {
+      "hp": 25
+    },
+    "130": {
+      "hp": 30
+    },
+    "131": {
+      "hp": 30
+    },
+    "132": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "133": {
+      "hp": 350,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "134": {
+      "hp": 25
+    },
+    "135": {
+      "hp": 25
+    },
+    "136": {
+      "hp": 25
+    },
+    "137": {
+      "hp": 25
+    },
+    "138": {
+      "hp": 25
+    },
+    "139": {
+      "hp": 25
+    },
+    "140": {
+      "hp": 25
+    },
+    "141": {
+      "hp": 25
+    },
+    "142": {
+      "hp": 25
+    },
+    "143": {
+      "hp": 25
+    },
+    "144": {
+      "hp": 25
+    },
+    "145": {
+      "hp": 25
+    },
+    "146": {
+      "hp": 25
+    },
+    "147": {
+      "hp": 25
+    },
+    "148": {
+      "hp": 25
+    },
+    "149": {
+      "hp": 25
+    },
+    "150": {
+      "hp": 25
+    },
+    "151": {
+      "hp": 25
+    },
+    "152": {
+      "hp": 25
+    },
+    "153": {
+      "hp": 25
+    },
+    "154": {
+      "hp": 75,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "155": {
+      "hp": 400,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 4
+    },
+    "157": {
+      "hp": 20,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "158": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 100,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "159": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 100,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "161": {
+      "hp": 25
+    },
+    "162": {
+      "hp": 1
+    },
+    "163": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 100,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "164": {
+      "hp": 15
+    },
+    "165": {
+      "hp": 15
+    },
+    "166": {
+      "hp": 15
+    },
+    "167": {
+      "hp": 15
+    },
+    "168": {
+      "hp": 15
+    },
+    "169": {
+      "hp": 15
+    },
+    "170": {
+      "hp": 15
+    },
+    "171": {
+      "hp": 15
+    },
+    "172": {
+      "hp": 15
+    },
+    "173": {
+      "hp": 15
+    },
+    "174": {
+      "hp": 15
+    },
+    "175": {
+      "hp": 15
+    },
+    "176": {
+      "hp": 15
+    },
+    "177": {
+      "hp": 15
+    },
+    "178": {
+      "hp": 15
+    },
+    "179": {
+      "hp": 15
+    },
+    "180": {
+      "hp": 15
+    },
+    "181": {
+      "hp": 1
+    },
+    "182": {
+      "hp": 1
+    },
+    "183": {
+      "hp": 1
+    },
+    "184": {
+      "hp": 20
+    },
+    "185": {
+      "hp": 20
+    },
+    "186": {
+      "hp": 20
+    },
+    "187": {
+      "hp": 15
+    },
+    "188": {
+      "hp": 15
+    },
+    "189": {
+      "hp": 15
+    },
+    "190": {
+      "hp": 15
+    },
+    "191": {
+      "hp": 15
+    },
+    "192": {
+      "hp": 25
+    },
+    "193": {
+      "hp": 25
+    },
+    "194": {
+      "hp": 25
+    },
+    "195": {
+      "hp": 25
+    },
+    "197": {
+      "hp": 25
+    },
+    "198": {
+      "hp": 25
+    },
+    "199": {
+      "hp": 150,
+      "attack": 4,
+      "melee_armour": 0,
+      "range": 6.0,
+      "max_range": 6.0,
+      "pierce_armour": 4
+    },
+    "203": {
+      "hp": 25
+    },
+    "204": {
+      "hp": 1,
+      "attack": 10,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "205": {
+      "hp": 1,
+      "attack": 10,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "206": {
+      "hp": 1,
+      "attack": 5,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "226": {
+      "hp": 25
+    },
+    "235": {
+      "hp": 200,
+      "attack": 65,
+      "melee_armour": 0,
+      "range": 16.0,
+      "max_range": 16.0,
+      "pierce_armour": 0
+    },
+    "236": {
+      "hp": 200,
+      "attack": 30,
+      "melee_armour": 0,
+      "range": 15.0,
+      "max_range": 15.0,
+      "pierce_armour": 0
+    },
+    "237": {
+      "hp": 60,
+      "attack": 8,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 2
+    },
+    "242": {
+      "hp": 1
+    },
+    "243": {
+      "hp": 1
+    },
+    "246": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "248": {
+      "hp": 100,
+      "attack": 300,
+      "melee_armour": 10,
+      "range": 88.0,
+      "max_range": 88.0,
+      "pierce_armour": 0
+    },
+    "249": {
+      "hp": 1,
+      "attack": 1000,
+      "melee_armour": 0,
+      "range": 92.0,
+      "max_range": 92.0
+    },
+    "250": {
+      "hp": 120,
+      "attack": 35,
+      "melee_armour": 0,
+      "range": 9.0,
+      "max_range": 9.0,
+      "pierce_armour": 0
+    },
+    "264": {
+      "hp": 1
+    },
+    "265": {
+      "hp": 1
+    },
+    "266": {
+      "hp": 1
+    },
+    "267": {
+      "hp": 1
+    },
+    "268": {
+      "hp": 1
+    },
+    "269": {
+      "hp": 1
+    },
+    "270": {
+      "hp": 1
+    },
+    "271": {
+      "hp": 1
+    },
+    "272": {
+      "hp": 1
+    },
+    "273": {
+      "hp": 1
+    },
+    "274": {
+      "hp": 100,
+      "attack": 15,
+      "melee_armour": 10,
+      "range": 15.0,
+      "max_range": 15.0,
+      "pierce_armour": 0
+    },
+    "275": {
+      "hp": 10,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 25.0,
+      "max_range": 25.0
+    },
+    "276": {
+      "hp": 500,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "277": {
+      "hp": 200,
+      "attack": 35,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "278": {
+      "hp": 200,
+      "attack": 20,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 4
+    },
+    "279": {
+      "hp": 55,
+      "attack": 40,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "280": {
+      "hp": 150,
+      "attack": 60,
+      "melee_armour": 0,
+      "range": 13.0,
+      "max_range": 13.0,
+      "pierce_armour": 0
+    },
+    "281": {
+      "hp": 90,
+      "attack": 8,
+      "melee_armour": 0,
+      "range": 7.0,
+      "max_range": 7.0,
+      "pierce_armour": 2
+    },
+    "282": {
+      "hp": 160,
+      "attack": 13,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "283": {
+      "hp": 180,
+      "attack": 12,
+      "melee_armour": 3,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 1
+    },
+    "291": {
+      "hp": 160,
+      "attack": 30,
+      "melee_armour": 8,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "292": {
+      "hp": 40,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "293": {
+      "hp": 25,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "294": {
+      "hp": 1
+    },
+    "295": {
+      "hp": 1
+    },
+    "296": {
+      "hp": 15
+    },
+    "297": {
+      "hp": 200,
+      "attack": 40,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "298": {
+      "hp": 25,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "299": {
+      "hp": 60,
+      "attack": 3,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "300": {
+      "hp": 1,
+      "attack": 4,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "302": {
+      "hp": 15
+    },
+    "304": {
+      "hp": 20
+    },
+    "305": {
+      "hp": 20
+    },
+    "306": {
+      "hp": 20
+    },
+    "307": {
+      "hp": 20
+    },
+    "308": {
+      "hp": 20
+    },
+    "309": {
+      "hp": 20
+    },
+    "310": {
+      "hp": 20
+    },
+    "311": {
+      "hp": 20
+    },
+    "312": {
+      "hp": 20
+    },
+    "313": {
+      "hp": 20
+    },
+    "314": {
+      "hp": 20
+    },
+    "315": {
+      "hp": 20
+    },
+    "316": {
+      "hp": 20
+    },
+    "317": {
+      "hp": 20
+    },
+    "318": {
+      "hp": 20
+    },
+    "319": {
+      "hp": 20
+    },
+    "320": {
+      "hp": 20
+    },
+    "321": {
+      "hp": 20
+    },
+    "322": {
+      "hp": 20
+    },
+    "323": {
+      "hp": 20
+    },
+    "324": {
+      "hp": 20
+    },
+    "329": {
+      "hp": 10,
+      "attack": 30,
+      "melee_armour": 0,
+      "range": 25.0,
+      "max_range": 25.0
+    },
+    "330": {
+      "hp": 1
+    },
+    "332": {
+      "hp": 20
+    },
+    "337": {
+      "hp": 500,
+      "attack": 50,
+      "melee_armour": 0,
+      "range": 14.0,
+      "max_range": 14.0,
+      "pierce_armour": 0
+    },
+    "338": {
+      "hp": 125,
+      "attack": 6,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "339": {
+      "hp": 120,
+      "attack": 9,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "340": {
+      "hp": 15
+    },
+    "343": {
+      "hp": 20
+    },
+    "344": {
+      "hp": 15
+    },
+    "345": {
+      "hp": 600,
+      "attack": 18,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 1
+    },
+    "346": {
+      "hp": 10,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 25.0,
+      "max_range": 25.0
+    },
+    "347": {
+      "hp": 25,
+      "attack": 2,
+      "melee_armour": 0,
+      "range": 4.0,
+      "max_range": 4.0,
+      "pierce_armour": 2
+    },
+    "348": {
+      "hp": 15
+    },
+    "349": {
+      "hp": 15
+    },
+    "350": {
+      "hp": 15
+    },
+    "351": {
+      "hp": 15
+    },
+    "352": {
+      "hp": 15
+    },
+    "353": {
+      "hp": 15
+    },
+    "354": {
+      "hp": 15
+    },
+    "355": {
+      "hp": 15
+    },
+    "356": {
+      "hp": 15
+    },
+    "357": {
+      "hp": 15
+    },
+    "358": {
+      "hp": 15
+    },
+    "359": {
+      "hp": 15
+    },
+    "360": {
+      "hp": 200,
+      "attack": 24,
+      "melee_armour": 0,
+      "range": 1.0,
+      "max_range": 1.0,
+      "pierce_armour": 0
+    },
+    "361": {
+      "hp": 1,
+      "attack": 2,
+      "melee_armour": 0,
+      "range": 25.0,
+      "max_range": 25.0
+    },
+    "362": {
+      "hp": 100,
+      "attack": 25,
+      "melee_armour": 0,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 3
+    },
+    "365": {
+      "hp": 25
+    },
+    "366": {
+      "hp": 25
+    },
+    "367": {
+      "hp": 25
+    },
+    "368": {
+      "hp": 10,
+      "attack": 35,
+      "melee_armour": 0,
+      "range": 15.0,
+      "max_range": 15.0
+    },
+    "372": {
+      "hp": 500,
+      "attack": 300,
+      "melee_armour": 10,
+      "range": 15.0,
+      "max_range": 15.0,
+      "pierce_armour": 0
+    },
+    "373": {
+      "hp": 1,
+      "attack": 1000,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "375": {
+      "hp": 600,
+      "attack": 20,
+      "melee_armour": 4,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 1
+    },
+    "376": {
+      "hp": 350,
+      "attack": 15,
+      "melee_armour": 5,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 2
+    },
+    "377": {
+      "hp": 500,
+      "attack": 60,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "378": {
+      "hp": 300,
+      "attack": 20,
+      "melee_armour": 6,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 6
+    },
+    "379": {
+      "hp": 250,
+      "attack": 12,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 1
+    },
+    "380": {
+      "hp": 1000,
+      "attack": 40,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 4
+    },
+    "383": {
+      "hp": 400,
+      "attack": 100,
+      "melee_armour": 0,
+      "range": 17.0,
+      "max_range": 17.0,
+      "pierce_armour": 0
+    },
+    "384": {
+      "hp": 16,
+      "attack": 3,
+      "melee_armour": 2,
+      "range": 0.0,
+      "max_range": 0.0,
+      "pierce_armour": 0
+    },
+    "385": {
+      "hp": 20
+    },
+    "386": {
+      "hp": 100,
+      "attack": 20,
+      "melee_armour": 10,
+      "range": 15.0,
+      "max_range": 15.0,
+      "pierce_armour": 0
+    },
+    "388": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "391": {
+      "hp": 25
+    },
+    "392": {
+      "hp": 25
+    },
+    "393": {
+      "hp": 25
+    },
+    "394": {
+      "hp": 25,
+      "attack": 200,
+      "melee_armour": 0,
+      "range": 10.0,
+      "max_range": 10.0,
+      "pierce_armour": 0
+    },
+    "395": {
+      "hp": 1,
+      "attack": 0,
+      "melee_armour": 0,
+      "range": 20.0,
+      "max_range": 20.0
+    },
+    "396": {
+      "hp": 999
+    },
+    "397": {
+      "hp": 500,
+      "attack": 60,
+      "melee_armour": 10,
+      "range": 15.0,
+      "max_range": 15.0,
+      "pierce_armour": 0
+    },
+    "398": {
+      "hp": 500,
+      "attack": 50,
+      "melee_armour": 10,
+      "range": 15.0,
+      "max_range": 15.0,
+      "pierce_armour": 0
+    }
+  },
+  "line_of_sight": {
+    "0": 6.0,
+    "1": 5.0,
+    "4": 7.0,
+    "5": 8.0,
+    "6": 9.0,
+    "10": 4.0,
+    "11": 11.0,
+    "12": 5.0,
+    "13": 6.0,
+    "14": 6.0,
+    "15": 4.0,
+    "16": 4.0,
+    "17": 4.0,
+    "18": 5.0,
+    "19": 7.0,
+    "20": 9.0,
+    "21": 10.0,
+    "25": 8.0,
+    "34": 1.0,
+    "35": 13.0,
+    "36": 15.0,
+    "37": 4.0,
+    "38": 4.0,
+    "39": 9.0,
+    "40": 4.0,
+    "41": 9.0,
+    "45": 5.0,
+    "46": 5.0,
+    "48": 4.0,
+    "49": 5.0,
+    "50": 4.0,
+    "65": 2.0,
+    "68": 5.0,
+    "69": 10.0,
+    "70": 3.0,
+    "71": 7.0,
+    "72": 3.0,
+    "73": 4.0,
+    "74": 4.0,
+    "75": 4.0,
+    "76": 4.0,
+    "77": 4.0,
+    "79": 8.0,
+    "82": 6.0,
+    "83": 4.0,
+    "84": 5.0,
+    "86": 4.0,
+    "87": 4.0,
+    "89": 5.0,
+    "90": 4.0,
+    "93": 4.0,
+    "94": 4.0,
+    "96": 10.0,
+    "101": 4.0,
+    "103": 4.0,
+    "104": 4.0,
+    "105": 4.0,
+    "108": 2.0,
+    "109": 7.0,
+    "110": 4.0,
+    "112": 1.0,
+    "116": 5.0,
+    "117": 3.0,
+    "125": 12.0,
+    "126": 3.0,
+    "132": 5.0,
+    "133": 5.0,
+    "154": 3.0,
+    "155": 3.0,
+    "157": 5.0,
+    "158": 4.0,
+    "159": 2.0,
+    "162": 1.0,
+    "163": 4.0,
+    "199": 9.0,
+    "235": 16.0,
+    "236": 10.0,
+    "237": 9.0,
+    "248": 15.0,
+    "250": 12.0,
+    "264": 7.0,
+    "265": 7.0,
+    "266": 7.0,
+    "267": 7.0,
+    "268": 7.0,
+    "269": 7.0,
+    "270": 7.0,
+    "271": 7.0,
+    "272": 7.0,
+    "273": 7.0,
+    "274": 15.0,
+    "275": 7.0,
+    "276": 4.0,
+    "277": 13.0,
+    "278": 10.0,
+    "279": 12.0,
+    "280": 16.0,
+    "281": 9.0,
+    "282": 4.0,
+    "283": 4.0,
+    "291": 4.0,
+    "292": 4.0,
+    "293": 4.0,
+    "297": 13.0,
+    "298": 4.0,
+    "299": 8.0,
+    "329": 1.0,
+    "330": 3.0,
+    "337": 14.0,
+    "338": 4.0,
+    "339": 4.0,
+    "345": 5.0,
+    "346": 1.0,
+    "347": 5.0,
+    "360": 8.0,
+    "362": 8.0,
+    "372": 17.0,
+    "375": 7.0,
+    "376": 10.0,
+    "377": 13.0,
+    "378": 4.0,
+    "379": 10.0,
+    "380": 11.0,
+    "383": 17.0,
+    "384": 8.0,
+    "386": 15.0,
+    "394": 12.0,
+    "397": 17.0,
+    "398": 17.0
+  }
+}

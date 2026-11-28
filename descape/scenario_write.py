@@ -121,7 +121,7 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from descape import games, scenario_format
+from descape import game_dataset, legacy_write, scenario_format
 from descape.messages_model import MessagesEditModel
 from descape.option_fields import label_for
 from descape.options_model import (
@@ -173,15 +173,72 @@ class WriteBlockedError(Exception):
 
 
 class LegacyFormatReadOnly(WriteBlockedError):
-    """A pre-DE .scn/.scx document (TASK-429): those open read-only."""
+    """A pre-DE .scn/.scx/.scx2 document (TASK-429) given to a writer that never writes one."""
+
+
+class LegacyEditNotAllowed(WriteBlockedError):
+    """A pre-DE save carrying an edit its band may not save back (legacy_write.ALLOWED, TASK-520)."""
 
 
 def refuse_legacy(scenario: LoadedScenario | scenario_format.ScenarioFormat) -> None:
     """Raises LegacyFormatReadOnly for a pre-DE document or format. Every
-    direct writer calls this; a duck-typed fake with no source_format passes."""
+    direct writer of a file a user names calls this, except build_patched(),
+    which gates a legacy save per edit family instead; a duck-typed fake
+    with no source_format passes."""
     fmt = scenario if isinstance(scenario, scenario_format.ScenarioFormat) else getattr(scenario, "source_format", None)
     if fmt is not None and fmt.legacy:
         raise LegacyFormatReadOnly(scenario_format.read_only_reason(fmt))
+
+
+class CompatReadOnly(WriteBlockedError):
+    """A newer-version document open in compatibility mode (TASK-057): its
+    LoadedScenario is a proxy that must never be written."""
+
+
+def refuse_compat(scenario: LoadedScenario) -> None:
+    """Raises CompatReadOnly for a compatibility-mode document."""
+    plan = getattr(scenario, "compat", None)
+    if plan is not None:
+        raise CompatReadOnly(
+            f"Scenario version {plan.file_version} is open in compatibility mode, read as {plan.base}: "
+            "this writer would write the proxy, not the file."
+        )
+
+
+def check_destination(scenario: LoadedScenario, out_path: Path) -> None:
+    """write_scenario()'s destination guards: refuses an unresolvable path, a
+    mods/subscribed one, the shipped template directory, a DE scenario name
+    for a pre-DE document and a game that isn't writable. Raises WriteBlockedError."""
+    # The as-written check first, so a marked path whose resolve() raises is still "blocked".
+    resolved = None
+    if not names_workshop_subscribed(out_path):
+        try:
+            resolved = resolve_detecting_loops(out_path)
+        except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
+            raise WriteBlockedError(
+                f"Refusing to write to a path that cannot be resolved ({e}), so it can't be"
+                f" shown to be outside a subscribed-mods (mods/subscribed/) folder: {out_path}"
+            ) from e
+    if resolved is None or is_workshop_subscribed(out_path, resolved):
+        raise WriteBlockedError(
+            "Refusing to write into a subscribed-mods (mods/subscribed/) folder"
+            f" (as written or through a symlink; the game's mod manager re-syncs it): {out_path}"
+        )
+    if resolved.parent == TEMPLATE_DIR.resolve():
+        raise WriteBlockedError(
+            f"Refusing to write into the shipped template directory ({TEMPLATE_DIR}): {out_path}"
+        )
+    if legacy_write.is_legacy(scenario) and out_path.suffix.lower() == ".aoe2scenario":
+        hint = " File > Convert to .aoe2scenario makes an AoE2:DE copy." if scenario_format.converts(scenario.source_format) else ""
+        raise LegacyFormatReadOnly(
+            f"An older-format scenario saves in its own format, not as .aoe2scenario: {out_path}.{hint}"
+        )
+    own_game = game_dataset.file_game(scenario)
+    # A pre-DE file's band families decide for it, its game view-only or not (build_patched()).
+    if not own_game.writable and not legacy_write.is_legacy(scenario):
+        raise WriteBlockedError(
+            f"Refusing to write a {own_game.display_name} scenario: DEscape opens that game's files view-only: {out_path}"
+        )
 
 
 @dataclass(frozen=True)
@@ -232,15 +289,23 @@ def _patch_terrain_block(scenario: LoadedScenario) -> bytes:
     if len(terrain) != width * height:
         raise WriteBlockedError(
             f"The map holds {len(terrain)} tiles but this file's terrain block has room for "
-            f"{width}x{height} = {width * height} -- refusing to write past it."
+            f"{width}x{height} = {width * height}: refusing to write past it."
         )
+    patch_tiles(body, offset, stride, has_layer, terrain)
+    return bytes(body)
+
+
+def patch_tiles(body: bytearray, offset: int, stride: int, has_layer: bool, terrain) -> None:
+    """Writes each tile's terrain_id, elevation and (when the struct has one)
+    layer into `body` at `offset + stride * i`, leaving every other byte as is.
+    The one tile packer: _patch_terrain_block() and the compatibility view's
+    writer (scenario_compat.write_compat()) both use it."""
     for i, tile in enumerate(terrain):
         o = offset + stride * i
         body[o] = tile.terrain_id
         body[o + 1] = tile.elevation
         if has_layer:
             _LAYER_STRUCT.pack_into(body, o + _LAYER_OFFSET, tile.layer)
-    return bytes(body)
 
 
 def _patch_options(body: bytes, scenario: LoadedScenario, options: OptionsEditModel) -> bytes:
@@ -626,7 +691,9 @@ def _patch_header_instructions(header_bytes: bytes, messages: MessagesEditModel)
 def _patch_header_trigger_count(header_bytes: bytes, scenario: LoadedScenario, count: int) -> bytes:
     """FileHeader.trigger_count, the header's last 4 bytes. The header lives
     outside the compressed body entirely, so it is patched separately.
-    Raises on a file with no such field, same as _patch_trigger_count()."""
+    Raises on a file with no such field, same as _patch_trigger_count(), and
+    on a pre-DE header, whose last 4 bytes are player_count."""
+    refuse_legacy(scenario)
     _require_trigger_counters(scenario)
     header = bytearray(header_bytes)
     _TRIGGER_COUNT_STRUCT.pack_into(header, len(header) - 4, count)
@@ -741,8 +808,9 @@ def write_scenario(
             options_model.diplomacy_write_supported's docstring), or if
             `messages` has edits on a file whose Messages section no longer
             passes messages_write_supported, or if the scenario's own game
-            (games.for_scenario()) is not Game.writable, so a batch script
-            is refused a view-only game as the viewer is. All of the above are raised
+            (game_dataset.file_game()) is not Game.writable, so a batch script
+            is refused a view-only game as the viewer is (a pre-DE file
+            excepted: legacy_write's band families decide). All of the above are raised
             before any backup is written or out_path is touched.
         BackupFailedError (a WriteBlockedError subclass, descape.backup):
             if a `.bak`/`.orig` copy fails partway through. Aborts the save
@@ -752,31 +820,8 @@ def write_scenario(
             pre-existing backup is left intact.
     """
     out_path = Path(out_path)
-    # The as-written check first, so a marked path whose resolve() raises is still "blocked".
-    resolved = None
-    if not names_workshop_subscribed(out_path):
-        try:
-            resolved = resolve_detecting_loops(out_path)
-        except (OSError, RuntimeError) as e:  # a symlink loop raises on every Python version
-            raise WriteBlockedError(
-                f"Refusing to write to a path that cannot be resolved ({e}), so it can't be"
-                f" shown to be outside a subscribed-mods (mods/subscribed/) folder: {out_path}"
-            ) from e
-    if resolved is None or is_workshop_subscribed(out_path, resolved):
-        raise WriteBlockedError(
-            "Refusing to write into a subscribed-mods (mods/subscribed/) folder"
-            f" (as written or through a symlink; the game's mod manager re-syncs it): {out_path}"
-        )
-    if resolved.parent == TEMPLATE_DIR.resolve():
-        raise WriteBlockedError(
-            f"Refusing to write into the shipped template directory ({TEMPLATE_DIR}): {out_path}"
-        )
-    refuse_legacy(scenario)
-    own_game = games.for_scenario(scenario)
-    if not own_game.writable:
-        raise WriteBlockedError(
-            f"Refusing to write a {own_game.display_name} scenario: DEscape opens that game's files view-only: {out_path}"
-        )
+    check_destination(scenario, out_path)
+    refuse_compat(scenario)
 
     header_bytes, patched_body = build_patched_body(scenario, triggers, options, units, messages)
 
@@ -788,8 +833,14 @@ def write_scenario(
         compressed = scenario.original_compressed_body
     else:
         compressed = _compress_bytes(patched_body)
-    final_bytes = header_bytes + compressed
+    return _write_file_bytes(out_path, header_bytes + compressed, backup)
 
+
+def _write_file_bytes(out_path: Path, final_bytes: bytes, backup: bool) -> WriteResult:
+    """write_scenario()'s tail, shared with scenario_compat.write_compat(): no
+    write and no backup when out_path already holds `final_bytes`, else the
+    backups (when asked) and an atomic replace keeping the old file's mode.
+    The caller has already run check_destination()."""
     existed = out_path.exists()
     if existed and out_path.stat().st_size == len(final_bytes) and out_path.read_bytes() == final_bytes:
         return WriteResult(wrote=False, backups=[])
@@ -845,12 +896,19 @@ def build_patched(
     units: UnitEditModel | None = None,
     messages: MessagesEditModel | None = None,
 ) -> PatchedBody:
-    """build_patched_body() plus the terrain block's offset in the result."""
-    refuse_legacy(scenario)
+    """build_patched_body() plus the terrain block's offset in the result. A
+    pre-DE document saves only its band's allowed edit families
+    (legacy_write.refusal(), LegacyEditNotAllowed), checked once every patch
+    has run and before anything is written."""
+    refuse_compat(scenario)
+    # A pre-DE document's model edits are gated ahead of the trigger and header guards below.
+    kinds = legacy_write.model_kinds(options, units, messages, triggers) if legacy_write.is_legacy(scenario) else None
+    if kinds is not None and (reason := legacy_write.refusal(scenario, kinds)):
+        raise LegacyEditNotAllowed(reason)
     if not scenario.terrain_write_supported:
         raise WriteBlockedError(
-            "This file's terrain block failed load-time verification -- "
-            "writing would silently patch the wrong bytes. Terrain mode should "
+            "This file's terrain block failed load-time verification. "
+            "Writing would silently patch the wrong bytes. Terrain mode should "
             "already be disabled for this file; write_scenario() should "
             "never be reached here."
         )
@@ -871,49 +929,49 @@ def build_patched(
         # the model between then and now.
         if not options_write_supported(scenario, options.specs):
             raise WriteBlockedError(
-                "This file's map-option block no longer verifies -- patching would "
+                "This file's map-option block no longer verifies. Patching would "
                 "land at an offset that can't be trusted."
             )
         if options.has_diplomacy_edits and not diplomacy_write_supported(scenario):
             raise WriteBlockedError(
-                "This file's Diplomacy grid no longer verifies -- patching would "
+                "This file's Diplomacy grid no longer verifies. Patching would "
                 "land at an offset that can't be trusted."
             )
         if options.has_allied_victory_edits and not allied_victory_write_supported(scenario):
             raise WriteBlockedError(
                 "This file's second stored copy of the allied-victory flags (Units "
-                "player_data_3) no longer verifies -- patching would land at an offset "
+                "player_data_3) no longer verifies. Patching would land at an offset "
                 "that can't be trusted."
             )
         if options.has_player_edits and not players_write_supported(scenario):
             raise WriteBlockedError(
-                "This file's Players mode fields no longer verify -- patching would "
+                "This file's Players mode fields no longer verify. Patching would "
                 "land at an offset that can't be trusted."
             )
         if options.has_player_count_edit and not player_count_write_supported(scenario):
             raise WriteBlockedError(
-                "This file's Number of Players write surface no longer verifies -- "
-                "patching would land at an offset that can't be trusted."
+                "This file's Number of Players write surface no longer verifies. "
+                "Patching would land at an offset that can't be trusted."
             )
         if options.has_disables_edits and not disables_write_supported(scenario):
             raise WriteBlockedError(
-                "This file's per-player disable lists no longer verify -- splicing "
+                "This file's per-player disable lists no longer verify. Splicing "
                 "would land at an offset that can't be trusted."
             )
         if options.has_personality_edits:
             if not personality_write_supported(scenario):
                 raise WriteBlockedError(
-                    "This file's AI personality block no longer verifies -- splicing "
+                    "This file's AI personality block no longer verifies. Splicing "
                     "would land at an offset that can't be trusted."
                 )
             if options.personality_custom_supported and not personality_custom_supported(scenario):
                 raise WriteBlockedError(
-                    "This file's AI script library no longer verifies -- splicing "
+                    "This file's AI script library no longer verifies. Splicing "
                     "would land at an offset that can't be trusted."
                 )
         if options.has_script_name_edit and not script_name_write_supported(scenario):
             raise WriteBlockedError(
-                "This file's script filename fields no longer verify -- splicing "
+                "This file's script filename fields no longer verify. Splicing "
                 "would land at an offset that can't be trusted."
             )
         if options.has_map_string_edits:
@@ -921,7 +979,7 @@ def build_patched(
             for field_id, name in MAP_STRING_FIELDS.items():
                 if field_id in pending and not map_strings_write_supported(scenario, name):
                     raise WriteBlockedError(
-                        f"This file's {label_for(field_id).lower()} no longer verifies -- splicing "
+                        f"This file's {label_for(field_id).lower()} no longer verifies. Splicing "
                         "would land at an offset that can't be trusted."
                     )
         header_bytes = _patch_header_player_count(header_bytes, options)
@@ -930,8 +988,8 @@ def build_patched(
     if messages is not None and messages.has_edits:
         if not scenario.messages_write_supported:
             raise WriteBlockedError(
-                "This file's Messages section failed its load-time verification -- "
-                "splicing would land at an offset that can't be trusted. Messages "
+                "This file's Messages section failed its load-time verification. "
+                "Splicing would land at an offset that can't be trusted. Messages "
                 "mode should already be disabled for this file."
             )
         header_bytes = _patch_header_instructions(header_bytes, messages)
@@ -941,7 +999,7 @@ def build_patched(
         # the trigger/options paths use.
         if not scenario.units_write_supported:
             raise WriteBlockedError(
-                "This file's Units section failed its alignment gate -- splicing "
+                "This file's Units section failed its alignment gate. Splicing "
                 "would land at an offset that can't be trusted. Unit editing should "
                 "already be disabled for this file."
             )
@@ -951,7 +1009,7 @@ def build_patched(
     if triggers is not None and triggers.has_edits:
         if not scenario.trigger_write_supported:
             raise WriteBlockedError(
-                "This file's Triggers section failed its alignment gate -- splicing "
+                "This file's Triggers section failed its alignment gate. Splicing "
                 "would land at an offset that can't be trusted. Trigger editing should "
                 "already be disabled for this file."
             )
@@ -994,4 +1052,10 @@ def build_patched(
         patched_body[terrain_offset - size : terrain_offset]
         == scenario.decompressed_body[scenario.terrain_block_offset - size : scenario.terrain_block_offset]
     ), "the terrain block did not land where the upstream splices' length change puts it"
+    if legacy_write.is_legacy(scenario):
+        kinds = legacy_write.pending_kinds(scenario, patched_body, terrain_offset, options, units, messages, triggers)
+        if reason := legacy_write.refusal(scenario, kinds, patched_body, terrain_offset):
+            raise LegacyEditNotAllowed(reason)
+        if header_bytes != scenario.header_bytes:
+            header_bytes = legacy_write.fix_header_length(header_bytes)
     return PatchedBody(header_bytes, patched_body, terrain_offset)

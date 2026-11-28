@@ -39,7 +39,7 @@ def _loaded(players, width=120, height=120):
 
 
 def _every_shipped_version() -> list[str]:
-    return library_compat.vocabulary_versions()
+    return conftest.every_vocabulary_version()
 
 
 # -- the vocabulary sweep ---------------------------------------------------
@@ -62,6 +62,9 @@ def test_the_field_set_comes_from_presentation_and_has_the_v136_to_v143_conditio
     assert seen, "no shipped vocabulary found"
     for version, (conditions, effects) in seen.items():
         assert effects == effect_fields, version
+        if version.startswith(library_compat.LEGACY_VOCABULARY_PREFIX):  # cut from the newest DE vocabulary
+            assert conditions == condition_fields, version
+            continue
         major, minor = (int(p) for p in version.split("."))
         # unit_object/next_object carry presentation '' before v1.44, so they are not references there.
         assert conditions == (condition_fields if (major, minor) >= (1, 44) else set()), version

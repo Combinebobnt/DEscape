@@ -78,6 +78,19 @@ class _ResizeWatch(QObject):
         return False
 
 
+def _percent_spin(name: str, tip: str) -> QSpinBox:
+    """A " %" spin over tool option `name`'s range at its default, disabled until _update_tool_enabled()."""
+    spec = tool_options.option(name)
+    spin = QSpinBox()
+    spin.setRange(spec.minimum, spec.maximum)
+    spin.setValue(spec.default)
+    spin.setSuffix(" %")
+    keep_cursor_before_suffix(spin)
+    spin.setToolTip(tip)
+    spin.setEnabled(False)
+    return spin
+
+
 class _ViewerToolbarMixin:
     """ViewerWindow's toolbar, status bar and docks (viewer.py's docstring has the split's rules)."""
 
@@ -250,7 +263,8 @@ class _ViewerToolbarMixin:
         first run, a saved state that will not restore, and View > Panels >
         Reset Layout. `log_height` is the bare log's, as the splitter layout
         before GH #64 saved it; the dock's title bar goes on top. Closed by
-        default, the minimap's minimum height floors the row only once opened."""
+        default, the minimap's MIN_HEIGHT floors the row only once opened; opening
+        it keeps a taller row as it is (GH #404)."""
         docks = (
             (self.panel_dock, Qt.LeftDockWidgetArea),
             (self.trigger_detail_dock, Qt.LeftDockWidgetArea),
@@ -571,6 +585,18 @@ class _ViewerToolbarMixin:
         tool_group.addAction(self.draw_action)
         toolbar.addAction(self.draw_action)
 
+        self.spray_action = QAction("Spray Can", self)
+        self.spray_action.setCheckable(True)
+        self.spray_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.spray_action.setToolTip(
+            "Hold to spray a random scatter of the selected terrain under the brush (Terrain mode); holding still "
+            "fills it in. Flow sets how fast, Hardness how much of the brush sprays at full strength. "
+            "Target chooses the base terrain or the layered terrain"
+        )
+        self.spray_action.toggled.connect(lambda on: on and self._on_tool_selected("spray"))
+        tool_group.addAction(self.spray_action)
+        toolbar.addAction(self.spray_action)
+
         self.fill_action = QAction("Paint Can", self)
         self.fill_action.setCheckable(True)
         self.fill_action.setEnabled(False)  # re-gated by _update_tool_enabled()
@@ -633,6 +659,29 @@ class _ViewerToolbarMixin:
         self.draw_rect_action.toggled.connect(lambda on: on and self._on_tool_selected("draw_rect"))
         tool_group.addAction(self.draw_rect_action)
         toolbar.addAction(self.draw_rect_action)
+
+        self.replace_brush_action = QAction("Replace Brush", self)
+        self.replace_brush_action.setCheckable(True)
+        self.replace_brush_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.replace_brush_action.setToolTip(
+            "Drag to paint the chosen terrain only over tiles matching the one you press on (Terrain mode). "
+            "Flood: every match under the brush, or only those connected to the press. "
+            "Target chooses the base terrain or the layered terrain"
+        )
+        self.replace_brush_action.toggled.connect(lambda on: on and self._on_tool_selected("replace_brush"))
+        tool_group.addAction(self.replace_brush_action)
+        toolbar.addAction(self.replace_brush_action)
+
+        self.clone_action = QAction("Clone Stamp", self)
+        self.clone_action.setCheckable(True)
+        self.clone_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.clone_action.setToolTip(
+            "Ctrl+click a tile to set where to copy from, then drag to paint copies of its terrain and elevation "
+            "at that offset (Terrain mode). The offset stays until the next Ctrl+click"
+        )
+        self.clone_action.toggled.connect(lambda on: on and self._on_tool_selected("clone"))
+        tool_group.addAction(self.clone_action)
+        toolbar.addAction(self.clone_action)
 
         # Track B Stage 1 + 2 of the 2026-09-05 cliffs plan. Terrain-mode
         # like the four tools above; a click places the picked piece, a drag
@@ -900,6 +949,16 @@ class _ViewerToolbarMixin:
         self.terrain_target_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.terrain_target_combo.currentIndexChanged.connect(self._on_terrain_target_changed)
         self.terrain_target_param_action = param_toolbar.addWidget(self.terrain_target_combo)
+        # The Replace Brush's Flood (GH #296), read once at press like the Target.
+        self.replace_flood_label_action = param_toolbar.addWidget(QLabel(" Flood: "))
+        self.replace_flood_combo = QComboBox()
+        self.replace_flood_combo.addItem("Global", "global")
+        self.replace_flood_combo.addItem("Contiguous", "contiguous")
+        self.replace_flood_combo.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.replace_flood_combo.setToolTip(
+            "Global replaces every matching tile under the brush; Contiguous only those connected to the press tile"
+        )
+        self.replace_flood_param_action = param_toolbar.addWidget(self.replace_flood_combo)
 
         # Auto beach (2026-08-31 plan). A checkbox on Draw rather than a
         # separate Water tool -- the user's call, and it costs no ToolDef,
@@ -939,6 +998,22 @@ class _ViewerToolbarMixin:
         )
         self.beach_width_param_action = param_toolbar.addWidget(self.beach_width_spin)
 
+        # The Clone Stamp's pair (GH #285), read once at press. Terrain re-gates Trees and Eye candy.
+        self.clone_terrain_check = QCheckBox("Terrain")
+        self.clone_terrain_check.setChecked(tool_options.default("clone_terrain"))
+        self.clone_terrain_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.clone_terrain_check.setToolTip("Copy the source's terrain and layered terrain")
+        self.clone_terrain_check.toggled.connect(lambda _on: self._update_tool_enabled())
+        self.clone_terrain_param_action = param_toolbar.addWidget(self.clone_terrain_check)
+        self.clone_elevation_check = QCheckBox("Elevation")
+        self.clone_elevation_check.setChecked(tool_options.default("clone_elevation"))
+        self.clone_elevation_check.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.clone_elevation_check.setToolTip(
+            "Copy the source's elevation; the ground around it rises or falls just enough to keep every step legal. "
+            "Square maps only, and not in compatibility mode, where the Clone Stamp copies terrain only"
+        )
+        self.clone_elevation_param_action = param_toolbar.addWidget(self.clone_elevation_check)
+
         # descape/terrain_units.py's auto-placed trees/eye-candy, gated by
         # terrain_param_ok in _update_tool_enabled() since both Draw and Paint Can read them.
         # A tick lasts the session, like the rest of the row; Settings > Tools holds the default.
@@ -960,6 +1035,18 @@ class _ViewerToolbarMixin:
             "Painting a different terrain over a tile removes them too."
         )
         self.paint_eye_candy_param_action = param_toolbar.addWidget(self.paint_eye_candy_check)
+
+        # The Spray Can's pair (GH #295), read once at press like the Target.
+        self.spray_flow_label_action = param_toolbar.addWidget(QLabel(" Flow: "))
+        self.spray_flow_spin = _percent_spin(
+            "spray_flow", "How much each tick of a held spray fills in: higher fills the brush faster"
+        )
+        self.spray_flow_param_action = param_toolbar.addWidget(self.spray_flow_spin)
+        self.spray_hardness_label_action = param_toolbar.addWidget(QLabel(" Hardness: "))
+        self.spray_hardness_spin = _percent_spin(
+            "spray_hardness", "How much of the brush, from its centre out, sprays at full strength; the rest fades to its edge"
+        )
+        self.spray_hardness_param_action = param_toolbar.addWidget(self.spray_hardness_spin)
 
         self.level_param_label_action = param_toolbar.addWidget(QLabel(" Level: "))
         self.elevation_level_spin = QSpinBox()

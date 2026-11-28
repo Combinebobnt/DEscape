@@ -3,9 +3,9 @@
 (TASK-107, GH #45) in the real AoE2:DE editor, the half nothing in-session
 can drive.
 
-Deliberately asymmetric: a 144x144 file shrunk to 120x120 anchored
-BOTTOM_RIGHT, so the old map's far corner stays put and 24 tiles are cut
-off the x = 0 and y = 0 edges (the two edges that meet at the west tip).
+Deliberately asymmetric: by default a 144x144 file shrunk to 120x120
+(`--size` changes the target) anchored BOTTOM_RIGHT, so the old map's far
+corner stays put and the cut comes off the x = 0 and y = 0 edges (the two edges that meet at the west tip).
 A silently mirrored offset would cut the other two edges instead, which is
 visible rather than merely plausible.
 
@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 from descape import library_compat, object_catalog, trigger_geometry
 from descape.render_units import NON_BUILDING_SPAN
 from descape.scenario_io import is_workshop_subscribed, load_map_and_units, parse_triggers
+from descape.scenario_new import MIN_MAP_TILES, validate_map_size
 from descape.scenario_resize import Anchor, resize_scenario
 from descape.scenario_write import WriteBlockedError, write_scenario
 from descape.terrain_palette import tile_span
@@ -68,7 +69,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", type=Path, default=SOURCE, help="A square scenario to shrink")
     parser.add_argument("--out", type=Path, default=ROOT / "build" / "resize_pair", help="Output directory")
+    parser.add_argument("--size", type=int, default=NEW_SIZE, help=f"New square size (default {NEW_SIZE})")
+    parser.add_argument(
+        "--min-tiles",
+        type=int,
+        default=MIN_MAP_TILES,
+        help=f"Size floor, lowered to write an in-game probe file below the app's {MIN_MAP_TILES}",
+    )
     args = parser.parse_args()
+    try:
+        validate_map_size(args.size, min_tiles=args.min_tiles)
+    except ValueError as e:
+        parser.error(str(e))
+    new_size = args.size
     if is_workshop_subscribed(args.out):
         raise WriteBlockedError(f"Refusing to write into a subscribed-mods (mods/subscribed/) folder: {args.out}")
     if not args.source.is_file():
@@ -84,8 +97,8 @@ def main() -> int:
     areas = _trigger_areas(source)
 
     source = load_map_and_units(args.source)
-    result = resize_scenario(source, NEW_SIZE, NEW_SIZE, ANCHOR)
-    after_path = args.out / f"after_{NEW_SIZE}x{NEW_SIZE}_anchored_bottom_right.aoe2scenario"
+    result = resize_scenario(source, new_size, new_size, ANCHOR, min_tiles=args.min_tiles)
+    after_path = args.out / f"after_{new_size}x{new_size}_anchored_bottom_right.aoe2scenario"
     write_scenario(result.loaded, after_path, backup=False, units=result.unit_edits, triggers=result.trigger_edits)
     after = load_map_and_units(after_path)
     plan = result.plan
@@ -99,7 +112,7 @@ def main() -> int:
     print(f"(dx, dy) = ({plan.dx}, {plan.dy}): old tile (x, y) is new tile (x{plan.dx:+d}, y{plan.dy:+d}).")
     print()
     print("What to check in the AoE2:DE editor:")
-    print(f"  1. Open the 'after' file. The Map tab reports {NEW_SIZE}x{NEW_SIZE}; the 'before' file {old_size}x{old_size}.")
+    print(f"  1. Open the 'after' file. The Map tab reports {new_size}x{new_size}; the 'before' file {old_size}x{old_size}.")
     print("  2. The cut edges: compare the two minimaps. The 'after' map is the 'before' one with a")
     print(f"     {-plan.dx}-tile strip removed along BOTH edges that meet at the WEST tip (x = 0 and y = 0).")
     print("     The east tip's corner is unchanged. Strips gone from the north-east/south-east edges")

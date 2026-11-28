@@ -59,7 +59,7 @@ class ScenarioBrowserDialog(QDialog):
         intro = QLabel(
             "Scenarios in the game's profile and mod folders. One from a subscribed mod "
             "opens as usual, but Save asks for a new name, since the game re-syncs that folder. "
-            "Older .scn and .scx files open for viewing only."
+            "Older .scn, .scx and .scx2 files open for viewing only."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)

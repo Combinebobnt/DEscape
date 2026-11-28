@@ -56,6 +56,7 @@ def render_scenario(
     style: str | None = None,
     grid: GridBake = DEFAULT_GRID,
     blend: bool = True,
+    elev_step_pct: int | None = None,
 ) -> np.ndarray:
     """isometric=True renders Stepped mode (render_terrain_iso) instead of
     Flat (render_terrain). with_units applies in every mode now (Phase 5 for
@@ -73,16 +74,19 @@ def render_scenario(
     passthrough both keep working exactly as before when style is left at
     its None default. isometric stays a valid way to select Stepped
     (style="stepped" is equivalent, not required). blend=False keeps the
-    pre-blending render in every style (blend_effective())."""
+    pre-blending render in every style (blend_effective()). elev_step_pct
+    overrides the chosen iso style's own setting; Flat ignores it."""
     if style is not None:
         if style not in terrain_style.TERRAIN_STYLES:
             expected = ", ".join(repr(s) for s in terrain_style.TERRAIN_STYLES)
             raise ValueError(f"style must be one of {expected}, got {style!r}")
         if style == "sloped":
-            return render_terrain_sloped(scenario, with_units=with_units, grid=grid, blend=blend)
+            return render_terrain_sloped(
+                scenario, with_units=with_units, grid=grid, blend=blend, elev_step_pct=elev_step_pct
+            )
         isometric = style == "stepped"
     if isometric:
-        return render_terrain_iso(scenario, with_units=with_units, grid=grid, blend=blend)
+        return render_terrain_iso(scenario, with_units=with_units, grid=grid, blend=blend, elev_step_pct=elev_step_pct)
     img = render_terrain(scenario, grid=grid, blend=blend)
     if with_units:
         img = overlay_units(img, scenario)
@@ -96,10 +100,13 @@ def save_png(
     scale: int = 1,
     isometric: bool = False,
     style: str | None = None,
+    elev_step_pct: int | None = None,
 ) -> None:
     from PIL import Image
 
-    img = render_scenario(scenario, with_units=with_units, isometric=isometric, style=style)
+    img = render_scenario(
+        scenario, with_units=with_units, isometric=isometric, style=style, elev_step_pct=elev_step_pct
+    )
     pil_img = Image.fromarray(img, mode="RGB")
     if scale != 1:
         pil_img = pil_img.resize(

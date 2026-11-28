@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from PyQt5.QtGui import QIcon
 
-from descape import icon_art, settings
+from descape import icon_art, saved_views, settings
 
 # 16 is the menus', 24 the toolbar's; 32 covers a 2x menu.
 RENDERED_SIZES = (16, 24, 32)
@@ -28,6 +28,7 @@ ACTION_ICONS: dict[str, str] = {
     "file_save": "file-save",
     "file_save_as": "file-save-as",
     "file_convert": "file-convert",
+    "file_convert_legacy": "file-convert",
     "file_recover_autosave": "file-recover",
     "file_exit": "file-exit",
     "edit_undo": "edit-undo",
@@ -36,6 +37,8 @@ ACTION_ICONS: dict[str, str] = {
     "edit_copy": "edit-copy",
     "edit_paste": "edit-paste",
     "edit_clipboard_history": "edit-clipboard-history",
+    "edit_save_prefab": "edit-save-prefab",
+    "edit_prefabs": "edit-prefabs",
     "edit_history": "edit-history",
     "edit_select_all": "select-all",
     "edit_deselect": "select-none",
@@ -59,10 +62,15 @@ ACTION_ICONS: dict[str, str] = {
     "map_mirror": "map-mirror",
     "map_disables": "map-disables",
     "map_swap_players": "map-swap-players",
+    "launch_game": "launch-game",
     "analysis_run": "map-analysis",
     "script_open_folder": "file-open",
+    "addon_open_folder": "file-open",
     "view_zoom_native": "view-zoom-native",
     "view_reset_layout": "view-reset-layout",
+    **{f"savedview_go_{n}": "view-saved-go" for n in saved_views.SLOTS},
+    **{f"savedview_save_{n}": "view-saved-save" for n in saved_views.SLOTS},
+    "savedview_clear": "view-saved-clear",
     "help_guide": "help-guide",
     "help_keys": "help-keys",
     "help_web_guide": "help-web-guide",

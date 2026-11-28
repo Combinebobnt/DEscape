@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 
@@ -52,7 +52,8 @@ a = Analysis(
     datas=datas,
     # composite_backend imports the kernel inside a try, which analysis can miss.
     # GH #58: the generators above are data, never analysed; argparse is the one import they add.
-    hiddenimports=["descape._composite_native", "argparse", "genieutils.datfile"],
+    # GH #320: every descape module ships, so an addon or script can import any of them.
+    hiddenimports=["descape._composite_native", "argparse", "genieutils.datfile", *collect_submodules("descape")],
     excludes=["tkinter", "pytest", "pytest-qt", "cython"],
 )
 # Host-supplied by design: a bundled libstdc++ shadows the host's and breaks a

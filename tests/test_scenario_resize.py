@@ -403,6 +403,14 @@ def test_refusals(size, match) -> None:
         resize_scenario(loaded, *size, Anchor.CENTER)
 
 
+def test_min_tiles_override_shrinks_below_the_floor_for_probe_tools(tmp_path) -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    result = resize_scenario(loaded, 16, 16, Anchor.BOTTOM_RIGHT, min_tiles=16)
+    reloaded = _save_and_reload(result, tmp_path)
+    assert (reloaded.map_manager.map_width, reloaded.map_manager.map_height) == (16, 16)
+    assert "outside supported range" in resize_plan(loaded, 15, 15, Anchor.CENTER, min_tiles=16).refusal
+
+
 def test_unwritable_units_allow_only_a_top_left_grow() -> None:
     import dataclasses
 

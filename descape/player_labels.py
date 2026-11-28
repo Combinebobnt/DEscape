@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import NamedTuple
 
-from descape import player_fields
+from descape import player_fields, scenario_compat
 
 TRIBE_NAME_FIELD = "tribe_name"
 # Corpus max is 25 chars; a 255-byte name must not widen the Units panel.
@@ -63,6 +63,8 @@ def tribe_names(loaded, pending: Mapping[int, str] | None = None) -> tuple[str, 
     patch that never updates the parsed retriever. All "" when the file has
     no tribe_name spec."""
     pending = pending or {}
+    if scenario_compat.settings_unknown(loaded):
+        return ("",) * PLAYER_SLOTS  # the names would be the donor template's
     spec = next(
         (s for s in player_fields.specs_for(loaded) if s.field_id == TRIBE_NAME_FIELD), None
     )

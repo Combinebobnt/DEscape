@@ -21,7 +21,16 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape.messages_fields import MESSAGE_FIELDS, STRING_ID_UNSET, normalize_for_display, present_fields
+from descape import legacy_write, scenario_compat
+from descape.messages_fields import (
+    MESSAGE_FIELDS,
+    STRING_ID_UNSET,
+    has_string_id,
+    normalize_for_display,
+    present_fields,
+    raw_payloads,
+    stored_text,
+)
 from descape.text_edits import ProseTextEdit
 from descape.viewer_common import FontScaledWidth
 
@@ -136,11 +145,15 @@ class MessagesPanel(QWidget):
             retriever_map = loaded._scenario.sections["Messages"].retriever_map
             self._values = {}
             self._fields = present_fields(retriever_map)
+            # TASK-520's codec, over verified spans only: an unverified legacy file shows the library's text.
+            legacy = legacy_write.is_legacy(loaded) and loaded.messages_write_supported
+            payloads = raw_payloads(loaded) if legacy else None
             for spec in self._fields:
-                text = retriever_map[spec.retriever].data
+                text = stored_text(loaded, spec, payloads) if legacy else retriever_map[spec.retriever].data
                 display, _token = normalize_for_display(text) if isinstance(text, str) else (str(text), None)
                 self._values[spec.field_id] = display
-                self._values[f"{spec.field_id}_id"] = retriever_map[spec.id_retriever].data
+                if has_string_id(spec, retriever_map):
+                    self._values[f"{spec.field_id}_id"] = retriever_map[spec.id_retriever].data
             if values:
                 self._values.update({k: v for k, v in values.items() if k in self._values})
             self._editable = editable
@@ -159,7 +172,7 @@ class MessagesPanel(QWidget):
             for spec in self._fields
             if self._values.get(f"{spec.field_id}_id", STRING_ID_UNSET) != STRING_ID_UNSET
         )
-        summary = [f"{len(self._fields)} fields — scenario {loaded.scenario_version}"]
+        summary = [f"{len(self._fields)} fields — scenario {scenario_compat.display_version(loaded)}"]
         detail = list(notes)
         if not self._editable:
             summary.append("read-only")
@@ -181,7 +194,7 @@ class MessagesPanel(QWidget):
                 warning.setWordWrap(True)
                 box_layout.addWidget(warning)
                 clear_button = QPushButton(self._CLEAR_ID_LABEL)
-                clear_button.setEnabled(self._editable)
+                clear_button.setEnabled(self._editable and f"{spec.field_id}_id" not in self._read_only_reasons)
                 clear_button.clicked.connect(lambda _=False, s=spec: self._clear_string_id(s))
                 # Stacked under the warning so the row fits the 300 px floor (GH #142).
                 box_layout.addWidget(clear_button, alignment=Qt.AlignLeft)

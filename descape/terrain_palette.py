@@ -15,7 +15,7 @@ from pathlib import Path
 
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import asset_source, game_dataset, object_catalog
+from descape import asset_source, game_dataset, object_catalog, terrain_classes
 
 _KEYWORD_COLORS: list[tuple[str, tuple[int, int, int]]] = [
     ("DEEP_WATER", (28, 62, 130)),
@@ -62,9 +62,14 @@ def _build_id_to_name() -> dict[int, str]:
     for terrain_id, entry in object_catalog.dat_terrains().items():
         if terrain_id in changed and object_catalog.is_aoe2_terrain(terrain_id) and (name := _data_mod_name(entry, lang)):
             names[terrain_id] = name
-        elif terrain_id not in names and entry.get("code", "").strip():
+        elif (terrain_id not in names or _obsolete_in_enum_only(terrain_id, names[terrain_id])) and entry.get("code", "").strip():
             names[terrain_id] = enum_style_name(entry["code"])
     return names
+
+
+def _obsolete_in_enum_only(terrain_id: int, enum_name: str) -> bool:
+    # DE retired ids the active game still uses (the 1999 game's snow 33/34): its own .dat code names them.
+    return enum_name.startswith("OBSOLETE_") and terrain_classes.terrain_family(terrain_id) not in ("obsolete", terrain_classes.UNKNOWN)
 
 
 def _data_mod_name(entry: dict, lang: str | None) -> str:

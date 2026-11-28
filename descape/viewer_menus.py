@@ -18,6 +18,8 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     __version__,
+    addon_menu,
+    addons,
     edge_ticks,
     facet_preview,
     grid_overlay,
@@ -26,12 +28,15 @@ from descape import (
     perf_trace,
     place_rotation,
     region_transform,
+    saved_views,
     scenario_convert,
     script_menu,
     settings,
     unit_pick,
     view_layers,
     viewer_canvas,
+    viewer_game_launch,
+    viewer_legacy_convert,
 )
 from descape.map_view import MapView
 from descape.mirror_dialog import MirrorDialog
@@ -42,6 +47,7 @@ from descape.settings_dialog import SettingsDialog
 from descape.terrain_style import TERRAIN_STYLES
 from descape.unit_filter import GAIA_PLAYER_ID, MAX_PLAYER_ID
 from descape.viewer_common import (
+    _ANALYSIS_TIP,
     _LEFT_PAGE_FOR_MODE,
     _LEFT_PAGE_INFO,
     _SCATTER_TIP,
@@ -120,6 +126,10 @@ class _ViewerMenusMixin:
         self.convert_version_action.setEnabled(False)  # re-gated, tooltip included, by _update_tool_enabled()
         self.convert_version_action.triggered.connect(lambda checked=False: self.convert_version())
         file_menu.addAction(self.convert_version_action)
+        self.convert_legacy_action = QAction(viewer_legacy_convert.ACTION_LABEL, self)  # GH #315
+        self.convert_legacy_action.setEnabled(False)  # re-gated, tooltip included, by _update_tool_enabled()
+        self.convert_legacy_action.triggered.connect(lambda checked=False: self.convert_legacy())
+        file_menu.addAction(self.convert_legacy_action)
         # Enabled unconditionally, unlike the save actions: recovery is most
         # needed when nothing is open.
         self.recover_autosave_action = QAction("Reco&ver from Autosave…", self)  # Open Recent owns R
@@ -176,6 +186,16 @@ class _ViewerMenusMixin:
         )
         self.clipboard_history_action.triggered.connect(self._show_clipboard_history)
         edit_menu.addAction(self.clipboard_history_action)
+        # TASK-269. Neither needs a map; Save is gated on an active entry by _update_clipboard_actions().
+        self.save_prefab_action = QAction("Save as Prefab…", self)
+        self.save_prefab_action.setToolTip("Save the active clipboard entry as a prefab, kept between sessions")
+        self.save_prefab_action.setEnabled(False)
+        self.save_prefab_action.triggered.connect(lambda checked=False: self._save_entry_as_prefab())
+        edit_menu.addAction(self.save_prefab_action)
+        self.prefabs_action = QAction("Prefa&bs…", self)
+        self.prefabs_action.setToolTip("Your saved prefabs; use one to make it the clipboard entry Paste uses")
+        self.prefabs_action.triggered.connect(self._show_prefabs)
+        edit_menu.addAction(self.prefabs_action)
         # GH #30's edit-history window. Ships unbound like the two dialog
         # openers either side of it; "Histor&y" because Clipboard History
         # above already owns H in this menu.
@@ -395,6 +415,32 @@ class _ViewerMenusMixin:
         self.zoom_native_action.triggered.connect(lambda checked=False: self._zoom_to_native())
         view_menu.addAction(self.zoom_native_action)
         view_menu.aboutToShow.connect(self._update_zoom_native_action)
+
+        # TASK-270. Every row is a command, which KeepOpenMenu never keeps open, so a Go closes it and shows the map.
+        saved_menu = KeepOpenMenu("Sa&ved Views", view_menu)
+        view_menu.addMenu(saved_menu)
+        saved_menu.menuAction().setToolTip("Keep nine places on this map, each with its zoom, and jump back to them")
+        self.saved_view_go_actions: dict[int, QAction] = {}
+        self.saved_view_save_actions: dict[int, QAction] = {}
+        save_menu = QMenu("&Save View", saved_menu)
+        save_menu.menuAction().setToolTip("Keep the place you are looking at, with its zoom, in one of nine slots")
+        for n in saved_views.SLOTS:
+            self.saved_view_go_actions[n] = go = QAction(f"Go to View {n}", self)
+            go.setToolTip(f"Return to view {n}'s place and zoom, in the Elevation View showing now")
+            go.triggered.connect(lambda checked=False, n=n: self._go_to_view(n))
+            saved_menu.addAction(go)
+            self.saved_view_save_actions[n] = save = QAction(f"Save View as {n}", self)
+            save.setToolTip(f"Keep this place and zoom as view {n}, in DEscape's settings, never in the scenario")
+            save.triggered.connect(lambda checked=False, n=n: self._save_view(n))
+            save_menu.addAction(save)
+        saved_menu.addSeparator()
+        saved_menu.addMenu(save_menu)
+        saved_menu.addSeparator()
+        self.clear_saved_views_action = QAction("Clear Saved Views", self)
+        self.clear_saved_views_action.setToolTip("Forget all nine of this map's saved views")
+        self.clear_saved_views_action.triggered.connect(lambda checked=False: self._clear_saved_views())
+        saved_menu.addAction(self.clear_saved_views_action)
+        saved_menu.aboutToShow.connect(self._label_saved_view_slots)
 
         # P3-g. Lives in View, not Filters, because it is not a filter: it
         # changes HOW units are drawn (real .sld sprites instead of coloured
@@ -799,13 +845,21 @@ class _ViewerMenusMixin:
         panels_menu.addAction(self.reset_layout_action)
 
         tools_menu = menu_bar.addMenu("&Tools")
+        tools_menu.setToolTipsVisible(True)  # a disabled item's tooltip says why it is off
+        self.launch_game_action = QAction(viewer_game_launch.ACTION_LABEL, self)
+        self.launch_game_action.setToolTip(viewer_game_launch.ACTION_TIP)
+        self.launch_game_action.setEnabled(False)  # re-gated by _update_tool_enabled()
+        self.launch_game_action.triggered.connect(self.launch_in_game)
+        tools_menu.addAction(self.launch_game_action)
+        tools_menu.addSeparator()
         self.analysis_action = QAction("Map &Analysis…", self)
-        self.analysis_action.setToolTip("Check the open map for common problems before you ship it. Changes nothing")
+        self.analysis_action.setToolTip(_ANALYSIS_TIP)
         self.analysis_action.setEnabled(False)  # re-gated by _update_tool_enabled()
         self.analysis_action.triggered.connect(self._show_analysis)
         tools_menu.addAction(self.analysis_action)
         tools_menu.addSeparator()
         script_menu.build(self, tools_menu)
+        addon_menu.build(self, tools_menu)
 
         help_menu = menu_bar.addMenu("&Help")
         # GH #160: the guide, web links, the debug tools, then About last (the platform convention).
@@ -840,7 +894,11 @@ class _ViewerMenusMixin:
             "filled in. Nothing is sent until you submit it there"
         )
         self.report_bug_action.triggered.connect(
-            lambda: self._open_help_url(help_guide.report_bug_url(__version__, *help_guide.environment_summary()))
+            lambda: self._open_help_url(
+                help_guide.report_bug_url(
+                    __version__, *help_guide.environment_summary(), addons.count_text(addons.last_report())
+                )
+            )
         )
         help_menu.addAction(self.report_bug_action)
         self.github_action = QAction("DEscape on Git&Hub", self)
@@ -1012,6 +1070,7 @@ class _ViewerMenusMixin:
             "file_save": self.save_action,
             "file_save_as": self.save_as_action,
             "file_convert": self.convert_version_action,
+            "file_convert_legacy": self.convert_legacy_action,
             "file_recover_autosave": self.recover_autosave_action,
             "file_exit": self.exit_action,
             "edit_undo": self.undo_action,
@@ -1026,6 +1085,8 @@ class _ViewerMenusMixin:
             "edit_select_all": self.select_all_action,
             "edit_deselect": self.deselect_action,
             "edit_clipboard_history": self.clipboard_history_action,
+            "edit_save_prefab": self.save_prefab_action,
+            "edit_prefabs": self.prefabs_action,
             "edit_history": self.history_action,
             "edit_scatter_units": self.scatter_action,
             "edit_find_replace": self.find_action,
@@ -1034,8 +1095,10 @@ class _ViewerMenusMixin:
             "map_mirror": self.mirror_action,
             "map_disables": self.disables_action,
             "map_swap_players": self.swap_players_action,
+            "launch_game": self.launch_game_action,
             "analysis_run": self.analysis_action,
             "script_open_folder": self.open_scripts_folder_action,
+            "addon_open_folder": self.open_addons_folder_action,
             "view_isometric": self.iso_action,
             "view_distance_ticks": self.distance_ticks_action,
             "view_zoom_native": self.zoom_native_action,
@@ -1069,6 +1132,9 @@ class _ViewerMenusMixin:
             "view_pan_down": self.view_pan_down_action,
             "view_pan_left": self.view_pan_left_action,
             "view_pan_right": self.view_pan_right_action,
+            **{f"savedview_go_{n}": action for n, action in self.saved_view_go_actions.items()},
+            **{f"savedview_save_{n}": action for n, action in self.saved_view_save_actions.items()},
+            "savedview_clear": self.clear_saved_views_action,
             "help_guide": self.help_guide_action,
             "help_keys": self.help_keys_action,
             "help_web_guide": self.web_guide_action,

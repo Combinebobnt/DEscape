@@ -19,12 +19,16 @@ TARGETS = (TERRAIN, LAYER, CLEAR)
 LAYER_STROKE_LABELS: dict[tuple[str, str], str] = {
     ("draw", LAYER): "Paint layer",
     ("draw", CLEAR): "Clear layer",
+    ("spray", LAYER): "Spray layer",
+    ("spray", CLEAR): "Clear layer (spray)",
     ("fill", LAYER): "Fill layer",
     ("fill", CLEAR): "Clear layer (fill)",
     ("draw_line", LAYER): "Draw layer line",
     ("draw_line", CLEAR): "Clear layer (line)",
     ("draw_rect", LAYER): "Draw layer rectangle",
     ("draw_rect", CLEAR): "Clear layer (rectangle)",
+    ("replace_brush", LAYER): "Replace layer",
+    ("replace_brush", CLEAR): "Clear layer (replace)",
 }
 
 

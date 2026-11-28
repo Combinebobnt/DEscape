@@ -26,6 +26,25 @@ content, link the doc instead of summarizing it.
 
 ### Added
 
+- **Tools > Launch in AoE2:DE** (GH #4): writes the open map, unsaved edits included, to
+  `DEscape_launch.aoe2scenario` in the game profile's scenario folder and starts the game through
+  Steam (Linux and Windows). A launch copy changed in-game is asked about before it is replaced.
+  The game's arguments are the `aoe2de_launch_args` setting; no default key.
+- **Age of Empires (1997) and Rise of Rome scenarios** (GH #312) open view-only, shown with
+  Return of Rome's data: the map, units, players and messages.
+- **File > Convert to .aoe2scenario…** (GH #315): makes an editable AoE2:DE scenario from an open
+  Age of Kings, The Conquerors or HD Edition one, following the game's own editor import as
+  measured on The Conquerors files. Triggers are not carried yet; the status log lists everything
+  left out. Also `batch_api.convert_legacy()`.
+- **Older scenarios' triggers** (GH #316): an Age of Kings, The Conquerors or HD Edition scenario
+  lists its triggers, conditions and effects read-only in Triggers mode, named as in the older games.
+
+- **Nine more Map Analysis checks** (GH #282), on unit ids, game data, garrisons, players and
+  triggers ([map tools guide](descape/help/map-tools.md)); a trigger finding opens its trigger.
+- **Opens a scenario saved by a newer game version** in a read-only
+  compatibility mode: the terrain, and the units and map settings when
+  their layout is unchanged. The status bar says what was read. When both
+  read cleanly, terrain and elevation can be edited and saved.
 - **File > Convert to Version 1.59…** (GH #307): upgrades an open 1.58
   scenario to the format the September 2026 game update saves, giving every
   unit a Capture Flag and every condition its new field at their defaults.
@@ -39,7 +58,11 @@ content, link the doc instead of summarizing it.
   `editor` object that keeps the editor's own rules, the whole run is one
   undo step, and an error or Cancel puts everything back. DEscape asks
   before running a new or changed script; `--no-addons` turns scripts off.
-  Help > DEscape Guide > Scripts has the details.
+  Help > DEscape Guide > Scripts and Addons has the details.
+- **Tools > Addons** (GH #320): an addon in your addons folder adds its
+  own commands to the menu, each run like a script (one undo step, rolled
+  back on an error). DEscape asks before loading a new or changed addon,
+  Help > Debug Log reports what loaded, and `--no-addons` skips them all.
 - **Settings > General > Trigger section headers** (GH #322): choose which
   name shapes head a section in the Triggers panel, and add header prefixes
   of your own such as `>>`. Only DEscape's view changes, not the file.
@@ -48,6 +71,27 @@ content, link the doc instead of summarizing it.
 - **File > Browse Game Scenarios…**: one filterable list of the scenarios in
   the game's profile and mod folders, disabled mods included, newest first,
   each row naming the profile or mod it comes from.
+- **View > Saved Views** (GH #299): keeps nine camera views per scenario
+  file, each a place on the map and its zoom, and Go to View returns to one
+  in whichever Elevation View is showing. The commands ship without keys;
+  bind them in Settings > Keybinds under Saved Views. Views are kept in
+  DEscape's settings, never in the scenario.
+- **Spray Can** in Terrain mode (GH #295): hold to spray a random scatter
+  of the picked terrain under the brush, denser the longer you hold, with
+  Flow and Hardness; follows Target, Trees and Eye candy.
+- **Replace Brush** in Terrain mode (GH #296): paints the picked terrain
+  only over tiles matching the one you press on, leaving every other tile
+  alone. Flood picks Global (every match under the brush) or Contiguous
+  (only the matching area connected to the press). It follows Target, the
+  brush, Trees and Eye candy like Draw.
+- **Clone Stamp** in Terrain mode (GH #285): Ctrl+click a tile to set the
+  source, then drag to paint copies of its terrain, layered terrain and
+  elevation at that offset, with the ground around the copy kept to legal
+  steps; Trees and Eye candy plant on cloned forest like Draw.
+- **Map prefabs**: Edit > Save as Prefab… keeps a copied region or units
+  between sessions, and Edit > Prefabs… lists them to paste into any map.
+  Each is a file in a `prefabs` folder beside the settings file, shared by
+  copying it.
 
 - **Inactive units draw faded** (GH #332): units whose Unit State is not
   Alive (Remove, Dead, Foundation and the rest) draw faded on the map and
@@ -58,10 +102,14 @@ content, link the doc instead of summarizing it.
   and a preview of the game's objectives box in the panel or on the map.
   (contributed by @teslatankx, #403)
 - **Older scenarios open view-only** (GH #308): Age of Kings and The
-  Conquerors `.scn`/`.scx` and some HD Edition `.scx` files show their map,
-  units, players and messages; triggers are not read and nothing can be
-  saved. Other HD Edition and UserPatch `.scx`/`.scx2` files aren't
-  supported yet.
+  Conquerors `.scn`/`.scx`, HD Edition `.scx` and UserPatch `.scx2` files
+  show their map, units, players and messages, and nothing can be saved.
+  The Conquerors files show their starting ages and
+  tree variety as AoE2:DE imports them.
+- **Older scenarios with their own game's data**: Settings > Advanced >
+  Game data takes an optional Age of Kings / The Conquerors install and an
+  optional HD Edition install. Set, those games' older-format scenarios show with
+  that game's own data instead of Age of Empires II's.
 - **Undockable panels** (GH #64): the side panel and the status log float
   as their own windows (say on a second monitor) and re-dock on either side,
   View > Panels shows or hides them and resets the layout, and the
@@ -132,13 +180,24 @@ content, link the doc instead of summarizing it.
   so it reads as sitting behind the hills.
 - **Turn a waterfall** (GH #330): Rotate and Cycle Variant turn WFALL and
   SWFALL through their facings.
+- **Minimap zoom** (GH #404): the minimap zooms in and out (wheel or
+  right-click menu), and its panel can be made much shorter.
 
 ### Changed
 
-- **1.58 triggers paste into a 1.59 scenario** (GH #307): triggers,
-  conditions and effects copied from a 1.58 scenario now paste into a 1.59
-  one, such as a map from File > New Map. The other way round is still
-  refused, and the refusal names File > Convert to Version 1.59.
+- **Sloped has its own elevation height** (GH #288): Settings >
+  Appearance's Isometric elevation height is now two sliders, Stepped
+  elevation height and Sloped elevation height, each with a Default button.
+  Sloped now starts at 100%, the game's own height; set its slider to your
+  Stepped height (50% by default) for the old look. Stepped is unchanged.
+- **Triggers paste between scenarios of different versions** (GH #307,
+  GH #317): triggers, conditions and effects copied from one AoE2:DE
+  scenario version paste into any other DEscape writes triggers for, older
+  or newer, such as a map from File > New Map. Paste is refused when a value
+  the copy sets would be lost there, an armour or attack value does not fit,
+  or a condition or effect does not exist there; its tooltip and the Status
+  Log say which, and name File > Convert to Version 1.59 when converting
+  would let it paste.
 - **Faster Colour Mood preview**: with View > Layers > Colour Mood on, a
   Desert, Jungle, Winter or Autumn map repaints at about the cost of the row
   off.
@@ -222,8 +281,13 @@ content, link the doc instead of summarizing it.
   Taxiarchs, instead of placeholder or internal names.
 - **Antiquity players' own unit names** (GH #148): a player of an antiquity
   civilization sees its own names for shared units, such as Bowman for
-  Archer, in the Units catalog, on the placing and Inspector cards and in the
-  command button preview.
+  Archer, in the Units catalog, the Favorite Objects window, on the placing
+  and Inspector cards and in the command button preview.
+- **Data mod warning counts**: a data mod whose checks affect no object no
+  longer reports "1 object" shown simplified in the status log.
+- **Closing during a data mod parse**: closing DEscape just after picking
+  another data mod, while the first one's parse was still ending, no longer
+  crashes.
 - **Typing in a text box survives the menu bar**: closing a menu with
   Escape, or opening one with Alt, no longer applies the text still being
   typed in a Messages or trigger text box; it applies when you leave the box

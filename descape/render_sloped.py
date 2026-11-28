@@ -10,7 +10,7 @@ import numpy as np
 from descape import (
     composite_backend,
     iso_geometry,
-    settings,
+    render_paint,
     terrain_blend,
 )
 from descape.grid_overlay import DEFAULT_GRID, GridBake
@@ -761,7 +761,7 @@ def _unit_rise_headroom_px(
 
 
 def sloped_elevations_and_proj(
-    scenario: LoadedScenario,
+    scenario: LoadedScenario, elev_step_pct: int | None = None
 ) -> tuple[np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """(elevations, corner_rise, proj) only -- no tile_grid, no
     compositing -- Sloped's counterpart to elevations_and_proj(), the cheap
@@ -770,7 +770,8 @@ def sloped_elevations_and_proj(
 
     corner_headroom_steps=1 (see IsoProjection.corner_headroom_px's own
     comment) -- Stepped/Flat's elevations_and_proj()/canvas_size_and_origin
-    calls leave this at its 0 default."""
+    calls leave this at its 0 default. elev_step_pct None means Sloped's own
+    setting (render_paint.elev_step_pct_for()); an int overrides it."""
     w, h, tile_px, elevations = _dims_and_elevations(scenario)
     proj = iso_geometry.canvas_size_and_origin(
         w,
@@ -778,7 +779,7 @@ def sloped_elevations_and_proj(
         tile_px,
         iso_geometry.MIN_ELEVATION,
         iso_geometry.MAX_ELEVATION,
-        elev_step_pct=settings.get_elev_step_pct(),
+        elev_step_pct=render_paint.elev_step_pct_for("sloped") if elev_step_pct is None else elev_step_pct,
         corner_headroom_steps=1,
     )
     corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=SLOPE_CORNER_RULE)
@@ -791,6 +792,7 @@ def render_terrain_sloped_with_proj(
     with_sprites: bool = False,
     grid: GridBake = DEFAULT_GRID,
     blend: bool = True,
+    elev_step_pct: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_sloped()'s real body, additionally returning the
     (h, w) elevations array, the (h+1, w+1) corner_rise array, and the
@@ -802,9 +804,12 @@ def render_terrain_sloped_with_proj(
     Canvas allocation intentionally matches render_terrain_iso_with_proj()'s
     OWN formula exactly (same skirt_headroom padding, even though Sloped
     paints no skirts) rather than a tighter Sloped-specific bound: keeping
-    the two canvases the SAME shape for the same map is what makes a
-    flat-map render_terrain_sloped output comparable to render_terrain_iso's
-    at all -- see tests/test_sloped_render.py's byte-identity oracle.
+    the two canvases the SAME shape for the same map at the same
+    elev_step_pct is what makes a flat-map render_terrain_sloped output
+    comparable to render_terrain_iso's at all -- see
+    tests/test_sloped_render.py's byte-identity oracle, which passes one
+    explicit elev_step_pct to both since each style has its own setting
+    (GH #288). elev_step_pct None means Sloped's own setting.
 
     with_sprites (Track P3-g6): same "defaults False so this stays byte-
     identical to what it has always rendered" reasoning as
@@ -819,14 +824,10 @@ def render_terrain_sloped_with_proj(
     tile_px = tile_pixels_for_map(w, h)
     tile_grid, elevations = _terrain_grid_and_elevations(scenario)
     min_elev, max_elev = iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
+    if elev_step_pct is None:
+        elev_step_pct = render_paint.elev_step_pct_for("sloped")
     proj = iso_geometry.canvas_size_and_origin(
-        w,
-        h,
-        tile_px,
-        min_elev,
-        max_elev,
-        elev_step_pct=settings.get_elev_step_pct(),
-        corner_headroom_steps=1,
+        w, h, tile_px, min_elev, max_elev, elev_step_pct=elev_step_pct, corner_headroom_steps=1
     )
     corner_rise = iso_geometry.corner_rise_px(elevations, proj, rule=SLOPE_CORNER_RULE)
     fold = iso_geometry.tile_folds(elevations)
@@ -852,7 +853,11 @@ def render_terrain_sloped_with_proj(
 
 
 def render_terrain_sloped(
-    scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID, blend: bool = True
+    scenario: LoadedScenario,
+    with_units: bool = True,
+    grid: GridBake = DEFAULT_GRID,
+    blend: bool = True,
+    elev_step_pct: int | None = None,
 ) -> np.ndarray:
     """Sloped mode's top-level renderer -- the Phase 6 counterpart to
     render_terrain_iso(). Thin wrapper around
@@ -860,7 +865,7 @@ def render_terrain_sloped(
     pixels (render_scenario(), tools/dump_scenario.py,
     tools/gen_elevation_reference.py's own reference renders)."""
     img, _elevations, _corner_rise, _proj = render_terrain_sloped_with_proj(
-        scenario, with_units=with_units, grid=grid, blend=blend
+        scenario, with_units=with_units, grid=grid, blend=blend, elev_step_pct=elev_step_pct
     )
     return img
 

@@ -32,7 +32,7 @@ from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import QAction, QApplication, QMenu, QMessageBox, QProgressDialog
 
-from descape import debug_log, scripting, settings
+from descape import debug_log, legacy_write, scripting, settings
 
 # How much of a run's printed output Help > Debug Log keeps: the last this many characters.
 OUTPUT_LOG_LIMIT = 8000
@@ -118,7 +118,9 @@ def refusal(window) -> str | None:
         return off
     if window.scenario is None:
         return "open a scenario first"
-    reason = window.game_data_lock_reason()
+    # A pre-DE document runs code once its band saves any family back; the run checks what it wrote (TASK-520).
+    family = legacy_write.ANY if window._file_is_legacy() else None
+    reason = window.game_data_lock_reason(family)
     if reason is not None:
         return reason
     if window._busy:

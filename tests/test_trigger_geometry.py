@@ -30,7 +30,7 @@ def _shapes(entry, definition):
 
 
 def _every_shipped_version() -> list[str]:
-    return library_compat.vocabulary_versions()
+    return conftest.every_vocabulary_version()
 
 
 def test_every_shipped_version_lists_only_whole_coordinate_groups() -> None:

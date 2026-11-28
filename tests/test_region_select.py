@@ -528,6 +528,7 @@ def test_the_fill_is_the_ring(style: str) -> None:
         conftest.close_window(window)
 
 
+@pytest.mark.usefixtures("one_elev_step")
 @pytest.mark.parametrize(
     ("style", "raised_column"), [("Stepped", None), ("Sloped", None), ("Stepped", (25, 21, 27))]
 )

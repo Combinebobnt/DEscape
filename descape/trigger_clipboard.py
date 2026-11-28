@@ -36,13 +36,14 @@ Display order is the caller's job: import_triggers() flattens it, so the
 caller captures it first and repairs it through the setter afterwards (see
 trigger_model.display_order_with_block_inserted()).
 
-Pasting into another document (GH #3): copy in A, open B, paste. The caller
-gates this on an equal scenario_version, or one pair scenario_convert's step
-table covers (GH #307): a 1.58 block into a 1.59 scenario, each pasted
-condition taking the destination's default for the field 1.59 added. A block
-remembers the document it came from, and a paste whose doc_id differs, or that
-crosses versions, applies a policy per field class, keyed on the version
-vocabulary's presentation rather than on attribute names:
+Pasting into another document (GH #3): copy in A, open B, paste. A block of
+another scenario version (GH #317) pastes under trigger_version_compat's four
+rules: every condition and effect type exists in both versions, no value the
+block sets is lost, attributes B adds take B's defaults, and armour/attack
+values fit B's packing. Anything else refuses the whole block before the
+import. A block remembers the document it came from, and a paste whose doc_id
+differs, or that crosses versions, applies a policy per field class, keyed on
+the destination vocabulary's presentation rather than on attribute names:
 
 - trigger links (TriggerId): relinked inside the block, -1 outside it, as above;
 - placed units (Unit, Unit[]): cleared to the type's default, as the in-game
@@ -71,8 +72,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
+from AoE2ScenarioParser.scenarios.scenario_store import getters
 
-from . import game_dataset, library_compat, scenario_convert, trigger_fields, trigger_organize
+from . import game_dataset, library_compat, trigger_fields, trigger_organize, trigger_version_compat
 from .trigger_model import entry_display_order, entry_order_after_insert, set_entry_order
 
 COPY_SUFFIX = trigger_organize.COPY_SUFFIX
@@ -187,17 +189,35 @@ def entry_fields(vocabulary: Any, conditions: Sequence, effects: Sequence):
                 yield EntryField(kind, index, entry, definition, presentation_map, spec, defaults.get(spec.name))
 
 
+def _by_newest_vocabulary(scenario_version: str, conditions: Sequence, effects: Sequence):
+    """(vocabulary, conditions, effects) groups, each entry under the newest
+    vocabulary that has its type (GH #317): an old one presents a variable
+    field as a plain number. A pre-DE block keeps its own vocabulary."""
+    own = _vocabulary(scenario_version)
+    if scenario_version.startswith(library_compat.LEGACY_VOCABULARY_PREFIX):
+        yield own, conditions, effects
+        return
+    newest = [library_compat.load_vocabulary(v) for v in reversed(library_compat.vocabulary_versions())]
+    groups: dict[str, tuple[Any, list, list]] = {}
+    for slot, entries, type_attribute, kind in ((1, conditions, "condition_type", "conditions"), (2, effects, "effect_type", "effects")):
+        for entry in entries:
+            type_id = getattr(entry, type_attribute, None)
+            vocabulary = next((v for v in newest if type_id in getattr(v, kind)), own)
+            groups.setdefault(vocabulary.scenario_version, (vocabulary, [], []))[slot].append(entry)
+    yield from groups.values()
+
+
 def _variable_names(manager: Any, groups: Sequence, scenario_version: str) -> tuple:
     """`groups` is ((conditions, effects), ...)."""
-    vocabulary = _vocabulary(scenario_version)
-    if vocabulary is None:
+    if _vocabulary(scenario_version) is None:
         return ()
     referenced = set()
     for conditions, effects in groups:
-        for entry, attribute, _default in reference_fields(vocabulary, conditions, effects, VARIABLE_PRESENTATIONS):
-            value = _read(entry, attribute)
-            if isinstance(value, int):
-                referenced.add(int(value))
+        for vocabulary, picked_conditions, picked_effects in _by_newest_vocabulary(scenario_version, conditions, effects):
+            for entry, attribute, _default in reference_fields(vocabulary, picked_conditions, picked_effects, VARIABLE_PRESENTATIONS):
+                value = _read(entry, attribute)
+                if isinstance(value, int):
+                    referenced.add(int(value))
     return tuple(
         sorted((v.variable_id, v.name) for v in manager.variables if v.variable_id in referenced and v.name)
     )
@@ -205,14 +225,20 @@ def _variable_names(manager: Any, groups: Sequence, scenario_version: str) -> tu
 
 def _cross_document_fixups(manager: Any, groups: Sequence, scenario_version: str, variable_names: tuple):
     """GH #3's policy over pasted (conditions, effects) groups: placed-unit
-    references cleared, variable names carried. (cleared, named, conflicts)."""
+    references cleared, variable names carried. (cleared, named, conflicts).
+    `scenario_version` is the destination's. Which fields are units comes from
+    the newest vocabulary with the entry's type, since 1.36-1.43 give a
+    condition's unit_object no Unit presentation (GH #317); only fields the
+    destination's type lists are cleared."""
     cleared_units = 0
     vocabulary = _vocabulary(scenario_version)
     for conditions, effects in groups if vocabulary is not None else ():
-        for entry, attribute, default in reference_fields(vocabulary, conditions, effects, UNIT_PRESENTATIONS):
-            if default is not None and _read(entry, attribute) != default:
-                setattr(entry, attribute, copy.deepcopy(default))
-                cleared_units += 1
+        listed = {(id(f.entry), f.spec.attribute) for f in entry_fields(vocabulary, conditions, effects)}
+        for newest, picked_conditions, picked_effects in _by_newest_vocabulary(scenario_version, conditions, effects):
+            for entry, attribute, default in reference_fields(newest, picked_conditions, picked_effects, UNIT_PRESENTATIONS):
+                if (id(entry), attribute) in listed and default is not None and _read(entry, attribute) != default:
+                    setattr(entry, attribute, copy.deepcopy(default))
+                    cleared_units += 1
     named = conflicts = 0
     existing = {v.variable_id: v for v in manager.variables}
     for variable_id, name in variable_names:
@@ -289,23 +315,33 @@ def _relink_inbound(manager: Any, block: TriggerBlock, before_len: int) -> tuple
     return relinked, skipped
 
 
-def _upgrade_fields(block: TriggerBlock | EntryBlock, scenario_version: str) -> dict[str, Any]:
-    """The condition fields, with the destination's defaults, a block of another version needs
-    in a `scenario_version` document. Raises, before anything is pasted, for a pair no step covers."""
-    if not scenario_version or scenario_version == block.scenario_version:
-        return {}
-    fields = scenario_convert.paste_upgrade_fields(block.scenario_version, scenario_version)
-    if fields is None:
-        raise ValueError(f"A block copied from a {block.scenario_version} scenario does not paste into a {scenario_version} one.")
-    defaults = library_compat.load_vocabulary(scenario_version).conditions[0].default_attributes
-    return {name: defaults[name] for name in fields}
+def legacy_paste_refusal(block_version: str, here: str) -> str:
+    """Why a block copied from a pre-DE document can't paste into `here`, or ""."""
+    legacy = library_compat.LEGACY_VOCABULARY_PREFIX
+    if here.startswith(legacy):
+        return "" if here == block_version else "This older-format (.scn/.scx) scenario is read-only."
+    if block_version.startswith(legacy):
+        return "Copied from an older-format (.scn/.scx) scenario, whose triggers can't be pasted into an AoE2:DE one."
+    return ""
 
 
-def _upgrade(conditions: Sequence, fields: dict[str, Any]) -> None:
-    # Overwritten, never filled when missing: a 1.58 condition can carry None for a field 1.58 lacks.
-    for condition in conditions:
-        for name, value in fields.items():
-            setattr(condition, name, value)
+def manager_trigger_version(manager: Any) -> float | None:
+    """The Triggers section version of `manager`'s scenario, for rule 4 of trigger_version_compat."""
+    try:
+        return getters.get_trigger_version(manager._uuid)
+    except Exception:  # noqa: BLE001 -- a manager detached from its scenario
+        return None
+
+
+def _paste_plan(manager: Any, block: TriggerBlock | EntryBlock, scenario_version: str) -> trigger_version_compat.PastePlan:
+    """The cross-version plan for `block` in a `scenario_version` document.
+    Raises, before anything is pasted, for a block the rules refuse."""
+    if (reason := legacy_paste_refusal(block.scenario_version, scenario_version)):
+        raise ValueError(reason)
+    plan = trigger_version_compat.plan_paste(block, scenario_version, trigger_version=manager_trigger_version(manager))
+    if plan.reasons:
+        raise ValueError(plan.refusal)
+    return plan
 
 
 def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "", scenario_version: str = "") -> PasteResult:
@@ -318,9 +354,9 @@ def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "", scenario_
     source applies the cross-document policy in the module docstring, as does a
     destination `scenario_version` other than the block's.
     """
-    fields = _upgrade_fields(block, scenario_version)
+    plan = _paste_plan(manager, block, scenario_version)
     before_len = len(manager.triggers)
-    with warnings.catch_warnings():
+    with warnings.catch_warnings(), trigger_version_compat.stripped(plan, trigger_version_compat.block_objects(block)):
         # Fires once per outside reference, exactly the case the relink below
         # repairs.
         warnings.simplefilter("ignore")
@@ -347,14 +383,14 @@ def paste_into(manager: Any, block: TriggerBlock, *, doc_id: str = "", scenario_
     for trigger in pasted if not block.from_cut else ():
         trigger.name = trigger_organize.copied_name(trigger.name or "")
 
-    _upgrade([c for t in pasted for c in t.conditions], fields)
-    if block.source_doc_id == doc_id and not fields:
+    trigger_version_compat.apply(plan, pasted, [c for t in pasted for c in t.conditions], [e for t in pasted for e in t.effects])
+    if block.source_doc_id == doc_id and not plan.crosses:
         relinked, skipped = _relink_inbound(manager, block, before_len)
         return PasteResult(
             pasted, cleared_trigger_links=cleared_links, relinked_inbound=relinked, skipped_inbound=skipped
         )
     cleared_units, named, conflicts = _cross_document_fixups(
-        manager, [(t.conditions, t.effects) for t in pasted], block.scenario_version, block.variable_names
+        manager, [(t.conditions, t.effects) for t in pasted], scenario_version or block.scenario_version, block.variable_names
     )
     return PasteResult(pasted, True, cleared_links, cleared_units, named, conflicts)
 
@@ -442,10 +478,10 @@ def paste_entries(
     anchor's display slot, so the paste shows below the clicked row. The
     library's own heal would list a mid-list insert last and reorder the rest.
     A destination `scenario_version` is handled as paste_into()'s."""
-    fields = _upgrade_fields(block, scenario_version)
+    plan = _paste_plan(manager, block, scenario_version)
     trigger = manager.triggers[trigger_index]
     position = {id(t): index for index, t in enumerate(manager.triggers)}
-    cross = block.source_doc_id != doc_id or bool(fields)
+    cross = block.source_doc_id != doc_id or plan.crosses
     pasted: dict = {"condition": [], "effect": []}
     refs = []
     for kind, source, entries in (
@@ -460,7 +496,8 @@ def paste_entries(
         at = anchor[1] + 1 if anchored else len(entries)
         slot = order.index(anchor[1]) + 1 if anchored else len(order)
         for offset, entry in enumerate(source):
-            entries.insert(at + offset, copy.deepcopy(entry))
+            with trigger_version_compat.stripped(plan, [entry]):
+                entries.insert(at + offset, copy.deepcopy(entry))
             pasted[kind].append(entries[at + offset])
             refs.append((kind, at + offset))
         set_entry_order(trigger, kind, entry_order_after_insert(order, at, len(source), slot))
@@ -469,11 +506,11 @@ def paste_entries(
         index = None if cross else position.get(id(target))
         pasted[kind][pos].trigger_id = -1 if index is None else index
         cleared_links += index is None
-    _upgrade(pasted["condition"], fields)
+    trigger_version_compat.apply(plan, (), pasted["condition"], pasted["effect"])
     if not cross:
         return EntryPasteResult(refs, cleared_trigger_links=cleared_links)
     cleared_units, named, conflicts = _cross_document_fixups(
-        manager, [(pasted["condition"], pasted["effect"])], block.scenario_version, block.variable_names
+        manager, [(pasted["condition"], pasted["effect"])], scenario_version or block.scenario_version, block.variable_names
     )
     return EntryPasteResult(refs, True, cleared_links, cleared_units, named, conflicts)
 

@@ -105,7 +105,8 @@ FIELDS: tuple[UnitFieldSpec, ...] = (
     ),
     UnitFieldSpec("status", "Unit State", CHOICE, editable=True, choices=UNIT_STATE_CHOICES),
     UnitFieldSpec("reference_id", "Reference ID", TEXT, editable=False),
-    UnitFieldSpec("garrisoned_in_id", "Garrisoned in", TEXT, editable=False),
+    # Age of Empires (1997) files store no garrison: TASK-515.
+    UnitFieldSpec("garrisoned_in_id", "Garrisoned in", TEXT, editable=False, requires_codec_field="garrisoned_in_id"),
 )
 
 FIELDS_BY_ID: dict[str, UnitFieldSpec] = {spec.field_id: spec for spec in FIELDS}

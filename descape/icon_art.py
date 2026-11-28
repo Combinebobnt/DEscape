@@ -188,6 +188,7 @@ _UNDO_ARC = (
 )
 _PAGE = (5, 2, 14, 2, 19, 7, 19, 22, 5, 22)
 _PAGE_FOLD = (14, 2, 19, 7, 14, 7)
+_BOOKMARK = (3, 2, 13, 2, 13, 21, 8, 16.5, 3, 21)
 # The dashed selection frame shared by Select All, Deselect and Scatter.
 _FRAME_DASHES = (
     (3, 4, 6.5, 4), (9.5, 4, 14.5, 4), (17.5, 4, 21, 4),
@@ -231,6 +232,20 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("line", GREY, (14, 8.5, 12, 10.5, 4.2)),
         ("poly", Role.INK, (13.2, 11.3, 11.2, 9.3, 8, 15)),
     ),
+    # A spray can, its nozzle puffing a cloud of terrain dots.
+    "tool-spray": (
+        ("rect", GREY, (12, 9, 9, 13)),
+        ("ellipse", GREY, (12, 6.5, 9, 5)),
+        ("rect", GREEN, (12, 13.5, 9, 3.5)),
+        ("rect", Role.INK, (15, 3.5, 3.5, 4)),
+        ("rect", Role.INK, (12.5, 4.2, 3, 1.8)),
+        ("ellipse", GREEN, (1.5, 1.5, 2.6, 2.6)),
+        ("ellipse", GREEN, (6.5, 2.5, 2.6, 2.6)),
+        ("ellipse", GREEN, (2.5, 6.5, 2.6, 2.6)),
+        ("ellipse", GREEN, (7.5, 7, 2.2, 2.2)),
+        ("ellipse", GREEN, (2, 11.5, 2.2, 2.2)),
+        ("ellipse", GREEN, (6, 11, 2, 2)),
+    ),
     # A paint bucket, painted back to front so the paint runs out of it.
     "tool-fill": (
         ("ellipse", GREEN, (3, 18.3, 18, 4.4)),
@@ -271,6 +286,23 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("rect", Role.INK, (3, 6.6, 1.6, 10.8)),
         ("rect", Role.INK, (19.4, 6.6, 1.6, 10.8)),
         ("ellipse", BLUE, (17, 15.5, 6, 6)),
+    ),
+    # A rubber stamp over the tile it just printed.
+    "tool-clone": (
+        ("poly", GREEN, (12, 17.5, 21.5, 20.5, 12, 23.5, 2.5, 20.5)),
+        ("ellipse", TAN, (8.5, 1, 7, 5.5)),
+        ("rect", TAN, (10.5, 5.5, 3, 4.5)),
+        ("rect", GREY, (5, 10, 14, 4.5)),
+        ("rect", Role.INK, (4, 14.5, 16, 2.5)),
+    ),
+    # Draw's brush over a tile split between two terrains: one replaced by the other.
+    "tool-replace_brush": (
+        ("poly", TAN, (12, 13, 12, 22, 2.5, 17.5)),
+        ("poly", GREEN, (12, 13, 21.5, 17.5, 12, 22)),
+        ("line", Role.INK, (12, 13, 12, 22, 1.2)),
+        ("line", TAN, (20.5, 2, 14, 8.5, 3.0)),
+        ("line", GREY, (14, 8.5, 12, 10.5, 4.2)),
+        ("poly", Role.INK, (13.2, 11.3, 11.2, 9.3, 8, 15)),
     ),
     # A grassy ridge over a jagged rock face.
     "tool-cliff": (
@@ -460,6 +492,21 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("rect", GREY, (5.5, 4.5, 7, 4)),
         ("rect", Role.INK_SOFT, (5, 11, 8, 8.5)),
     ),
+    # A clipboard with a pin through it.
+    "edit-save-prefab": (
+        ("rect", TAN, (3, 4, 14, 18.5)),
+        ("rect", GREY, (6, 2, 8, 4.5)),
+        ("rect", Role.INK_SOFT, (6, 9, 8, 10)),
+        ("line", Role.INK, (15, 14, 21.5, 20.5, 2.0)),
+        ("ellipse", RED, (11.5, 8.5, 7.5, 7.5)),
+    ),
+    # A drawer with sheets standing in it.
+    "edit-prefabs": (
+        ("rect", Role.INK_SOFT, (5, 2.5, 9, 11)),
+        ("rect", Role.INK, (10, 4.5, 9, 9)),
+        ("rect", TAN, (2, 11, 20, 11)),
+        ("line", Role.INK, (9, 16.5, 15, 16.5, 2.0)),
+    ),
     # A clock with a backward arrow.
     "edit-history": (
         ("ring", Role.INK, (3.5, 3.5, 17, 17, 2.0)),
@@ -622,6 +669,11 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         *_figure(BLUE, 2, 11.6, 0.68),
         *_figure(RED, 15, 11.6, 0.68),
     ),
+    # Tools > Launch in AoE2:DE (GH #4): a map tile and a play triangle.
+    "launch-game": (
+        ("poly", GREEN, (8, 2, 15, 6, 8, 10, 1, 6)),
+        ("poly", Role.INK, (9, 10, 22, 16.5, 9, 23)),
+    ),
     # A map tile under a magnifier.
     "map-analysis": (
         ("poly", GREEN, (10, 2, 19, 7, 10, 12, 1, 7)),
@@ -646,6 +698,22 @@ ICON_SHAPES: dict[str, tuple[Shape, ...]] = {
         ("rect", Role.INK, (20.2, 4.8, 1.8, 14.4)),
         ("rect", BLUE, (5, 6.5, 5, 11)),
         ("rect", Role.INK_SOFT, (11.5, 14.5, 7.5, 3)),
+    ),
+    # View > Saved Views (TASK-270): a bookmark, and an arrow to it, a plus or a cross.
+    "view-saved-go": (
+        ("poly", BLUE, _BOOKMARK),
+        ("line", Role.INK, (12.5, 12, 19, 12, 2.4)),
+        ("poly", Role.INK, (17, 7.5, 22.5, 12, 17, 16.5)),
+    ),
+    "view-saved-save": (
+        ("poly", BLUE, _BOOKMARK),
+        ("line", Role.INK, (18, 8, 18, 18, 2.4)),
+        ("line", Role.INK, (13, 13, 23, 13, 2.4)),
+    ),
+    "view-saved-clear": (
+        ("poly", Role.INK_SOFT, _BOOKMARK),
+        ("line", RED, (13.5, 13.5, 21, 21, 2.4)),
+        ("line", RED, (21, 13.5, 13.5, 21, 2.4)),
     ),
     # --- Help ---
     "help-about": (

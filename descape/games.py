@@ -25,8 +25,17 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 
 # The values of Game.reader, Game.art and Game.install that have code behind them.
 IMPLEMENTED_READERS = frozenset({"aoe2scenarioparser"})
-IMPLEMENTED_ART = frozenset({"sld"})
+IMPLEMENTED_ART = frozenset({"sld", "slp"})
 AOE2DE_INSTALL = "aoe2de"
+# The 1999 game's own install (Age of Kings / The Conquerors), set apart from the AoE2:DE one.
+AOC_INSTALL = "aoc_install"
+# Age of Empires II: HD Edition's own install (TASK-431).
+HD_INSTALL = "hd_install"
+IMPLEMENTED_INSTALLS = frozenset({AOE2DE_INSTALL, AOC_INSTALL, HD_INSTALL})
+# The 1997 game's own install (Age of Empires with Rise of Rome); not implemented until AOE1 is registered.
+AOE1_INSTALL = "aoe1_install"
+# A DE game's .dat under its root.
+DE_DAT_SUBPATH = "resources/_common/dat/empires2_x2_p1.dat"
 
 
 @dataclass(frozen=True)
@@ -40,7 +49,7 @@ class Game:
     tables_dir: Path
     # Appended to the window title for this game's files.
     title_tag: str | None = None
-    # Which configured install holds the game. Only AOE2DE_INSTALL resolves to a path so far.
+    # Which configured install holds the game, one of IMPLEMENTED_INSTALLS.
     install: str = AOE2DE_INSTALL
     # The game's own root under the install, mirroring the install's layout; None is the install itself.
     root_subpath: str | None = None
@@ -62,9 +71,21 @@ class Game:
     blank_template: str | None = None
     # False makes every document of this game view-only.
     writable: bool = True
-    # The scenario reader and the art format, one implemented value each so far.
+    # The scenario reader and the art format: IMPLEMENTED_READERS, IMPLEMENTED_ART.
     reader: str = "aoe2scenarioparser"
     art: str = "sld"
+    # The scenario_format labels (ScenarioFormat.game) that are this game's, checked before `variants`.
+    formats: frozenset[str] = frozenset()
+    # The game whose data shows this game's files while its own install is not configured.
+    stand_in: str | None = None
+    # Strings files are read from whichever language folder the root has, not only DEscape's own.
+    strings_any_language: bool = False
+    # The .dat, relative to the generators' root for this game, tried in order.
+    dat_subpaths: tuple[str, ...] = (DE_DAT_SUBPATH,)
+    # Runtime reads a folder built from the install (mirroring DE's layout), not the install itself.
+    derived_root: bool = False
+    # scenario_format labels no game claims whose files this game's data shows only when picked by hand.
+    hand_pick_formats: frozenset[str] = frozenset()
 
     def root(self, install: Path) -> Path:
         """The folder holding this game's own resources/ tree under `install`."""
@@ -88,6 +109,8 @@ ROR = Game(
     fallback="aoe2",
     # ScenarioVariant.ROR, the file header's unknown_value_2.
     variants=frozenset({2}),
+    # scenario_format.AOE1: Age of Empires (1997) and Rise of Rome files, shown with this game's data.
+    formats=frozenset({"aoe1-1.15"}),
     stamp_key="ror",
     strings_files=("key-value-pompeii-strings-utf8.txt",),
     icon_materials="morematerials.json",
@@ -95,9 +118,70 @@ ROR = Game(
     data_mods=False,
     blank_template="blank_ror_120x120.aoe2scenario",
 )
+# The 1999 game: Age of Kings files too, whose consts and civs The Conquerors kept. View-only.
+AOC = Game(
+    id="aoc",
+    display_name="Age of Kings / The Conquerors",
+    tables_dir=_PACKAGE_DIR / "aoc",
+    title_tag=" [The Conquerors]",
+    install=AOC_INSTALL,
+    variants=frozenset(),
+    stamp_key="aoc",
+    library_enums=False,
+    data_mods=False,
+    writable=False,
+    art="slp",
+    # scenario_format.AOK, AOC and UP; games.py imports nothing from descape, tests/test_games.py pins them.
+    formats=frozenset({"scn-aok", "scn-aoc", "scn-up"}),
+    stand_in="aoe2",
+    strings_any_language=True,
+    dat_subpaths=("Data/empires2_x1_p1.dat", "Data/empires2_x1.dat"),
+    derived_root=True,
+)
+# The 1997 game with Rise of Rome. Unregistered: registering it needs its install kind and every PerGame entry.
+AOE1 = Game(
+    id="aoe1",
+    display_name="Age of Empires (Rise of Rome)",
+    tables_dir=_PACKAGE_DIR / "aoe1",
+    title_tag=" [Age of Empires]",
+    install=AOE1_INSTALL,
+    variants=frozenset(),
+    stamp_key="aoe1",
+    library_enums=False,
+    data_mods=False,
+    writable=False,
+    art="slp",
+    # Its 1.15 files stay Return of Rome's (ROR.formats) until its art draws.
+    stand_in="ror",
+    strings_any_language=True,
+    dat_subpaths=("data2/empires.dat",),
+    derived_root=True,
+)
+# Age of Empires II: HD Edition (TASK-431). View-only. Its header-2 bands only; its header-3 .aoe2scenario
+# stays AoE2:DE's (no game claims it), and this game's data shows one only by a hand pick in Settings.
+HD = Game(
+    id="hd",
+    display_name="Age of Empires II: HD Edition",
+    tables_dir=_PACKAGE_DIR / "hd",
+    title_tag=" [HD Edition]",
+    install=HD_INSTALL,
+    variants=frozenset(),
+    stamp_key="hd",
+    library_enums=False,
+    data_mods=False,
+    writable=False,
+    art="slp",
+    # scenario_format.HD: data versions 1.21, 1.24 and 1.26.
+    formats=frozenset({"scn-hd"}),
+    stand_in="aoe2",
+    strings_any_language=True,
+    derived_root=True,
+    # scenario_format.HD_DE.
+    hand_pick_formats=frozenset({"hd-aoe2scenario"}),
+)
 
 # Registry order is the Settings and New Map order.
-GAMES: list[Game] = [AOE2, ROR]
+GAMES: list[Game] = [AOE2, ROR, AOC, HD]
 # The game of every file no other game's `variants` claims.
 DEFAULT_ID = "aoe2"
 
@@ -131,10 +215,23 @@ def for_variant(variant) -> Game:
     return default()
 
 
+def for_format(label: str | None) -> Game | None:
+    """The game claiming a scenario_format label through Game.formats, or None."""
+    if label is not None:
+        for game in GAMES:
+            if label in game.formats:
+                return game
+    return None
+
+
 def for_scenario(loaded) -> Game:
-    """A loaded scenario's own game, whatever game data is active. A
-    duck-typed scenario without game_variant is the default game's."""
-    return for_variant(getattr(loaded, "game_variant", None))
+    """A loaded scenario's own game, whatever game data is active: the one
+    claiming its format, else its header variant's. A duck-typed scenario
+    without either is the default game's. Which data shows it is
+    game_dataset.file_game()."""
+    fmt = getattr(loaded, "source_format", None)
+    claimed = for_format(getattr(fmt, "game", None))
+    return claimed if claimed is not None else for_variant(getattr(loaded, "game_variant", None))
 
 
 def chain(game: Game) -> tuple[Game, ...]:

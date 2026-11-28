@@ -388,7 +388,7 @@ def _get_palettes() -> _Palettes:
 
     with _lock:
         if _palettes is None:
-            install = asset_source.get_install_path()
+            install = asset_source.get_de_install_path()
             folder = None if install is None else content_roots.child_dir(install, *PALETTE_PARTS)
             _palettes = _Palettes(folder)
         return _palettes

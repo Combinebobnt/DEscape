@@ -114,6 +114,11 @@ ELEV_STEP_DIVISOR = 2
 # is just where the dial starts, not a ceiling.
 ELEV_STEP_DEFAULT_PCT = 100 // ELEV_STEP_DIVISOR
 
+# Sloped's own default, its own setting since GH #288: DE's on-screen step measured
+# at half_h per level (C6, 2026-08-23). Sloped picks through an ID plane, so
+# Stepped's occlusion limit above does not bind it.
+SLOPED_ELEV_STEP_DEFAULT_PCT = 100
+
 # The real legal elevation range -- 0..15, DE's own editor authoring ceiling
 # (the scenario format stores elevation as a u8, so a generator-made file
 # could in principle exceed 15, but no editor-authored file ever will).
@@ -234,8 +239,8 @@ class IsoProjection:
     # corner_headroom_steps param) for why keeping it out of canvas sizing
     # matters: a Sloped-only canvas-shape change would make
     # render_terrain_sloped's flat-map byte-identity oracle against
-    # render_terrain_iso unreachable for a trivial reason (mismatched array
-    # shapes) rather than a real one.
+    # render_terrain_iso (at one shared elev_step_pct) unreachable for a
+    # trivial reason (mismatched array shapes) rather than a real one.
     corner_headroom_px: int = 0
 
 
@@ -286,7 +291,8 @@ def canvas_size_and_origin(
     deliberately does NOT affect canvas_h/origin_y/canvas_w below: it's
     consumed only by tile_screen_bounds_swept(), never by this function's own
     canvas-sizing math, so Sloped's canvas shape stays identical to Stepped's
-    for the same map -- required for render_terrain_sloped's flat-map
+    for the same map at the same elev_step_pct (each style has its own
+    setting, GH #288) -- required for render_terrain_sloped's flat-map
     byte-identity oracle against render_terrain_iso to even be comparable.
 
     Does NOT reserve any headroom for skirt_quad_indices() output -- a
@@ -1479,6 +1485,24 @@ def map_point_to_screen(
     ax = round(proj.origin_x + (mx + my) * proj.half_w)
     ay = round(proj.origin_y + (my - mx) * proj.half_h - rise_px) + proj.half_h
     return ax, ay
+
+
+def map_point_to_scene_f(mx: float, my: float, rise: float, proj: IsoProjection) -> tuple[float, float]:
+    """map_point_to_screen()'s expression in floats, unrounded: the scene
+    point a saved camera view (TASK-270) centres on. Rounding it reproduces
+    map_point_to_screen() only with the rounding where that function puts it,
+    before the trailing + half_h (tests/test_saved_views.py pins the pair)."""
+    sx = proj.origin_x + (mx + my) * proj.half_w
+    sy = proj.origin_y + (my - mx) * proj.half_h - rise + proj.half_h
+    return sx, sy
+
+
+def ground_map_point(sx: float, sy: float, proj: IsoProjection) -> tuple[float, float]:
+    """map_point_to_scene_f()'s exact inverse at rise 0. For a known rise,
+    pass sy + rise. Defined off the map too, where it extends the ground plane."""
+    a = (sx - proj.origin_x) / proj.half_w
+    b = (sy - proj.half_h - proj.origin_y) / proj.half_h
+    return (a - b) / 2, (a + b) / 2
 
 
 def _sloped_map_point(

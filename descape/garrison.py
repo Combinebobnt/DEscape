@@ -116,6 +116,8 @@ _RELIC_HOSTS = games.PerGame(
     {
         "aoe2": frozenset({104, 30, 31, 32, 1806}),  # Monastery x4, Fortified Church
         "ror": frozenset(),
+        "aoc": frozenset({104, 30, 31, 32}),  # Monastery x4, the 1999 .dat's relic-holding task
+        "hd": frozenset({104, 30, 31, 32}),  # the same in HD Edition's expansion .dat (TASK-431)
     },
 )
 

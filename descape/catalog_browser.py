@@ -165,6 +165,27 @@ def unknown_label(value: int) -> str:
     return f"Unknown object ({value})"
 
 
+def owner_renames(old: int | None, civ: int | None) -> bool:
+    """Whether an Owner switch from civ `old` to `civ` renames any row (GH #372):
+    the two civs' own names differ, in which ids or in the names themselves."""
+    named = object_catalog.civ_named_ids(civ)
+    return object_catalog.civ_named_ids(old) != named or any(
+        object_catalog.civ_name(i, old) != object_catalog.civ_name(i, civ) for i in named
+    )
+
+
+def owner_entries(entries, civ: int | None):
+    """Each entry (None passes through) named as civ's player sees it (an Athenian Archer reads Bowman)."""
+    named = object_catalog.civ_named_ids(civ)
+    for entry in entries:
+        if entry is None or entry.id not in named:
+            yield entry
+            continue
+        name = object_catalog.owner_name(entry.id, civ, entry.name)
+        # search_text stays the standard name's, so "archer" still finds the Bowman.
+        yield entry if name == entry.name else dataclasses.replace(entry, name=name)
+
+
 def row_tooltip(entry, favorite: bool) -> str:
     text = f"{entry.name} ({entry.id})" if entry.id >= 0 else entry.name
     return f"{text} (favorite)" if favorite else text
@@ -831,10 +852,7 @@ class CatalogBrowserView(QWidget):
         if civ == self._civ:
             return
         old, self._civ = self._civ, civ
-        named = object_catalog.civ_named_ids(civ)
-        if object_catalog.civ_named_ids(old) != named or any(
-            object_catalog.civ_name(i, old) != object_catalog.civ_name(i, civ) for i in named
-        ):
+        if owner_renames(old, civ):
             self._name_entries()
             self._populate()
             return
@@ -842,14 +860,8 @@ class CatalogBrowserView(QWidget):
 
     def _name_entries(self) -> None:
         """_entries and _by_id from the loaded rows, each named as the owner's civ names it."""
-        named = object_catalog.civ_named_ids(self._civ)
-        entries = tuple(self._owner_entry(entry) if entry.id in named else entry for entry in self._base_entries)
+        entries = tuple(owner_entries(self._base_entries, self._civ))
         self._entries, self._by_id = entries, {entry.id: entry for entry in entries}
-
-    def _owner_entry(self, entry):
-        name = object_catalog.owner_name(entry.id, self._civ, entry.name)
-        # search_text stays the standard name's, so "archer" still finds the Bowman.
-        return entry if name == entry.name else dataclasses.replace(entry, name=name)
 
     # -- category, class, filter -------------------------------------------------
 

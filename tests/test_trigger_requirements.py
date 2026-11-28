@@ -20,7 +20,9 @@ from AoE2ScenarioParser.datasets.effects import EffectId
 from descape import library_compat, trigger_fields, trigger_geometry, trigger_status
 from descape.trigger_status import AREA, LOCATION, PSEUDO_FIELDS
 
-VERSIONS = library_compat.vocabulary_versions()
+import conftest
+
+VERSIONS = conftest.every_vocabulary_version()
 KINDS = (
     ("conditions", trigger_status.CONDITION, "condition_type"),
     ("effects", trigger_status.EFFECT, "effect_type"),

@@ -16,6 +16,10 @@ Configure the install path via, in priority order:
      config location (see CONFIG_PATH below). set_install_path_override()
      also persists here on success, so a path loaded once in the GUI is
      remembered next run.
+
+That is the AoE2:DE install, get_de_install_path(). get_install_path() is the
+active game's content root: the same install, or for the 1999 game (whose
+install is set apart, descape/legacy_content.py) the root built from it.
 """
 
 from __future__ import annotations
@@ -188,6 +192,16 @@ def _terrain_texture_map_for(path: Path) -> dict[int, str]:
 
 @lru_cache(maxsize=1)
 def get_install_path() -> Path | None:
+    """The active game's content root, which its own files resolve under: the
+    AoE2:DE install for a game on it, a Game.derived_root game's built root
+    (None until built; this never builds). game_dataset.install_root() for
+    another game. The DE install itself is get_de_install_path()."""
+    return game_dataset.install_root(game_dataset.game())
+
+
+@lru_cache(maxsize=1)
+def get_de_install_path() -> Path | None:
+    """The AoE2:DE install: the override, AOE2DE_INSTALL_PATH, then config.yaml (the module docstring)."""
     if _override_path is not None:
         return _override_path
 
@@ -223,7 +237,7 @@ def validate_install_path(path: Path) -> tuple[bool, str]:
 
     tex_dir = path / TERRAIN_TEXTURE_SUBPATH
     if not tex_dir.is_dir():
-        return False, f"Not an AoE2DE install -- missing {TERRAIN_TEXTURE_SUBPATH}"
+        return False, f"Not an AoE2DE install: missing {TERRAIN_TEXTURE_SUBPATH}"
 
     count = sum(1 for _ in tex_dir.glob("*.dds"))
     if count == 0:
@@ -286,6 +300,7 @@ def clear_install_caches(changed: frozenset[str] | None = None) -> None:
     # Only file-, path- or install-keyed caches belong in these blocks (TASK-478).
     if not keeps_files:
         get_install_path.cache_clear()
+        get_de_install_path.cache_clear()
         from descape import mod_graphics
 
         # Its palettes come from the install, and its mod folders from the profile derived from it.
@@ -775,15 +790,19 @@ def migrate_legacy_config() -> Path | None:
     return CONFIG_PATH
 
 
-def save_install_path_to_config(path: Path | None) -> None:
-    """Persists `path` to config.yaml (read-modify-write, so any other keys
-    a future version adds there survive); None removes the key."""
-    config = {}
+def _config_for_write() -> dict:
+    """config.yaml as a dict for a read-modify-write, so any other keys a future version adds there survive."""
     if CONFIG_PATH.is_file():
         try:
-            config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
+            return yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
         except (yaml.YAMLError, OSError):
-            config = {}
+            return {}
+    return {}
+
+
+def save_install_path_to_config(path: Path | None) -> None:
+    """Persists `path` to config.yaml; None removes the key."""
+    config = _config_for_write()
     if path is None:
         config.pop("aoe2de_install", None)
     else:
@@ -794,16 +813,31 @@ def save_install_path_to_config(path: Path | None) -> None:
 def save_profile_path_to_config(path: Path | None) -> None:
     """Persists the AoE2:DE profile folder (content_roots.PROFILE_CONFIG_KEY) the
     same read-modify-write way; None removes the key, back to auto-detect."""
-    config = {}
-    if CONFIG_PATH.is_file():
-        try:
-            config = yaml.safe_load(read_config_text(CONFIG_PATH)) or {}
-        except (yaml.YAMLError, OSError):
-            config = {}
+    config = _config_for_write()
     if path is None:
         config.pop("aoe2de_profile", None)
     else:
         config["aoe2de_profile"] = str(path)
+    write_config_file(CONFIG_PATH, config)
+
+
+def save_aoc_install_to_config(path: Path | None) -> None:
+    """The 1999 game's install (legacy_content.install_path()), the same way."""
+    config = _config_for_write()
+    if path is None:
+        config.pop("aoc_install", None)
+    else:
+        config["aoc_install"] = str(path)
+    write_config_file(CONFIG_PATH, config)
+
+
+def save_hd_install_to_config(path: Path | None) -> None:
+    """HD Edition's install (hd_content.install_path()), the same way."""
+    config = _config_for_write()
+    if path is None:
+        config.pop("hd_install", None)
+    else:
+        config["hd_install"] = str(path)
     write_config_file(CONFIG_PATH, config)
 
 

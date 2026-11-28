@@ -39,7 +39,7 @@ from AoE2ScenarioParser.datasets.object_support import Civilization, Civilizatio
 from AoE2ScenarioParser.datasets.players import ColorId
 from AoE2ScenarioParser.helper.bytes_conversions import fixed_chars_to_bytes
 
-from descape import ai_scripts, data_mod_side, game_dataset, games
+from descape import ai_scripts, data_mod_side, game_dataset, games, legacy_import
 from descape.option_fields import CHECKBOX, COMBO, SPINBOX
 from descape.scenario_io import LoadedScenario, parse_triggers, retriever_length
 
@@ -118,7 +118,8 @@ _ROR_STARTING_AGE_CHOICES = (
 )
 _STARTING_AGES_BY_GAME = games.PerGame(
     "player_fields: the game editor's starting ages as (stored value, label)",
-    {"aoe2": _STARTING_AGE_CHOICES, "ror": _ROR_STARTING_AGE_CHOICES},
+    # The 1999 game and HD Edition: AoE2's, since legacy_import.starting_age_to_de() shows their files in DE's encoding.
+    {"aoe2": _STARTING_AGE_CHOICES, "ror": _ROR_STARTING_AGE_CHOICES, "aoc": _STARTING_AGE_CHOICES, "hd": _STARTING_AGE_CHOICES},
 )
 _COLOR_CHOICES = tuple((m.value, m.name.title()) for m in ColorId if not m.name.startswith("INVALID"))
 # ai_type follows Personality, not the Human/Computer/Either control:
@@ -416,6 +417,16 @@ def current_value(loaded: LoadedScenario, spec: PlayerFieldSpec, player_id: int)
     return value
 
 
+def shown_value(loaded: LoadedScenario, spec: PlayerFieldSpec, player_id: int) -> int | str:
+    """current_value() as display and analysis read it: a measured legacy
+    file's starting age in DE's encoding (legacy_import.starting_age_to_de()).
+    Never feed it to a write: current_value() stays the raw stored value."""
+    value = current_value(loaded, spec, player_id)
+    if spec.field_id == "starting_age" and legacy_import.applies(loaded):
+        return legacy_import.starting_age_to_de(value)
+    return value
+
+
 # GH #67: Return of Rome's civilizations, as (int id, string token, name).
 # The ints index the RoR .dat's civ list (1.49/1.53 files store them); 1.56+
 # files store the tokens, measured on the user's RoR samples (2026-10-16).
@@ -440,10 +451,20 @@ ROR_CIVILIZATIONS: tuple[tuple[int, str, str], ...] = (
     (16, "MACEDONIAN-CIV", "Macedonian"),
     (17, "LAC-VIET-CIV", "Lac Viet"),
 )
+# The 1999 game (TASK-430): its .dat's 18 civs are DE's ids 1..18, in order, with the same tokens.
+AOC_CIVILIZATIONS: tuple[tuple[int, str, str], ...] = tuple(
+    (civ.value, Civilization[civ.name].value, civ.name.title()) for civ in CivilizationOld if 1 <= civ.value <= 18
+)
+# HD Edition (TASK-431): its expansion .dat's 31 civs are DE's ids 1..31, in order, with the same tokens;
+# id 20 is the .dat's "Indians", which DE renamed Hindustanis.
+HD_CIVILIZATIONS: tuple[tuple[int, str, str], ...] = tuple(
+    (civ.value, Civilization[civ.name].value, "Indians" if civ.value == 20 else civ.name.title())
+    for civ in CivilizationOld if 1 <= civ.value <= 31
+)
 # None: the library's Civilization and CivilizationOld enums name the game's civs.
 _CIVILIZATIONS_BY_GAME = games.PerGame(
     "player_fields: the game's civilizations as (id, token, name) rows, or None for the library's",
-    {"aoe2": None, "ror": ROR_CIVILIZATIONS},
+    {"aoe2": None, "ror": ROR_CIVILIZATIONS, "aoc": AOC_CIVILIZATIONS, "hd": HD_CIVILIZATIONS},
 )
 
 
@@ -1666,7 +1687,7 @@ def encode_target(target: PlayerWriteTarget, value: int | str) -> bytes:
         (roundtripped,) = _CODEC_STRUCT["f32"].unpack(packed)
         if roundtripped != value:
             raise ValueError(
-                f"{value!r} is not exactly representable as f32 -- packing it "
+                f"{value!r} is not exactly representable as f32: packing it "
                 f"would silently desync this field's mirrored copy"
             )
         return packed

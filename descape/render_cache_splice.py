@@ -9,6 +9,7 @@ import numpy as np
 
 from descape import (
     iso_geometry,
+    legacy_import,
     render_bbox,
     render_sprites,
     render_units,
@@ -525,11 +526,15 @@ def _splice_plan_or_refusal(
 
 
 def _splice_overrides(scenario: LoadedScenario, changed: list[UnitSplice]) -> dict[tuple[int, int], float]:
-    """The wall overrides a unit-edit splice must resolve with: the real dict
-    when any spliced unit reads it (a reassigned or moved wall, or one a
-    moved connector reshapes), else {} to skip the lookup. Memoized on
+    """The draw-only rotation overrides (wall shapes, legacy tree variants) a
+    unit-edit splice must resolve with: the real dict when any spliced unit
+    reads it (a reassigned or moved wall, one a moved connector reshapes, or
+    a legacy tree), else {} to skip the lookup. Memoized on
     scenario.unit_gen, which reassign() and set_position() bump."""
-    if any(unit_sprites.rotation_variant_eligible(s.unit.unit_const) for s in changed):
+    trees = legacy_import.TREE_CONSTS if legacy_import.applies(scenario) else frozenset()
+    if any(
+        unit_sprites.rotation_variant_eligible(s.unit.unit_const) or s.unit.unit_const in trees for s in changed
+    ):
         return render_units.wall_variant_rotation_overrides(scenario)
     return {}
 
@@ -749,8 +754,9 @@ def _splice_building_and_sprites(
     right for a splice of a unit that isn't rotation-variant-eligible, whose
     resolve never consults the dict (render_units._wall_variant_rotation_
     overrides_uncached's own candidate filter). A wall, reassigned or moved (the
-    membership component splice), must go through _reanchor_units() with
-    _splice_overrides() instead, as both invalidate_units() do."""
+    membership component splice), or a measured legacy file's tree, must go
+    through _reanchor_units() with _splice_overrides() instead, as both
+    invalidate_units() do."""
     return _reanchor_units(
         building_bboxes, sprites, scenario, proj, elevations, unit_filter, corner_rise,
         extra_top_px, [splice], {}, with_farms, tree_scale, hero_glow, wall_alpha, fold=fold,

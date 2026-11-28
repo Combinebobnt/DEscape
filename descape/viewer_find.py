@@ -15,10 +15,12 @@ from descape import (
     debug_log,
     find_objects,
     find_triggers,
+    game_dataset,
     library_compat,
     map_analysis,
     range_overlay,
     ruler,
+    scenario_compat,
     trigger_range,
     unit_pick,
 )
@@ -64,7 +66,14 @@ class _ViewerFindMixin:
         QApplication.processEvents()
         try:
             started = time.perf_counter()
-            report = map_analysis.analyze(self.scenario)
+            # What Save would write (the model's id counter, the edited player count), not the file's stale values.
+            units = self.unit_edits
+            report = map_analysis.analyze(
+                self.scenario,
+                next_unit_id=units.next_unit_id if units is not None else None,
+                defined_players=self._current_active_players(),
+                foreign_data=self._analysis_foreign_data(),
+            )
             elapsed = time.perf_counter() - started
         finally:
             QApplication.restoreOverrideCursor()
@@ -179,7 +188,7 @@ class _ViewerFindMixin:
         scenario = self.scenario
         if scenario is None:
             return trigger_range.UNREAD
-        version = scenario.scenario_version
+        version = scenario.vocabulary_version
         if scenario.trigger_read_supported is False or not (
             version and library_compat.vocabulary_is_available(version)
         ):
@@ -267,7 +276,8 @@ class _ViewerFindMixin:
         if manager is None:
             key = TriggerPanel._unsupported_key(self.scenario)
             sentence = unsupported_version_sentence(self.scenario.scenario_version)
-            return TriggerPanel._UNSUPPORTED[key].format(sentence=sentence), False
+            version = scenario_compat.display_version(self.scenario)
+            return TriggerPanel._UNSUPPORTED[key].format(sentence=sentence, version=version), False
         # Only meaningful once parse_triggers() has run (it is set there).
         return None, bool(self.scenario.trigger_write_supported)
 
@@ -527,10 +537,25 @@ class _ViewerFindMixin:
         mm = self.scenario.map_manager
         self.map_view.set_analysis_marker_focus(map_analysis.marker_tile(finding, mm.map_width, mm.map_height))
 
+    def _analysis_foreign_data(self) -> str:
+        """Why the game data shown is not the file's own game's, or "": Map
+        Analysis's game-data checks are unavailable then (GH #67)."""
+        file_game, shown = self._file_game_dataset(), self._shown_game_dataset()
+        if file_game == shown:
+            return ""
+        names = game_dataset.DISPLAY_NAMES
+        return f"showing {names[shown]} game data for a {names[file_game]} file"
+
     def _navigate_to_finding(self, finding: map_analysis.Finding) -> None:
+        """A unit finding selects its unit in Units mode; a trigger finding
+        selects its trigger (and entry) in Triggers mode. Either then centres
+        the map on the finding's tile, when it has one."""
         if self.scenario is None:
             return
         tile = finding.tile
+        if finding.unit_key is None and finding.trigger_index is not None:
+            kind, entry_index = finding.trigger_entry or ("", -1)
+            self._reveal_trigger_entry(finding.trigger_index, kind, entry_index)
         if finding.unit_key is not None:
             # The pick index, and so selection, only exists in Units mode.
             self.mode_combo.setCurrentText("Units")

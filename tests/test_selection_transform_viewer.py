@@ -404,7 +404,7 @@ def test_flip_and_rotate_group_are_disabled_with_nothing_selected_in_triggers_mo
         _group(window)
         assert all(action.isEnabled() for action in group)
         # An instance attribute, not monkeypatch.undo(), which would drop the autouse config isolation.
-        window.game_data_lock_reason = lambda: "Read-only: locked"
+        window.game_data_lock_reason = lambda family=None: "Read-only: locked"
         window._update_rotate_enabled()
         assert not any(action.isEnabled() for action in group)
         del window.game_data_lock_reason
@@ -780,6 +780,65 @@ def test_a_flipped_or_turned_bridge_takes_its_sibling_keeps_its_reference_id_and
             assert "kept their orientation" not in _last_status(window)
             tiles = render_units.unit_occupied_tiles(bridge, 120, 120)
             assert len(tiles) == 6 and len({x for x, _y in tiles}) == (3 if const == 610 else 2)
+            _key(window, Qt.Key_Escape)
+            assert _state(window) == before, action.text()
+    finally:
+        window.unrestricted_check.setChecked(False)
+        _close(window)
+
+
+def test_a_flipped_or_turned_1x1_wooden_bridge_takes_its_sibling_on_its_own_tile():
+    """TASK-706: Flip West <-> North reverses a wooden `a` top (904 -> 906),
+    Esc restores it, and Rotate Group then gives the `b` bottom 909 (907
+    would mean the Esc left the flip in place)."""
+    from PyQt5.QtCore import Qt
+
+    window = _units_window()
+    try:
+        window.unrestricted_check.setChecked(True)
+        (piece,) = _add(window, [(1, 904, 40.5, 40.5, 0.0, None)])
+        reference_id = piece.reference_id
+        _select(window, [piece])
+        before = _state(window)
+        for action, const in ((window.flip_horizontal_action, 906), (window.rotate_group_cw_action, 909)):
+            action.trigger()
+            assert (piece.unit_const, piece.reference_id, piece.x, piece.y) == (const, reference_id, 40.5, 40.5)
+            assert render_units.unit_occupied_tiles(piece, 120, 120) == [(40, 40)]
+            assert "kept their orientation" not in _last_status(window)
+            _key(window, Qt.Key_Escape)
+            assert _state(window) == before, action.text()
+    finally:
+        window.unrestricted_check.setChecked(False)
+        _close(window)
+
+
+def test_a_turned_or_flipped_de_bridge_end_takes_its_sibling_and_its_turned_frame(monkeypatch):
+    """TASK-705: Rotate Group ↺ (r3) on 1840 frame 0 gives 1841 frame 1 (const
+    then frame, through set_unit_const() and set_variant()); Flip West <-> South
+    (my) reverses the `b` run in place, 1840 frame 1, the frame only."""
+    from PyQt5.QtCore import Qt
+
+    window = _units_window()
+    try:
+        window.unrestricted_check.setChecked(True)
+        (piece,) = _add(window, [(1, 1840, *render_units.span_anchor(40, 40, 1, 2), 0.0, None)])
+        reference_id = piece.reference_id
+        _select(window, [piece])
+        before = _state(window)
+        model = window.unit_edits
+        calls = []
+        for name in ("set_unit_const", "set_variant"):
+            real = getattr(model, name)
+            monkeypatch.setattr(model, name, lambda *a, _n=name, _r=real, **k: (calls.append(_n), _r(*a, **k))[1])
+        for action, expected, setters in (
+            (window.rotate_group_ccw_action, (1841, 1.0), ["set_unit_const", "set_variant"]),
+            (window.flip_vertical_action, (1840, 1.0), ["set_variant"]),
+        ):
+            calls.clear()
+            action.trigger()
+            assert (piece.unit_const, piece.rotation, piece.reference_id) == (*expected, reference_id), action.text()
+            assert calls == setters, action.text()
+            assert "kept their orientation" not in _last_status(window)
             _key(window, Qt.Key_Escape)
             assert _state(window) == before, action.text()
     finally:

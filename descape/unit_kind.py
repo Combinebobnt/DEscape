@@ -533,7 +533,8 @@ def _ror_gaia_only() -> set[int]:
 # Each game's editor-measured rule, called by gaia_only_consts() over the active game's catalog.
 _GAIA_ONLY_BY_GAME = games.PerGame(
     "unit_kind: the objects a game's editor lists for GAIA only",
-    {"aoe2": lambda: _GAIA_ONLY_EXTRA_CONSTS | _aoe2_gaia_only(), "ror": _ror_gaia_only},
+    # aoc and hd: not measured, neither game's editor is run here; view-only.
+    {"aoe2": lambda: _GAIA_ONLY_EXTRA_CONSTS | _aoe2_gaia_only(), "ror": _ror_gaia_only, "aoc": frozenset, "hd": frozenset},
 )
 
 

@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 from descape import (
     map_analysis,
     player_stats,
+    scenario_compat,
 )
 from descape.scenario_io import (
     xs_attachment,
@@ -39,11 +40,20 @@ def _xs_info_lines(loaded, pending_name: str | None = None) -> list[str]:
         name_text = script_name or "(none)"
     if embedded is not None:
         embedded_text = f"{embedded:,} chars" if embedded else "(none)"
+    elif getattr(getattr(loaded, "source_format", None), "legacy", False):
+        embedded_text = "(not stored before AoE2:DE)"
     elif loaded.trigger_read_supported is False:
         embedded_text = "(unknown: Triggers section can't be read)"
     else:
         embedded_text = "(unknown until triggers are parsed)"
     return [f"XS script file: {name_text}", f"Embedded XS: {embedded_text}"]
+
+
+def _version_text(loaded) -> str:
+    plan = scenario_compat.plan_of(loaded)
+    if plan is None:
+        return str(loaded.scenario_version)
+    return f"{plan.file_version} (compatibility mode, read as {plan.base})"
 
 
 _ALSO_COUNTED = "also counted above"
@@ -136,7 +146,7 @@ class _ViewerInfoMixin:
         # Free text goes in the Note column, so Value stays as narrow as its numbers.
         self._set_info_children("File", [
             ("File", "", s.path.name),
-            ("Scenario version", str(s.scenario_version), ""),
+            ("Scenario version", _version_text(s), ""),
             ("Map size", "", f"{mm.map_width} x {mm.map_height}"),
         ])
         terrain_hist = Counter(t.terrain_id for t in mm.terrain)
@@ -154,6 +164,10 @@ class _ViewerInfoMixin:
         filename edit or its undo, so the XS line shows the pending name."""
         s = self.scenario
         if s is None:
+            return
+        if scenario_compat.plan_of(s) is not None:
+            unknown = scenario_compat.UNKNOWN
+            self._set_info_children("Technical", [(n, "", unknown) for n in ("Trigger tail", "XS script file", "Embedded XS")])
             return
         technical = [("Trigger tail", f"{len(s.trigger_tail):,}", "bytes (not parsed)")]
         pending_name = None
@@ -247,6 +261,10 @@ class _ViewerInfoMixin:
         if self.scenario is None or player_id is None:
             self.player_stats_rows = []
             self._fill_player_section([])
+            return
+        if scenario_compat.units_unknown(self.scenario):
+            self.player_stats_rows = [("Units", "", scenario_compat.UNKNOWN, "")]
+            self._fill_player_section(self.player_stats_rows)
             return
         c = player_stats.counts_for(self.scenario, player_id)
         is_gaia = player_id == GAIA_PLAYER_ID

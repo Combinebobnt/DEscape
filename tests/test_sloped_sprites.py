@@ -190,8 +190,9 @@ def test_flat_map_byte_identical_with_sprites(sprite_install):
     """CONST here is never a farm const, so with_farms's default (True on
     both sides as of Track C6) never enters into it either way."""
     scenario = _flat_scenario_with_unit(elevation=2, ux=50.5, uy=50.5)
-    sloped, _e, _c, sloped_proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
-    stepped, _e2, stepped_proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
+    pct = ig.ELEV_STEP_DEFAULT_PCT  # one explicit pct for both: each style has its own setting (GH #288)
+    sloped, _e, _c, sloped_proj = render_terrain_sloped_with_proj(scenario, with_sprites=True, elev_step_pct=pct)
+    stepped, _e2, stepped_proj = render_terrain_iso_with_proj(scenario, with_sprites=True, elev_step_pct=pct)
     assert sloped_proj.canvas_w == stepped_proj.canvas_w
     assert sloped.shape == stepped.shape
     assert not np.array_equal(sloped, np.zeros_like(sloped)), "fixture painted nothing -- the sprite never resolved"
@@ -207,8 +208,9 @@ def test_flat_map_byte_identical_with_a_farm(sprite_install):
     diamond_indices/tile_edge_indices exactly (their own delegation
     contract), which is what makes this an EXACT match, not merely close."""
     scenario = _flat_scenario_with_unit(elevation=2, ux=50.5, uy=50.5, unit_const=FARM_CONST)
-    sloped, _e, _c, sloped_proj = render_terrain_sloped_with_proj(scenario, with_sprites=True)
-    stepped, _e2, stepped_proj = render_terrain_iso_with_proj(scenario, with_sprites=True)
+    pct = ig.ELEV_STEP_DEFAULT_PCT  # one explicit pct for both: each style has its own setting (GH #288)
+    sloped, _e, _c, sloped_proj = render_terrain_sloped_with_proj(scenario, with_sprites=True, elev_step_pct=pct)
+    stepped, _e2, stepped_proj = render_terrain_iso_with_proj(scenario, with_sprites=True, elev_step_pct=pct)
     assert sloped_proj.canvas_w == stepped_proj.canvas_w
     assert sloped.shape == stepped.shape
     assert not np.array_equal(sloped, np.zeros_like(sloped)), "fixture painted nothing -- the farm never resolved"
@@ -516,7 +518,7 @@ def test_south_edge_sprite_not_clipped_at_low_elev_step_pct(tmp_path, monkeypatc
     mutation: canvas_dims() must be wider than the bare proj bound once
     sprites are enabled, and the sprite's own bottom row must actually
     receive non-background pixels once composited into that wider bound."""
-    monkeypatch.setattr(settings, "_elev_step_pct", 25)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", 25)
     scenario = load_map_and_units(str(BLANK_TEMPLATE_PATH))
     mm = scenario.map_manager
     for tile in mm.terrain:
@@ -548,6 +550,7 @@ def test_south_edge_sprite_not_clipped_at_low_elev_step_pct(tmp_path, monkeypatc
     unit_sprites.clear_caches()
     try:
         cache = _make_cache(scenario, sprites=True)
+        assert cache.proj.elev_step == round(cache.proj.half_h * 25 / 100), "pct did not reach the projection"
         tight_h = cache.proj.canvas_h
         canvas_w, canvas_h = cache.canvas_dims()
         assert canvas_h > tight_h, "canvas_dims() must widen once sprites are enabled at a low pct stop"

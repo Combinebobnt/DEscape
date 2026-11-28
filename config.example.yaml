@@ -26,6 +26,23 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # See content_roots.py's module docstring.
 # aoe2de_profile: /path/to/Games/Age of Empires 2 DE
 
+# What Tools > Launch in AoE2:DE passes the game after Steam's app id, split
+# like a shell command line. Default: "EDITOR" (boot into the
+# scenario editor). See game_launch.py.
+# aoe2de_launch_args: EDITOR
+
+# Path to your Age of Kings / The Conquerors install, the folder holding
+# Data/ and language.dll. Optional: with it, 1999 .scn/.scx files show with
+# that game's own data, view-only. Also settable from Settings >
+# Advanced, or via the AOC_INSTALL_PATH env var (checked first). No default.
+# aoc_install: /path/to/Age of Empires II
+
+# Path to your Age of Empires II: HD Edition install, the Age2HD folder
+# holding resources/. Optional: with it, HD Edition .scx files show with that
+# game's own data, view-only. Also settable from Settings > Advanced, or via
+# the HD_INSTALL_PATH env var (checked first). No default.
+# hd_install: /path/to/steamapps/common/Age2HD
+
 # Language folder under the install's resources/ (e.g. de, fr, es) that
 # trigger reference pickers resolve real object/tech display names from --
 # see object_catalog.py's resolve_name(). Only takes effect with
@@ -42,6 +59,11 @@ graphics_quality: 3
 # nearest one on read, see settings.ELEV_STEP_PCT_STOPS.
 # Default: 50.
 elev_step_pct: 50
+
+# Sloped elevation height, its own setting: the same stops, snapped the same
+# way. 100 matches the game's own height.
+# Default: 100.
+sloped_elev_step_pct: 100
 
 # Held-key pan speed for the Pan Up/Down/Left/Right keybinds, in viewport
 # pixels per second, Settings > Appearance. Measured in screen pixels like
@@ -148,11 +170,16 @@ view_layers:
 #   beach_width (default 1): 1-3
 #   paint_trees (default true): true or false
 #   paint_eye_candy (default false): true or false
+#   replace_flood (default global): global, contiguous
+#   spray_flow (default 10): 1-100
+#   spray_hardness (default 40): 0-100
 #   elevation_level (default 0): 0-15
 #   rect_filled (default true): true or false
 #   paste_terrain (default true): true or false
 #   paste_elevation (default true): true or false
 #   paste_units (default true): true or false
+#   clone_terrain (default true): true or false
+#   clone_elevation (default true): true or false
 #   free_placement (default false): true or false
 #   off_grid (default false): true or false
 #   place_random (default false): true or false
@@ -245,8 +272,8 @@ favorite_star_style: gold
 terrain_picker_mode: list
 
 # Which game's data draws every opened scenario, Settings > Advanced (GH #67):
-# auto or aoe2 or ror. auto follows the file's own header; aoe2 or ror shows every
-# file in that game's data, read-only when it is the other game's file.
+# auto or aoe2 or ror or aoc or hd. auto follows the file's own game; a game id shows every
+# file in that game's data, read-only when it is another game's file.
 # Anything else falls back to the default on read. Default: auto.
 game_data: auto
 
@@ -508,6 +535,7 @@ keybinds:
   file_save: Ctrl+S
   file_save_as: Ctrl+Shift+S
   file_convert: ''
+  file_convert_legacy: ''
   file_recover_autosave: ''
   file_exit: Ctrl+Q
   edit_undo: Ctrl+Z
@@ -518,6 +546,8 @@ keybinds:
   edit_select_all: Ctrl+A
   edit_deselect: Ctrl+Shift+A
   edit_clipboard_history: ''
+  edit_save_prefab: ''
+  edit_prefabs: ''
   edit_history: ''
   edit_scatter_units: ''
   edit_find_replace: ''
@@ -571,11 +601,32 @@ keybinds:
   view_pan_down: Down
   view_pan_left: Left
   view_pan_right: Right
+  savedview_go_1: ''
+  savedview_go_2: ''
+  savedview_go_3: ''
+  savedview_go_4: ''
+  savedview_go_5: ''
+  savedview_go_6: ''
+  savedview_go_7: ''
+  savedview_go_8: ''
+  savedview_go_9: ''
+  savedview_save_1: ''
+  savedview_save_2: ''
+  savedview_save_3: ''
+  savedview_save_4: ''
+  savedview_save_5: ''
+  savedview_save_6: ''
+  savedview_save_7: ''
+  savedview_save_8: ''
+  savedview_save_9: ''
+  savedview_clear: ''
   elevation_flat: ''
   elevation_stepped: ''
   elevation_sloped: ''
+  launch_game: ''
   analysis_run: ''
   script_open_folder: ''
+  addon_open_folder: ''
   help_guide: F1
   help_keys: ''
   help_web_guide: ''
@@ -645,11 +696,14 @@ keybinds:
   player_select_8: '8'
   tool_pan: M
   tool_draw: D
+  tool_spray: ''
   tool_fill: P
   tool_elevation: E
   tool_set_level: L
   tool_draw_line: ''
   tool_draw_rect: ''
+  tool_replace_brush: ''
+  tool_clone: ''
   tool_cliff: ''
   tool_select: S
   tool_move: V

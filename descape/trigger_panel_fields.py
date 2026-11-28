@@ -586,7 +586,8 @@ class _TriggerPanelFieldsMixin:
         -1 is the library's unset marker, shown as text rather than as a
         number the user would have to know the meaning of. MIXED gets the
         blank indeterminate box (GH #60). `unset=False` is for a field with
-        no sentinel (description_order, a u32): minimum 0, no "(unset)" text."""
+        no sentinel (description_order, a u32 in the file, capped at the
+        spinbox's 2^31-1): minimum 0, no "(unset)" text."""
         indeterminate = value is trigger_fields.MIXED
         return _make_spinbox(
             None if indeterminate else value,

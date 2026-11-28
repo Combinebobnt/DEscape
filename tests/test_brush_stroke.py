@@ -358,16 +358,20 @@ def _assert_matches_fresh_render(window, style: str, cache, gen: int, counts) ->
     assert np.array_equal(stitched, full[:h, :w]), "the live canvas differs from a fresh render"
 
 
+@pytest.mark.parametrize("tool", ["draw", "spray"])
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
-def test_a_brush_9_draw_stroke_matches_a_fresh_render(style: str, monkeypatch) -> None:
+def test_a_brush_9_draw_stroke_matches_a_fresh_render(style: str, tool: str, monkeypatch) -> None:
     """TASK-031.07 step 1: a warm canvas, then a multi-step brush-9 Draw drag
     over uneven ground. After release:
     - every footprint tile is the new terrain and the cache was not rebuilt;
     - level 0, never repainted whole, equals a fresh render (no gaps, no
-      stale tiles or skirts), every chunk of it patched in place with no wholesale walk."""
+      stale tiles or skirts), every chunk of it patched in place with no wholesale walk.
+    The Spray Can's scatter (seeded, the kernel's prediction) is the hardest case for blending and patching."""
+    from descape import spray
     from descape.brush import brush_tiles
 
-    window = _edit_window("draw")
+    monkeypatch.setattr(spray, "new_seed", lambda: 0x5EED)
+    window = _edit_window(tool)
     try:
         mm = window.scenario.map_manager
         for y in range(30, 51):
@@ -375,13 +379,21 @@ def test_a_brush_9_draw_stroke_matches_a_fresh_render(style: str, monkeypatch) -
                 mm.get_tile(x, y).elevation = 5 * ((x + 2 * y) % 4)  # 0..15, steps of 5-15 on every axis
         warm = _warm_styled(window, style, monkeypatch)
         window.brush_size_spin.setValue(9)
+        window.spray_flow_spin.setValue(40)
         window.on_edit_stroke_start()
         for x in range(30, 50, 2):
             window.on_edit_stroke_tile(x, 40, 0)
         window.on_edit_stroke_end()
 
         shape = window.brush_shape_combo.currentData()
-        want = {t for x in range(30, 50, 2) for t in brush_tiles(x, 40, 9, shape, mm.map_width, mm.map_height)}
+        centres = [(x, 40) for x in range(30, 50, 2)]
+        if tool == "spray":
+            from test_spray_viewer import predict
+
+            want = predict(0x5EED, 0.4, 0.4, centres, 9, shape, mm.map_width, mm.map_height)
+            assert len(want) < len({t for x, y in centres for t in brush_tiles(x, y, 9, shape, mm.map_width, mm.map_height)})
+        else:
+            want = {t for x, y in centres for t in brush_tiles(x, y, 9, shape, mm.map_width, mm.map_height)}
         assert {(t.x, t.y) for t in mm.terrain if t.terrain_id == _TERRAIN} == want
         _assert_matches_fresh_render(window, style, *warm)
     finally:
@@ -453,11 +465,20 @@ def _path(y: int, x0: int, n: int) -> list[tuple[int, int]]:
     return [(x0 + k, y) for k in range(n)]
 
 
-def _guard_case(case: str):
+def _guard_case(case: str, monkeypatch=None):
     from PyQt5.QtCore import Qt
 
     shift = Qt.ShiftModifier
-    if case == "draw":
+    if case == "spray":
+        # Seeded: one dab per event along a path, the scattered tiles the hardest repaint case.
+        from descape import spray
+
+        monkeypatch.setattr(spray, "new_seed", lambda: 0x5EED)
+        window = _edit_window("spray")
+        window.brush_size_spin.setValue(3)
+        window.spray_flow_spin.setValue(50)
+        events = [([(30 + k, 40)], 0) for k in range(12)]
+    elif case == "draw":
         window = _edit_window("draw")
         window.brush_size_spin.setValue(3)
         events = [(_path(40, 30 + 3 * k, 3), 0) for k in range(5)]
@@ -485,9 +506,9 @@ def _guard_case(case: str):
     return window, events
 
 
-@pytest.mark.parametrize("case", ["draw", "beach_draw", "elevate", "lower", "shift_toggle", "set_level"])
-def test_live_stroke_repaint_set_equals_a_full_map_scan(case) -> None:
-    window, events = _guard_case(case)
+@pytest.mark.parametrize("case", ["draw", "beach_draw", "elevate", "lower", "shift_toggle", "set_level", "spray"])
+def test_live_stroke_repaint_set_equals_a_full_map_scan(case, monkeypatch) -> None:
+    window, events = _guard_case(case, monkeypatch)
     try:
         calls = _full_scan_guard(window, events)
         assert sum(len(c) for c in calls) > len(events), "the stroke repainted almost nothing; the guard is vacuous"
@@ -542,9 +563,9 @@ def _release_record_guard(window, events):
     return got
 
 
-@pytest.mark.parametrize("case", ["draw", "beach_draw", "elevate", "lower", "shift_toggle", "set_level"])
-def test_the_release_record_equals_a_full_map_diff(case) -> None:
-    window, events = _guard_case(case)
+@pytest.mark.parametrize("case", ["draw", "beach_draw", "elevate", "lower", "shift_toggle", "set_level", "spray"])
+def test_the_release_record_equals_a_full_map_diff(case, monkeypatch) -> None:
+    window, events = _guard_case(case, monkeypatch)
     try:
         changes = _release_record_guard(window, events)
         assert len(changes) > len(events), "the stroke changed almost nothing; the guard is vacuous"

@@ -24,11 +24,11 @@ from descape import (
     debug_log,
     library_compat,
     perf_trace,
-    scenario_convert,
     settings,
     trigger_clipboard,
     trigger_fields,
     trigger_organize,
+    trigger_version_compat,
 )
 from descape.edit_history import (
     CompositeDiffRecord,
@@ -598,7 +598,7 @@ class _ViewerTriggersMixin:
         if manager is None or not indices:
             return
         self._trigger_clipboard = self._with_file_game(
-            trigger_clipboard.copy_block(manager, indices, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version)
+            trigger_clipboard.copy_block(manager, indices, doc_id=self._doc_id, scenario_version=self.scenario.vocabulary_version)
         )
         self._log_status(f"Copied {self._trigger_clipboard.label} to the clipboard.")
         self._sync_trigger_clipboard_state()
@@ -633,6 +633,7 @@ class _ViewerTriggersMixin:
         Triggers mode a focused text editor takes the three over, and in
         Units mode the Units panel's own focus takes Cut and Copy (GH #192,
         _units_clipboard_focus())."""
+        self.save_prefab_action.setEnabled(self._region_clipboard is not None)  # any mode, no map needed
         if self.mode != "triggers":
             # Phase 2.8's region pair, gated on the committed region and
             # clipboard alone: a region survives a tool switch.
@@ -859,15 +860,17 @@ class _ViewerTriggersMixin:
     def _paste_refusal(self, block) -> str:
         """Why `block`, a TriggerBlock or an EntryBlock (GH #137), cannot be
         pasted here, or "" when it can. A block from another scenario version
-        can carry fields, and effect types, this one does not store
-        (cross-version paste is not supported)."""
+        can carry fields, and effect types, this one does not store (a paste
+        that would lose a value or name a missing type, GH #317)."""
         if block is None or self.scenario is None:
             return "Nothing to paste."
         if refusal := self._cross_game_refusal(block):
             return refusal
-        here = self.scenario.scenario_version
+        here = self.scenario.vocabulary_version
+        if reason := trigger_clipboard.legacy_paste_refusal(block.scenario_version, here):
+            return reason
         convertible = self._convert_version_refusal() is None  # GH #307: the hint never names a greyed-out action
-        if reason := scenario_convert.paste_version_refusal(block.scenario_version, here, convertible=convertible):
+        if reason := trigger_version_compat.paste_refusal(block, here, self.scenario.trigger_version, convertible=convertible):
             return reason
         if block.source_doc_id != self._doc_id and not library_compat.vocabulary_is_available(here):
             return f"No trigger vocabulary for scenario {here}, so unit references cannot be cleared."
@@ -920,7 +923,7 @@ class _ViewerTriggersMixin:
         if manager is None or not 0 <= index < len(manager.triggers):
             return
         self._entry_clipboard = self._with_file_game(
-            trigger_clipboard.copy_entries(manager, index, refs, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version)
+            trigger_clipboard.copy_entries(manager, index, refs, doc_id=self._doc_id, scenario_version=self.scenario.vocabulary_version)
         )
         self._log_status(f"Copied {self._entry_clipboard.label} to the clipboard.")
         self._sync_entry_clipboard_state()
@@ -1105,7 +1108,7 @@ class _ViewerTriggersMixin:
         # GH #137: Cut is Delete plus a block taken first, inbound links included.
         cut_block = (
             trigger_clipboard.copy_block(
-                manager, indices, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version, cut=True
+                manager, indices, doc_id=self._doc_id, scenario_version=self.scenario.vocabulary_version, cut=True
             )
             if op == "cut"
             else None
@@ -1140,7 +1143,7 @@ class _ViewerTriggersMixin:
                 # pushed back through the setter (restore()'s Trap 7).
                 before_order = list(m.trigger_display_order)
                 before_names = [t.name or "" for t in m.triggers]
-                result = trigger_clipboard.paste_into(m, block, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version)
+                result = trigger_clipboard.paste_into(m, block, doc_id=self._doc_id, scenario_version=self.scenario.vocabulary_version)
                 paste_results.append(result)
                 new_indices = list(range(before_len, before_len + len(result.triggers)))
                 has_divider = any(trigger_organize.is_divider(t.name or "") for t in result.triggers)
@@ -1531,7 +1534,7 @@ class _ViewerTriggersMixin:
         label = f"{op.title()} {refs[0][0]}" if len(refs) == 1 else f"{op.title()} {len(refs)} entries"
         cut_block = (
             trigger_clipboard.copy_entries(
-                manager, index, refs, doc_id=self._doc_id, scenario_version=self.scenario.scenario_version
+                manager, index, refs, doc_id=self._doc_id, scenario_version=self.scenario.vocabulary_version
             )
             if op == "cut"
             else None
@@ -1635,7 +1638,7 @@ class _ViewerTriggersMixin:
             self._log_status(f"Cannot paste these conditions/effects: {reason}", level=debug_log.WARNING)
             return
         results: list = []
-        version = self.scenario.scenario_version
+        version = self.scenario.vocabulary_version
 
         def mutate(m):
             results.append(trigger_clipboard.paste_entries(m, index, block, anchor, doc_id=self._doc_id, scenario_version=version))
@@ -1781,10 +1784,10 @@ class _ViewerTriggersMixin:
         type_attribute = "condition_type" if kind == "condition" else "effect_type"
         loaded = self.scenario
         if loaded is None or not library_compat.vocabulary_is_available(
-            loaded.scenario_version
+            loaded.vocabulary_version
         ):
             return (None, type_attribute)
-        vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+        vocabulary = library_compat.load_vocabulary(loaded.vocabulary_version)
         entries = vocabulary.conditions if kind == "condition" else vocabulary.effects
         return (entries, type_attribute)
 
@@ -1793,7 +1796,7 @@ class _ViewerTriggersMixin:
         """The status line for one retype. A line rather than a modal: Delete
         has no confirmation either, and the whole retype is one undo step.
         Dropped fields read as the old type's form captioned them (GH #212)."""
-        name = new_definition.name.replace("_", " ")
+        name = new_definition.label
         if not dropped:
             return f"Changed {kind} to {name}."
         fields = ", ".join(trigger_fields.field_label(old_definition, field) for field in dropped)

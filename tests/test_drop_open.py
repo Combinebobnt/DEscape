@@ -83,6 +83,7 @@ def test_dropped_scenario_paths_keeps_local_scenarios_in_order(tmp_path) -> None
     a = tmp_path / "A.AOE2SCENARIO"
     old = tmp_path / "old.scx"
     aok = tmp_path / "aok.SCN"
+    up = tmp_path / "up.SCX2"
     urls = [
         QUrl.fromLocalFile(str(b)),
         QUrl.fromLocalFile(str(old)),
@@ -90,8 +91,9 @@ def test_dropped_scenario_paths_keeps_local_scenarios_in_order(tmp_path) -> None
         QUrl("https://example.com/map.aoe2scenario"),
         QUrl.fromLocalFile(str(a)),
         QUrl.fromLocalFile(str(aok)),
+        QUrl.fromLocalFile(str(up)),
     ]
-    assert dropped_scenario_paths(urls) == [b, old, a, aok]
+    assert dropped_scenario_paths(urls) == [b, old, a, aok, up]
     assert dropped_scenario_paths([]) == []
 
 

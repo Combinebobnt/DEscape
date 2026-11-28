@@ -233,10 +233,12 @@ def test_the_ladder_is_steppeds_at_every_pct(monkeypatch, size, pct) -> None:
     """Plain equality with Stepped's ladder (TASK-146). A 252-wide map has a
     32 px base, so it gets two finer levels, +1 and +2."""
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", pct)  # each style has its own (GH #288)
     scn = _scenario(units=False) if size == MAP_W else _flat_scenario(size)
     elevations, proj = render_iso.elevations_and_proj(scn)
     stepped = IsoChunkCache(scn, elevations, proj, proj.tile_px).mip_levels()
     cache = _cache(scn)
+    assert cache.proj.elev_step == proj.elev_step, "pct did not reach Sloped's projection"
     assert cache.mip_levels() == stepped
     assert min(stepped) < 0 < max(stepped), f"pct {pct}: no coarser or no finer level -- vacuous"
     if size != MAP_W:
@@ -267,10 +269,11 @@ def test_a_coarser_tile_never_paints_outside_its_finer_twins_scaled_footprint(mo
     (tile_screen_bounds_over over its 3x3 heights), which a patch bbox is
     built from. At pct 200 the clamp must actually fire somewhere, or that
     case proves nothing."""
-    monkeypatch.setattr(settings, "_elev_step_pct", pct)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", pct)
     scn = _scenario(units=False, elevation_of=lambda x, y: min(2, (x // 2 + y // 3) % 3))
     cache = _cache(scn)
     ref = cache._levels[0]
+    assert ref.proj.elev_step == max(1, round(ref.proj.half_h * pct / 100)), "pct did not reach the projection"
     assert max(cache.mip_levels()) > 0, "no finer level -- vacuous"
     clamped = 0
     for mip in cache.mip_levels():

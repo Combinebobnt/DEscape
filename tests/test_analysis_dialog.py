@@ -19,6 +19,7 @@ pytestmark = [
 ]
 
 UNITS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "units_120x120.aoe2scenario"
+TRIGGERS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "triggers_120x120.aoe2scenario"
 
 
 def _report():
@@ -39,7 +40,7 @@ def _report():
     )
 
 
-def _window():
+def _window(path: Path = UNITS_FIXTURE):
     from PyQt5.QtWidgets import QApplication
 
     from descape.viewer import ViewerWindow
@@ -48,7 +49,7 @@ def _window():
     window = ViewerWindow()
     window.resize(1200, 800)
     window.show()
-    window.load_scenario(UNITS_FIXTURE)
+    window.load_scenario(path)
     QApplication.processEvents()
     return window
 
@@ -352,6 +353,56 @@ def test_navigating_to_a_unit_finding_switches_to_units_mode_and_selects_it() ->
         window._navigate_to_finding(Finding("x", "warning", unit_key=(1, 201)))
         assert window.mode_combo.currentText() == "Units"
         assert window._selection == [(1, 201)]
+    finally:
+        conftest.close_window(window)
+
+
+
+def test_a_trigger_only_finding_is_navigable_in_the_dialog() -> None:
+    conftest.ensure_qapp()
+    from descape.analysis_dialog import AnalysisDialog
+    from descape.map_analysis import AnalysisReport, CheckResult, Finding
+
+    finding = Finding("trigger only", "info", trigger_index=2)
+    navigated = []
+    dialog = AnalysisDialog(on_navigate=navigated.append)
+    dialog.set_report(AnalysisReport((CheckResult("Triggers", (finding,)),)))
+    row = dialog.tree.topLevelItem(0).child(0)
+    assert row.toolTip(1) == ""
+    dialog.tree.itemDoubleClicked.emit(row, 0)
+    assert navigated == [finding]
+
+
+def test_navigating_to_a_trigger_finding_selects_its_trigger_and_entry_and_centres_its_tile() -> None:
+    """GH #282: the triggers fixture's trigger 3 has seven effects; the tile is
+    centred after the switch to Triggers mode."""
+    from descape.map_analysis import Finding
+
+    window = _window(TRIGGERS_FIXTURE)
+    centred = []
+    try:
+        window.map_view.center_on_tile = lambda x, y: centred.append((x, y))
+        window._navigate_to_finding(Finding("x", "warning", tile=(130, 7), trigger_index=3, trigger_entry=("effect", 4)))
+        assert window.mode_combo.currentText() == "Triggers"
+        assert window.trigger_panel.current_trigger_index() == 3
+        assert window.trigger_panel.current_entry_ref() == ("effect", 4)
+        assert centred == [(119, 7)]
+        window._navigate_to_finding(Finding("y", "info", trigger_index=1))
+        assert window.trigger_panel.current_trigger_index() == 1
+        assert centred == [(119, 7)]
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_unit_added_this_session_is_not_past_the_next_unit_id() -> None:
+    """GH #282: the file's stored counter is stale once the edit model mints an
+    id; the window passes the model's, which Save writes."""
+    window = _window()
+    try:
+        window._ensure_unit_edits().add(1, 4, 30.5, 30.5)
+        window.analysis_action.trigger()
+        group, rows = _rows(window._analysis_dialog, "Unit ids")
+        assert group.text(0).endswith("(clean)") and rows == []
     finally:
         conftest.close_window(window)
 

@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 from descape import (
     iso_geometry,
     perf_trace,
+    saved_views,
     zoom_preframe,
     zoom_stops,
 )
@@ -531,6 +532,83 @@ class _MapViewViewportMixin:
         h, v = self.horizontalScrollBar(), self.verticalScrollBar()
         h.setValue(h.value() + round(mapped.x() - viewport.width() / 2.0))
         v.setValue(v.value() + round(mapped.y() - viewport.height() / 2.0))
+
+    def capture_saved_view(self) -> saved_views.SavedView | None:
+        """View > Saved Views' capture (TASK-270): the continuous map point under
+        the viewport's exact centre, on the surface this Elevation View draws,
+        and the zoom as a multiple of fit. None with no map. Off the map (or on
+        a Stepped skirt pixel) the point is the ground plane's, at rise 0."""
+        fit = self._fit_baseline_scale()
+        if not fit:
+            return None
+        centre = self._viewport_center_scene()
+        sx, sy = centre.x(), centre.y()
+        proj = self._iso_proj
+        if self._terrain_style not in _ELEVATED_STYLES:
+            point = (sx / self._tile_pixels, sy / self._tile_pixels)
+        elif proj is None:
+            return None
+        else:
+            point = None
+            if self._terrain_style == "stepped":
+                tile = self._pick_tile(centre)
+                if tile is not None:
+                    rise = int(self._iso_elevations[tile[1], tile[0]]) * proj.elev_step
+                    point = iso_geometry.ground_map_point(sx, sy + rise, proj)
+            elif (cache := self._sloped_cache()) is not None and (tile := cache.pick_tile(int(sx), int(sy))):
+                point = iso_geometry.screen_to_map_point(
+                    sx, sy, "sloped", proj, corner_rise=cache.corner_rise, tile=tile, fold=cache.fold
+                )
+            if point is None:
+                point = iso_geometry.ground_map_point(sx, sy, proj)
+        zoom = abs(self.transform().determinant()) ** 0.5 / fit
+        return saved_views.SavedView(float(point[0]), float(point[1]), zoom)
+
+    def _map_point_scene(self, mx: float, my: float) -> QPointF:
+        """capture_saved_view()'s forward half: the scene point map point (mx, my)
+        is drawn at in this Elevation View, at rise 0 off the map. Sloped's rise
+        is unit_rise_px()'s int, so its round trip is good to about 1 scene px."""
+        proj = self._iso_proj
+        if self._terrain_style not in _ELEVATED_STYLES or proj is None:
+            return QPointF(mx * self._tile_pixels, my * self._tile_pixels)
+        rise = 0
+        w, h = self._map_width, self._map_height
+        if w and h and 0 <= mx <= w and 0 <= my <= h:
+            # A fraction of 1.0 at the far edge keeps unit_rise_px()'s [y+1, x+1] read in range.
+            x, y = min(int(mx), w - 1), min(int(my), h - 1)
+            if self._terrain_style == "stepped":
+                rise = int(self._iso_elevations[y, x]) * proj.elev_step
+            elif (cache := self._sloped_cache()) is not None:
+                nwse = iso_geometry.tile_nwse(cache.fold, x, y)
+                rise = iso_geometry.unit_rise_px(cache.corner_rise, x, y, mx - x, my - y, nwse)
+        return QPointF(*iso_geometry.map_point_to_scene_f(mx, my, rise, proj))
+
+    def apply_saved_view(self, view: saved_views.SavedView) -> bool:
+        """View > Saved Views' recall: the view's multiple of fit, clamped to the
+        wheel's bounds, then its map point centred, as far as the scrollbars
+        reach (the scene rect, overscroll margin included). Not zoom_about(),
+        the wheel's notch transform: a jump misses its preframes anyway.
+        False, and nothing changes, with no map."""
+        fit = self._fit_baseline_scale()
+        current = abs(self.transform().determinant()) ** 0.5
+        if not fit or current <= 0 or (self._terrain_style in _ELEVATED_STYLES and self._iso_proj is None):
+            return False
+        target = view.zoom * fit
+        if self._max_linear_scale is not None:
+            target = min(target, self._max_linear_scale)
+        if self._min_linear_scale is not None:
+            target = max(target, self._min_linear_scale)
+        factor = target / current
+        self._end_wheel_gesture()
+        with perf_trace.op("zoom"):
+            # Uniform, so it composes with Flat + Isometric's squash and rotate.
+            self.scale(factor, factor)
+            self._center_on_exact(self._map_point_scene(view.x, view.y))
+            self._snap_to_device_px()
+            self._preframe_dir = 1 if factor > 1.0 else -1
+            self._note_viewport_changed()
+            self._on_zoom_changed()
+        return True
 
     def set_isometric(self, enabled: bool) -> None:
         self._isometric = enabled

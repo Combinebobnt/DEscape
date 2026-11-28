@@ -66,7 +66,7 @@ class _SettingsDialogApplyMixin:
         ("_apply_ui_font", ("ui_font_family", "ui_font_size")),
         ("_apply_toolbar_buttons", ("toolbar_style",)),
         ("_apply_preload", ("preload_zoom_levels",)),
-        ("_apply_map_render", ("graphics_quality", "potato_mode", "elev_step_pct", "elev_step_divisor")),
+        ("_apply_map_render", ("graphics_quality", "potato_mode", "elev_step_pct", "elev_step_divisor", "sloped_elev_step_pct")),
         ("_apply_wall_opacity", ("wall_opacity_pct",)),
         ("_apply_overlay_colors", ("overlay_colors",)),
         ("_apply_overlay_opacity", ("overlay_opacity",)),
@@ -125,6 +125,7 @@ class _SettingsDialogApplyMixin:
         self._ui_font_apply_timer = self._debounce_timer(self._apply_ui_font)
         self._graphics_quality_apply_timer = self._debounce_timer(self._persist_graphics_quality)
         self._elev_step_apply_timer = self._debounce_timer(self._persist_elev_step_pct)
+        self._sloped_elev_step_apply_timer = self._debounce_timer(self._persist_sloped_elev_step_pct)
         self._pan_speed_apply_timer = self._debounce_timer(self._persist_pan_speed)
         self._wall_opacity_apply_timer = self._debounce_timer(self._persist_wall_opacity)
         # One shared debounce, for pan_speed_slider's reason: every setter is a full YAML round trip.
@@ -145,6 +146,7 @@ class _SettingsDialogApplyMixin:
             (self._ui_font_apply_timer, self._apply_ui_font),
             (self._graphics_quality_apply_timer, self._persist_graphics_quality),
             (self._elev_step_apply_timer, self._persist_elev_step_pct),
+            (self._sloped_elev_step_apply_timer, self._persist_sloped_elev_step_pct),
             (self._pan_speed_apply_timer, self._persist_pan_speed),
             (self._wall_opacity_apply_timer, self._persist_wall_opacity),
             (self._overlay_opacity_timer, self._persist_overlay_opacity),

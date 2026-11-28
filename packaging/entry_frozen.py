@@ -46,7 +46,7 @@ _EXPECTED_VERSIONS = [
 # same reason as the list above.
 _REPO_VERSIONS = ["1.21"]
 # Every pre-DE data version descape/versions/legacy/ supplies a structure for.
-_LEGACY_VERSIONS = ["1.20", "1.22", "1.26"]
+_LEGACY_VERSIONS = ["1.20", "1.21", "1.22", "1.23", "1.24", "1.26"]
 
 
 def _self_check() -> int:
@@ -141,6 +141,11 @@ def _self_check() -> int:
             failures.append(f"legacy structure for data version {version} is missing")
         else:
             print(f"OK  legacy structure for data version {version}")
+        try:
+            library_compat.load_vocabulary(library_compat.LEGACY_VOCABULARY_PREFIX + version)
+            print(f"OK  legacy trigger vocabulary for data version {version}")
+        except FileNotFoundError:
+            failures.append(f"legacy trigger vocabulary for data version {version} is missing")
 
     for version in _EXPECTED_VERSIONS:
         if not library_compat.vocabulary_is_available(version):

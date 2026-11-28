@@ -43,7 +43,8 @@ import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 import AoE2ScenarioParser.datasets.conditions as condition_dataset
 import AoE2ScenarioParser.datasets.effects as effect_dataset
@@ -74,9 +75,20 @@ from AoE2ScenarioParser.sections.dependencies.dependency import handle_retriever
 # this module is the only one that loads scenarios, so importing it here is what
 # guarantees the snapshot is clean. Never make this import lazy -- see that
 # module's docstring.
-from descape import effect_quantity, gc_hold, library_compat, scenario_format, trigger_parse_progress, unlinked_fields
+from descape import (
+    effect_quantity,
+    gc_hold,
+    legacy_triggers,
+    library_compat,
+    scenario_format,
+    trigger_parse_progress,
+    unlinked_fields,
+)
 from descape.content_roots import PROFILE_FOLDER_NAME
 from descape.terrain_palette import resolve_player_colors
+
+if TYPE_CHECKING:
+    from descape.scenario_compat import CompatPlan
 
 # AoE2ScenarioParser prints its own "Parsing FileHeader... Gathering FileHeader
 # data... FileHeader" progress lines to the console by default, using carriage
@@ -230,6 +242,18 @@ def _repo_versions() -> list[str]:
     """Every version with a repo structure.json, in version order."""
     found = [p.name[1:] for p in library_compat.REPO_VERSIONS_DIR.glob("v*") if (p / "structure.json").is_file()]
     return sorted(found, key=lambda v: _version_key(v) or ())
+
+
+def newest_structure_version() -> str:
+    """The highest version with a structure.json, library or repo: the base
+    a newer file is read as in compatibility mode (descape/scenario_compat.py)."""
+    found = {
+        p.name[1:]
+        for base in (library_compat.VERSIONS_DIR, library_compat.REPO_VERSIONS_DIR)
+        for p in base.glob("v*")
+        if (p / "structure.json").is_file() and _version_key(p.name[1:])
+    }
+    return max(found, key=lambda v: _version_key(v) or ())
 
 
 def _initialise_repo_vocabulary(scenario_version: str) -> None:
@@ -497,9 +521,21 @@ class LoadedScenario:
     # None draws today's Gaia-table art.
     player_art: tuple[tuple[int | None, int, int | None], ...] | None = None
 
-    # TASK-429: the on-disk format; `.legacy` (a pre-DE header-2 file) is
-    # read-only (scenario_write.refuse_legacy()) with triggers never read.
+    # TASK-429: the on-disk format; `.legacy` (a pre-DE header-2 file) saves only the edit families
+    # legacy_write.ALLOWED gives its band (TASK-520), its 1.6 triggers read through legacy_triggers.
     source_format: scenario_format.ScenarioFormat = scenario_format.DE_FORMAT
+
+    # TASK-057: set on a newer-version file opened in compatibility mode
+    # (descape/scenario_compat.py). Everything above then describes a proxy
+    # read under compat.base; nothing may write it.
+    compat: CompatPlan | None = None
+
+    @property
+    def vocabulary_version(self) -> str:
+        """The trigger vocabulary and clipboard key: scenario_version, or "legacy-<data version>" pre-DE."""
+        if self.source_format.legacy:
+            return library_compat.legacy_vocabulary_key(self.source_format.data_version)
+        return self.scenario_version
 
 
 def retriever_length(retriever: Any) -> int:
@@ -813,6 +849,7 @@ class _UnitCodec:
     kwargs: tuple[str, ...]
     attrs: tuple[str, ...]
     unsupported: tuple[str, ...]
+    defaults: tuple[tuple[str, Any], ...] = ()  # links the band does not store, and their values
 
 
 def _unit_links() -> list:
@@ -820,12 +857,15 @@ def _unit_links() -> list:
     return [link for link in library_compat._iter_links(Unit._link_list) if link.retrieve_history_number is None]
 
 
-def _unit_codec(structure: Mapping[str, Any], scenario_version: str) -> _UnitCodec | None:
+def _unit_codec(
+    structure: Mapping[str, Any], scenario_version: str, absent: Mapping[str, Any] = MappingProxyType({})
+) -> _UnitCodec | None:
     """The UnitStruct format of a Units `structure`, plus how each field is
     carried. None if the format is refused, or if any field has no carrier:
     a fast-loaded file has no parsed slots, so a dirty save's library commit
     builds default structs and an uncarried field would lose its value. Also
-    None if a supported link's field is missing (the library walk raises)."""
+    None if a supported link's field is missing (the library walk raises),
+    unless `absent` (scenario_format.absent_unit_fields()) defaults it."""
     units_type = structure.get("retrievers", {}).get("players_units", {}).get("type", "")
     player_units = structure.get("structs", {}).get(units_type.removeprefix("struct:"), {})
     unit_type = player_units.get("retrievers", {}).get("units", {}).get("type", "")
@@ -848,25 +888,32 @@ def _unit_codec(structure: Mapping[str, Any], scenario_version: str) -> _UnitCod
         else:
             return None
     unsupported = []
+    defaults = []
     for link in by_target.values():
         if link.support is not None and not link.support.supports(scenario_version):
             unsupported.append(link.name)
+        elif link.link in absent and link.link not in names:
+            defaults.append((link.name, absent[link.link]))
         elif link.link not in names:
             return None
-    return _UnitCodec(unit_format, tuple(kwargs), tuple(attrs), tuple(unsupported))
+    return _UnitCodec(unit_format, tuple(kwargs), tuple(attrs), tuple(unsupported), tuple(defaults))
 
 
 def unit_codec(loaded: LoadedScenario) -> _UnitCodec | None:
     """_unit_codec() for a loaded file's own structure. descape/unit_model.py's
     reproduce gate encodes each Unit with it."""
-    return _unit_codec(loaded._scenario.structure["Units"], loaded.scenario_version)
+    absent = scenario_format.absent_unit_fields(loaded.source_format)
+    return _unit_codec(loaded._scenario.structure["Units"], loaded.scenario_version, absent)
 
 
 def unit_field_supported(loaded: LoadedScenario, name: str) -> bool:
     """True if this file's version stores Unit's `name` field, by the link's
     own support range, the test _unit_codec() applies (GH #186: `capture_flag`
     is 1.59 only). False for a name Unit has no link for. Never None, unlike
-    unit_codec(), so it also answers for a file whose structure has no codec."""
+    unit_codec(), so it also answers for a file whose structure has no codec.
+    False for a field the file's band does not store (absent_unit_fields())."""
+    if name in scenario_format.absent_unit_fields(loaded.source_format):
+        return False
     for link in _unit_links():
         if link.name == name:
             return link.support is None or link.support.supports(loaded.scenario_version)
@@ -909,6 +956,11 @@ def _walk_units(
     return values, spans, o
 
 
+def _absent_fields_message(fmt: scenario_format.ScenarioFormat, fast_units: bool) -> str:
+    why = "the fast unit reader is off" if not fast_units else "its unit records do not match the fast unit reader"
+    return f"DEscape can't open this file.\n\n{fmt.display_name} unit data can only be read by the fast unit reader, and {why}."
+
+
 def unit_values(unit_format: _UnitFormat, raw: bytes) -> tuple | None:
     """One UnitStruct's values off exactly its own bytes, as _walk_units()
     reads them. None if `raw` is not exactly one unit. descape/unit_model.py's
@@ -926,7 +978,9 @@ class _FastUnits:
     spans: list  # per player, one (offset, length) per unit within the body
 
 
-def _load_units_fast(scenario: AoE2DEScenario, data_igen: IncrementalGenerator) -> _FastUnits | None:
+def _load_units_fast(
+    scenario: AoE2DEScenario, data_igen: IncrementalGenerator, absent: Mapping[str, Any]
+) -> _FastUnits | None:
     """The Units section's walk, as AoE2FileSection.set_data_from_generator()
     runs it, except that each PlayerUnitsStruct's units are read raw by
     _walk_units(); their retriever is left empty and every byte_length still
@@ -934,7 +988,7 @@ def _load_units_fast(scenario: AoE2DEScenario, data_igen: IncrementalGenerator) 
     is refused or a block would run past the body: the caller then takes the
     library walk instead."""
     structure = scenario.structure["Units"]
-    codec = _unit_codec(structure, scenario.scenario_version)
+    codec = _unit_codec(structure, scenario.scenario_version, absent)
     if codec is None:
         return None
     start = data_igen.progress
@@ -1006,6 +1060,7 @@ def _fast_unit_manager(scenario: AoE2DEScenario, fast: _FastUnits) -> UnitManage
     if any(fast.values):
         absent = {link.name: None for link in _unit_links() if link.overwrite_unsupported_properties(Unit, uuid)}
     codec = fast.codec
+    defaults = dict(codec.defaults)
     names = codec.unit_format.names
     attrs = codec.attrs
     entries = scenario.sections["Units"].retriever_map["players_units"].data
@@ -1015,6 +1070,7 @@ def _fast_unit_manager(scenario: AoE2DEScenario, fast: _FastUnits) -> UnitManage
         for row in rows:
             fields = dict(zip(names, row, strict=True))
             carried = [(name, fields.pop(name)) for name in attrs]
+            fields.update(defaults)
             fields.update(absent)
             unit = Unit(player=player, **fields, uuid=uuid)
             for name, value in carried:
@@ -1071,6 +1127,9 @@ _HEADER_WALK_ORDER = (
     "creator_name",
     "trigger_count",
 )
+# A header-2 (pre-DE) header walks individual_victories_used too. DE v1.21, v1.36 and v1.37 also
+# have that field but keep the walk above, which has never reconciled on them (TASK-520).
+_LEGACY_HEADER_WALK_ORDER = (*_HEADER_WALK_ORDER[:5], "individual_victories_used", *_HEADER_WALK_ORDER[5:])
 _STR32_PREFIX_SIZE = 4  # str32's length prefix is a 32-bit (4-byte) int
 _STR32_LENGTH_PREFIX_STRUCT = struct.Struct("<I")
 # The two str32 fields in _HEADER_WALK_ORDER, read straight off the raw
@@ -1079,30 +1138,46 @@ _STR32_LENGTH_PREFIX_STRUCT = struct.Struct("<I")
 _HEADER_STR32_FIELDS = frozenset({"scenario_instructions", "creator_name"})
 
 
-def _verify_messages_block(decompressed: bytes, start: int, end: int, retriever_map: dict) -> bool:
-    """True iff a forward walk of the 12 Messages retrievers from `start`
+def _verify_messages_block(
+    decompressed: bytes, start: int, end: int, retriever_map: dict, legacy: bool = False
+) -> bool:
+    """True iff a forward walk of the Messages retrievers the structure has (12 on DE) from `start`
     lands exactly on `end`, every str16 payload is byte-identical to
     parsed_value.encode('utf-8'), and no field parsed to bytes instead of
     str -- the load-time trust check for messages_section_start/_end,
-    mirroring _verify_terrain_block()/_verify_units_block() above."""
+    mirroring _verify_terrain_block()/_verify_units_block() above. On a
+    pre-DE file (`legacy`) a payload is code-page bytes, often with a
+    trailing NUL: it must instead parse to what the library made of it."""
     pos = start
     for name in _MESSAGE_FIELD_ORDER:
         retriever = retriever_map.get(name)
         if retriever is None:  # Age of Kings has no scouts pair
             continue
         length = retriever_length(retriever)
+        if legacy and name in _MESSAGE_TEXT_FIELDS:  # re-serializing drops a trailing NUL: read the prefix
+            if pos + _STR16_PREFIX_SIZE > len(decompressed):
+                return False
+            (n,) = struct.unpack_from("<h", decompressed, pos)
+            if n < 0:  # fail closed: a rewrite would store it as 0, not verbatim
+                return False
+            length = _STR16_PREFIX_SIZE + n
         if name in _MESSAGE_TEXT_FIELDS:
             value = retriever.data
             if not isinstance(value, str):
                 return False
             payload = decompressed[pos + _STR16_PREFIX_SIZE : pos + length]
-            if payload != value.encode("utf-8"):
+            if legacy:
+                if value != _decode_str32(payload):
+                    return False
+            elif payload != value.encode("utf-8"):
                 return False
         pos += length
     return pos == end
 
 
-def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, tuple[int, int]]:
+def _header_field_spans(
+    header_bytes: bytes, retriever_map: dict, legacy: bool = False
+) -> dict[str, tuple[int, int]]:
     """(start, end) within header_bytes of every FileHeader retriever, from
     one forward walk in true on-disk order -- the shared derivation behind
     both header_instructions_span and header_player_count_span. Walks only
@@ -1132,7 +1207,7 @@ def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, t
     """
     pos = 0
     spans: dict[str, tuple[int, int]] = {}
-    for name in _HEADER_WALK_ORDER:
+    for name in _LEGACY_HEADER_WALK_ORDER if legacy else _HEADER_WALK_ORDER:
         if name not in retriever_map:
             continue
         if name in _HEADER_STR32_FIELDS:
@@ -1152,20 +1227,20 @@ def _header_field_spans(header_bytes: bytes, retriever_map: dict) -> dict[str, t
     return spans
 
 
-def _header_instructions_span(header_bytes: bytes, retriever_map: dict) -> tuple[int, int]:
+def _header_instructions_span(header_bytes: bytes, retriever_map: dict, legacy: bool = False) -> tuple[int, int]:
     """scenario_instructions' payload span, or (-1, -1) if the header walk
     doesn't reconcile -- see _header_field_spans()."""
-    return _header_field_spans(header_bytes, retriever_map).get("scenario_instructions", (-1, -1))
+    return _header_field_spans(header_bytes, retriever_map, legacy).get("scenario_instructions", (-1, -1))
 
 
-def _header_player_count_span(header_bytes: bytes, retriever_map: dict) -> tuple[int, int]:
+def _header_player_count_span(header_bytes: bytes, retriever_map: dict, legacy: bool = False) -> tuple[int, int]:
     """FileHeader.player_count's own span, or (-1, -1) if the header walk
     doesn't reconcile -- see _header_field_spans(). This is the second of
     the two buffers Number of Players writes (the other is
     DataHeader.player_data_1[i].active, in decompressed_body); the two are
     coupled (player_count == count of active flags among players 1..8,
     measured on every corpus file) and are written from one value."""
-    return _header_field_spans(header_bytes, retriever_map).get("player_count", (-1, -1))
+    return _header_field_spans(header_bytes, retriever_map, legacy).get("player_count", (-1, -1))
 
 
 def load_map_and_units(path: str | Path, *, fast_terrain: bool = True, fast_units: bool = True) -> LoadedScenario:
@@ -1197,6 +1272,8 @@ def _activate_vocabulary(game_version: str, scenario_version: str, structure_sou
         library_compat.fix_effect_defaults(effect_dataset.effect_names, effect_dataset.default_attributes)
     elif structure_source == "repo" and repo_version_has_triggers(scenario_version):
         _initialise_repo_vocabulary(scenario_version)
+    elif structure_source == "legacy" and library_compat.vocabulary_is_available(scenario_version):
+        _initialise_repo_vocabulary(scenario_version)  # a "legacy-X" vocabulary_version key
 
 
 def reactivate(loaded: LoadedScenario) -> None:
@@ -1206,14 +1283,24 @@ def reactivate(loaded: LoadedScenario) -> None:
     it a condition added to `loaded` takes the other version's defaults."""
     global _active_trigger_uuid
 
-    _activate_vocabulary(loaded._scenario.game_version, loaded.scenario_version, loaded.structure_source)
+    _activate_vocabulary(loaded._scenario.game_version, loaded.vocabulary_version, loaded.structure_source)
     if loaded._trigger_manager is not None:
         _active_trigger_uuid = None
         parse_triggers(loaded)
 
 
 @gc_hold.paused()
-def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_units: bool = True) -> LoadedScenario:
+def _load_map_and_units(
+    raw: bytes,
+    path: Path,
+    fast_terrain: bool = True,
+    fast_units: bool = True,
+    *,
+    structure_version: str | None = None,
+    body: bytes | None = None,
+) -> LoadedScenario:
+    # structure_version and body are descape/scenario_compat.py's proxy load
+    # only: read under that version, not the header's, and skip the inflate.
     # IncrementalGenerator.from_file() is exactly `open(path,'rb').read()` followed by
     # this same constructor (name=str(path), file_content=raw) -- see its source in
     # AoE2ScenarioParser.helper.incremental_generator. Building it from already-read
@@ -1221,9 +1308,10 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     # behaviour-preserving for load_map_and_units() and is what makes
     # load_map_and_units_from_bytes() possible.
     igen = IncrementalGenerator(str(path), raw)
-    scenario_version = _get_file_version(igen)
+    scenario_version = structure_version or _get_file_version(igen)
     scenario_variant = _get_scenario_variant(igen)
     source_format, legacy_body = scenario_format.read_format(raw)
+    absent_unit_fields = scenario_format.absent_unit_fields(source_format)
     legacy_structure = library_compat.legacy_structure_path(source_format.data_version)
 
     scenario = AoE2DEScenario(
@@ -1239,8 +1327,9 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         raise UnsupportedStructureVersion(scenario_version)
     repo_structure = None if source_format.legacy else _repo_structure_path(scenario_version)
     if source_format.legacy:
-        # Like the repo branch below: parsed fresh, no vocabulary init.
+        # Like the repo branch below: parsed fresh, the legacy vocabulary initialised.
         scenario.structure = json.loads(legacy_structure.read_text(encoding="utf-8"))
+        _activate_vocabulary(scenario.game_version, library_compat.legacy_vocabulary_key(source_format.data_version), "legacy")
     elif repo_structure is None:
         scenario._load_structure()
         # _get_structure() parses the JSON fresh per call, so this cannot leak across loads.
@@ -1264,7 +1353,10 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         )
 
     original_compressed_body = igen.get_remaining_bytes()
-    decompressed = legacy_body if source_format.legacy else _decompress_bytes(original_compressed_body)
+    if body is not None:
+        decompressed = body
+    else:
+        decompressed = legacy_body if source_format.legacy else _decompress_bytes(original_compressed_body)
     data_igen = IncrementalGenerator(name="Scenario Data", file_content=decompressed)
     scenario._decompressed_file_data = decompressed
 
@@ -1290,7 +1382,10 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         if section_name == "Map" and fast_terrain:
             fast = _load_map_fast(scenario, data_igen)
         if section_name == "Units" and fast_units:
-            fast_unit_walk = _load_units_fast(scenario, data_igen)
+            fast_unit_walk = _load_units_fast(scenario, data_igen, absent_unit_fields)
+        if section_name == "Units" and fast_unit_walk is None and absent_unit_fields:
+            # The library walk cannot read a UnitStruct lacking a linked field: name the cause instead.
+            raise UnsupportedStructureVersion(scenario_version, _absent_fields_message(source_format, fast_units))
         walked = fast if section_name == "Map" else fast_unit_walk if section_name == "Units" else None
         if walked is None:
             scenario._create_and_load_section(section_name, data_igen)
@@ -1383,12 +1478,13 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
     player_colors, team_indices = resolve_player_colors(_read_player_colors(scenario))
 
     messages_retriever_map = scenario.sections["Messages"].retriever_map
+    legacy = source_format.legacy
     messages_write_supported = _verify_messages_block(
-        decompressed, messages_section_start, messages_section_end, messages_retriever_map
+        decompressed, messages_section_start, messages_section_end, messages_retriever_map, legacy
     )
     header_retriever_map = scenario.sections["FileHeader"].retriever_map
-    header_instructions_span = _header_instructions_span(header_bytes, header_retriever_map)
-    header_player_count_span = _header_player_count_span(header_bytes, header_retriever_map)
+    header_instructions_span = _header_instructions_span(header_bytes, header_retriever_map, legacy)
+    header_player_count_span = _header_player_count_span(header_bytes, header_retriever_map, legacy)
 
     loaded = LoadedScenario(
         path=path,
@@ -1427,7 +1523,7 @@ def _load_map_and_units(raw: bytes, path: Path, fast_terrain: bool = True, fast_
         # Known up front for a vocabulary-less repo structure: parse_triggers()
         # never tries one.
         trigger_read_supported=(
-            False
+            (None if _read_trigger_version(trigger_tail) == legacy_triggers.TRIGGER_VERSION else False)
             if source_format.legacy
             else None
             if repo_structure is None or repo_version_has_triggers(scenario_version)
@@ -1630,8 +1726,9 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
     the 0.9.3 pin, EndOfFileError on 0.9.4). Those files open and edit
     normally for terrain and units; only trigger reading is unavailable.
 
-    Also returns None, without attempting a parse, for a pre-DE file
-    (structure_source "legacy") and for a file loaded from a
+    A pre-DE file with trigger version 1.6 parses from legacy_triggers.normalize()'s
+    bytes, read-only. Also returns None, without attempting a parse, for any
+    other pre-DE trigger version, for a compat proxy, and for a file loaded from a
     repo structure with no repo vocabulary (v1.21, see
     repo_version_has_triggers()): nothing ships condition/effect definitions
     for it and _load_map_and_units() never initialised any, so a parse would
@@ -1662,8 +1759,10 @@ def parse_triggers(loaded: LoadedScenario) -> TriggerManager | None:
 
     if _parse_in_flight:
         raise RuntimeError("parse_triggers() called while a first trigger parse is running")
-    if loaded.structure_source == "legacy" or (
-        loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version)
+    if (
+        loaded.structure_source == "compat"
+        or (loaded.structure_source == "legacy" and loaded.trigger_version != legacy_triggers.TRIGGER_VERSION)
+        or (loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version))
     ):
         loaded.trigger_read_supported = False
         return None
@@ -1704,13 +1803,16 @@ def _first_parse(loaded: LoadedScenario, progress) -> TriggerManager | None:
 
     _active_trigger_uuid = scenario.uuid
     loaded.trigger_read_supported = True
+    scenario._object_manager.managers["Trigger"] = manager
+    loaded._trigger_manager = manager
+    if loaded.source_format.legacy:  # parsed from normalized bytes: no offset maps onto the file
+        loaded.trigger_write_supported = False
+        return manager
     loaded.trigger_write_supported = _trigger_alignment_ok(loaded.trigger_tail, igen)
     loaded.triggers_section_end = loaded.units_section_end + triggers_end_in_tail
     if files_span_in_tail[0] >= 0:
         loaded.files_section_start = loaded.units_section_end + files_span_in_tail[0]
         loaded.files_section_end = loaded.units_section_end + files_span_in_tail[1]
-    scenario._object_manager.managers["Trigger"] = manager
-    loaded._trigger_manager = manager
     return manager
 
 
@@ -1750,7 +1852,8 @@ def _read_trigger_sections(loaded: LoadedScenario):
     # Triggers begins at offset 0 of trigger_tail: the Units break
     # captured units_section_end, and trigger_tail is the rest of the
     # body from there.
-    igen = IncrementalGenerator(name="Triggers", file_content=loaded.trigger_tail)
+    tail = legacy_triggers.normalize(loaded.trigger_tail) if loaded.source_format.legacy else loaded.trigger_tail
+    igen = IncrementalGenerator(name="Triggers", file_content=tail)
     started = False
     triggers_end_in_tail = -1
     files_span_in_tail = (-1, -1)

@@ -1,0 +1,96 @@
+{
+  "_comment": "terrain_id -> [{id, density, centering}, ...] GAIA units the in-game editor's Eye Candy option scatters over that terrain, in roll order. Pure factual id/density correspondence extracted from the game's own data table via genieutils-py, not game asset content itself. Regenerate with tools/gen_terrain_unit_map.py.",
+  "terrains": {
+    "10": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 411
+      }
+    ],
+    "13": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 351
+      }
+    ],
+    "17": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 414
+      }
+    ],
+    "18": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 348
+      }
+    ],
+    "19": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 350
+      }
+    ],
+    "20": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 349
+      }
+    ],
+    "21": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 413
+      }
+    ],
+    "48": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 1051
+      }
+    ],
+    "49": [
+      {
+        "centering": 1,
+        "density": 250,
+        "id": 1052
+      }
+    ],
+    "50": [
+      {
+        "centering": 1,
+        "density": 500,
+        "id": 1063
+      }
+    ],
+    "55": [
+      {
+        "centering": 1,
+        "density": 800,
+        "id": 1144
+      }
+    ],
+    "56": [
+      {
+        "centering": 1,
+        "density": 1000,
+        "id": 1146
+      }
+    ],
+    "6": [
+      {
+        "centering": 1,
+        "density": 3,
+        "id": 709
+      }
+    ]
+  }
+}

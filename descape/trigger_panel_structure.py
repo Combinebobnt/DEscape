@@ -66,6 +66,28 @@ class _TriggerPanelStructureMixin:
         if select is not None:
             self.select_entry(*select)
 
+    def refresh_trigger_rows(self, indices) -> None:
+        """Patch triggers whose own fields changed outside Trigger Details
+        (the Objectives dock, GH #391) without a repopulate: each row's status,
+        since the objective flags feed needs_effects(), and the form when it
+        shows one of them. The current entry row stays current, and an open
+        picker stays open on its latched entry."""
+        manager = self._manager()
+        if manager is None:
+            return
+        changed = {index for index in indices if 0 <= index < len(manager.triggers)}
+        for index in changed:
+            self._recompute_trigger(manager, index)
+            self._style_trigger_row(index)
+        if self.current_trigger_index() not in changed or self.detail_stack.currentIndex() == self._DETAIL_MULTI:
+            return
+        current = self.entry_tree.currentItem()
+        data = None if current is None else current.data(0, Qt.UserRole)
+        keep = data if data is not None and data[0] in ("condition", "effect") else None
+        self._populate_entry_tree()
+        if keep is not None:
+            self.select_entry(*keep)
+
     def select_trigger(self, index: int) -> None:
         """Select the trigger at list `index`, clamped. Used after a
         structural edit to land the user on the trigger that edit produced,
@@ -689,7 +711,7 @@ class _TriggerPanelStructureMixin:
             # Condition and New Effect lists are alphabetical, and an id order
             # is meaningless to a scenario designer.
             for entry in sorted(offered, key=lambda e: e.name):
-                child = QTreeWidgetItem([entry.name.replace("_", " ")])
+                child = QTreeWidgetItem([entry.label])
                 child.setData(0, Qt.UserRole, (kind, entry.id))
                 group.addChild(child)
                 if (

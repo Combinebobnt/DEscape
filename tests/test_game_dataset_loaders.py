@@ -58,6 +58,16 @@ def test_object_names_follow_the_dataset():
     assert object_catalog.display_name(HOPLITE_SPEARMAN) == "Spearman"
 
 
+def test_a_terrain_de_retired_takes_the_name_its_own_game_gives_it():
+    """TASK-430: snow 33/34 are obsolete in AoE2:DE but real in the 1999 game, which names them from its .dat."""
+    names = {}
+    for game in games.ids():
+        game_dataset.set_active(game)
+        names[game] = [terrain_palette.name_for_terrain_id(t) for t in (33, 34)]
+    assert names[games.AOE2.id] == names[games.ROR.id] == ["OBSOLETE_SNOW_DIRT", "OBSOLETE_SNOW_GRASS"]
+    assert names[games.AOC.id] == ["SNOW_DIRT", "SNOW_GRASS"]
+
+
 def test_the_ror_object_list_comes_from_the_ror_dat_not_the_aoe2_enums():
     _ror()
     listed = {entry.id: entry for entry in object_catalog.objects()}

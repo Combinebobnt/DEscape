@@ -1,4 +1,4 @@
-# Scripts
+# Scripts and Addons
 
 A script is a small Python file that edits the open map: paint a patch of terrain, move every unit of a kind, raise the ground under a player's buildings. It runs once, against the scenario open in the window, and what it changes is one undo step.
 
@@ -62,3 +62,39 @@ A request `editor` cannot carry out, such as rotating a building or garrisoning 
 A script is ordinary Python, running with your own privileges: it can read and write any file you can. The rules above keep `editor` inside what DEscape's own tools may do and catch mistakes; they do not stop harmful code. Run only scripts you trust, which is why DEscape asks before each new or changed one.
 
 In a prebuilt build (the Windows, macOS and Linux downloads), a script can import only what the app ships: Python's standard library modules that DEscape itself uses, numpy, PyQt5, AoE2ScenarioParser and DEscape's own modules. Run from source, it can import anything installed in DEscape's Python environment.
+
+## Addons
+
+An addon adds commands of its own to **Tools > Addons**. It is a `.py` file, or a folder holding an `__init__.py`, in your addons folder; DEscape loads every addon there when it starts. Names starting with a dot or an underscore are skipped.
+
+**Tools > Addons > Open Addons Folder** creates the folder if needed and opens it. It is `addons` in the same per-user data folder as `scripts`: `%LOCALAPPDATA%\DEscape\addons` on Windows, `~/.local/share/DEscape/addons` on Linux and `~/Library/Application Support/DEscape/addons` on macOS. The environment variable `DESCAPE_ADDON_PATH` points it somewhere else. A new addon is picked up at the next start.
+
+Shortly after the window opens, DEscape asks "Run addon?" for each addon it has not loaded before, with its path. No is the default, and a declined addon is skipped for that session. Once you say Yes it loads without asking, until the addon's code changes. Loading an addon runs its code, as a script does, and it is just as unsandboxed: load only addons you trust. Agreeing to run a file as a script does not agree to load it as an addon. For a folder addon, "its code" means every `.py` file in it; other files there (compiled modules, data) are not checked.
+
+An addon registers its commands while it loads:
+
+```python
+from descape.addon_api import ADDON_COMMANDS, AddonCommand
+
+
+def paint_corner(editor):
+    for x in range(5):
+        editor.set_terrain(x, 0, 2)
+
+
+def needs_units(editor):
+    return None if editor.units(1) else "player 1 has no units"
+
+
+ADDON_COMMANDS.register(
+    AddonCommand("paint_corner", "Paint Corner", "Paints five tiles of terrain 2", paint_corner, needs_units)
+)
+```
+
+`AddonCommand(name, title, status_tip, run, refusal=None)`: `name` is the command's id and must be unique across every addon, `title` is its row in **Tools > Addons**, and `status_tip` is the row's tooltip. Choosing the row calls `run(editor)`, with the same `editor` a script gets and the same rules: one undo step labelled with the title, everything put back on an error or Cancel, output in **Help > Debug Log**. `refusal(editor)`, if given, is asked each time the menu opens and again before a run: it returns why the command cannot run now (the row is greyed out with that reason) or None. It should only read through `editor`: a change it makes to a unit or tile is put back, and its row is greyed out.
+
+An addon that raises while it loads, or calls `sys.exit()`, is skipped, and none of the commands it registered appear. Other addons still load.
+
+**Help > Debug Log** lists each addon with what became of it (loaded, declined or failed) and a failure's traceback. The last row of **Tools > Addons** sums it up, such as "2 loaded, 1 failed". Starting DEscape with `--no-addons`, or with `DESCAPE_NO_ADDONS=1` set, loads no addons and turns scripts off for that session: the first thing to try when DEscape misbehaves after adding one, and worth mentioning in a bug report. **Help > Report a Bug…** fills in how many addons loaded.
+
+What a prebuilt build lets an addon import is the same as for a script, above.

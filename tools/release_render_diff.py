@@ -6,8 +6,8 @@ Stepped and Sloped with sprites off and on, and reports every pixel that
 differs outside the changes made on purpose since that release. The
 release's `descape/` is extracted with `git archive` into a scratch directory
 and rendered by the same Python in its own subprocess, with the install and
-the Isometric elevation height pinned through a throwaway `config.yaml`, so
-neither side reads your real settings.
+the Stepped and Sloped elevation heights pinned to one stop through a
+throwaway `config.yaml`, so neither side reads your real settings.
 
 The baseline rolls. BASE_REF is the latest release tag and moves to each new
 tag once it is cut, so the registry below only ever holds the changes since
@@ -177,6 +177,25 @@ def _no_unit_state_fade() -> None:
     unit_state.GHOSTED_STATES = frozenset()
 
 
+def _no_flat_deproject() -> None:
+    """Put the pre-TASK-350 Flat draw back: a thin cliff straight is contain-fitted like any other frame."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "FLAT_DEPROJECT_CLIFF_FRAMES")
+    unit_sprites.FLAT_DEPROJECT_CLIFF_FRAMES = frozenset()
+
+
+def _waterfalls_as_marks() -> None:
+    """Put the waterfalls' pre-TASK-222 draw back: no graphic table entry, so they draw as marks.
+    TASK-222's hidden twins 902 and 939-942 keep theirs: no gate file places them."""
+    from descape import unit_sprites
+
+    _require(unit_sprites, "graphic_map")
+    table = {k: v for k, v in unit_sprites.graphic_map().items() if k not in (896, 1635, 2598)}
+    unit_sprites.graphic_map = lambda: table
+    unit_sprites.clear_caches()
+
+
 # ---------------------------------------------------------------------------
 # The registry.
 
@@ -238,6 +257,20 @@ NEUTRALIZATIONS: tuple[Neutralization, ...] = (
         since="v0.11", control_file=OLD_ALLIES,
         must_fail=ALL_CONFIGS,
         patch=_no_unit_state_fade,
+    ),
+    Neutralization(
+        "flat-thin-cliffs",
+        "TASK-350: top-down Flat de-projects the thin cliff straights so a run lies along the grid",
+        since="v0.11", control_file=ELCID,
+        must_fail=frozenset({("flat", True)}),
+        patch=_no_flat_deproject,
+    ),
+    Neutralization(
+        "waterfalls",
+        "GH #330 (TASK-222): WFALL and SWFALL draw their particle effect's falling water, not a mark",
+        since="v0.11", control_file=LELOI,
+        must_fail=SPRITES_ON,
+        patch=_waterfalls_as_marks,
     ),
 )
 
@@ -541,7 +574,10 @@ def extract_base(ref: str, dest: Path) -> Path:
 def _write_config(config_home: Path, install: Path, pct: int) -> None:
     app_dir = config_home / "DEscape"
     app_dir.mkdir(parents=True, exist_ok=True)
-    (app_dir / "config.yaml").write_text(f"aoe2de_install: {json.dumps(str(install))}\nelev_step_pct: {pct}\n")
+    # Both styles' keys at one pct: a base from before Sloped had its own (GH #288) ignores the second.
+    (app_dir / "config.yaml").write_text(
+        f"aoe2de_install: {json.dumps(str(install))}\nelev_step_pct: {pct}\nsloped_elev_step_pct: {pct}\n"
+    )
 
 
 def _launch(spec: dict, config_home: Path, install: Path, composite: str) -> None:
@@ -796,7 +832,10 @@ def main() -> int:
     )
     parser.add_argument("scenarios", type=Path, nargs="*", help="Scenario files (default: the corpus subset in examples/)")
     parser.add_argument("--base", default=BASE_REF, help=f"Release ref to compare against (default {BASE_REF})")
-    parser.add_argument("--elev-step-pct", type=int, nargs="+", default=list(DEFAULT_PCTS), help="Isometric elevation height stops")
+    parser.add_argument(
+        "--elev-step-pct", type=int, nargs="+", default=list(DEFAULT_PCTS),
+        help="Elevation height stops, each pinned for Stepped and Sloped alike",
+    )
     parser.add_argument("--style", choices=STYLES, nargs="+", default=list(STYLES))
     parser.add_argument("--install", type=Path, default=None, help="AoE2:DE install (default: AOE2DE_INSTALL_PATH or the configured one)")
     parser.add_argument("--composite", choices=("numpy", "native"), default="numpy", help="This checkout's composite backend")

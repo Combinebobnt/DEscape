@@ -31,6 +31,10 @@ asymmetric markers are written onto the body before compressing (see
 marker_tiles()), and the file is verified on raw bytes, since the pinned
 library's MapManager cannot load a non-square map yet. The tool prints what
 the user should see in the real editor for each file.
+
+`--min-tiles N` lowers the size floor to write in-game probe files below
+the app's MIN_MAP_TILES (re-probing the game's own floor after a patch);
+each such file prints what to record in the real editor.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ from descape.scenario_io import (
 )
 from descape.scenario_new import (
     BLANK_TERRAIN_STRUCT,
+    MIN_MAP_TILES,
     STANDARD_MAP_SIZES,
     blank_body,
     blank_scenario_bytes,
@@ -88,13 +93,13 @@ class GenerationVerificationError(Exception):
 
 
 def parse_size(text: str) -> tuple[int, int]:
-    """'168' -> (168, 168); '120x168' -> (120, 168), width first."""
+    """'168' -> (168, 168); '120x168' -> (120, 168), width first. The range
+    is checked in main(), once --min-tiles is known."""
     parts = text.lower().split("x")
     try:
-        if len(parts) == 1:
-            return validate_map_size(int(parts[0]))
-        if len(parts) == 2:
-            return validate_map_size(int(parts[0]), int(parts[1]))
+        if len(parts) in (1, 2):
+            width = int(parts[0])
+            return width, int(parts[-1])
     except ValueError as e:
         raise argparse.ArgumentTypeError(str(e)) from e
     raise argparse.ArgumentTypeError(f"expected N or WxH, got {text!r}")
@@ -193,7 +198,7 @@ def _verify_raw(path: Path, donor: LoadedScenario, width: int, height: int, mark
     if body[: off - 8] != donor_body[: off - 8] or body[end:] != donor_body[donor_end:]:
         raise fail(f"{path}: bytes outside the size pair and terrain block changed")
 
-    unmarked = blank_body(donor, width, height)
+    unmarked = blank_body(donor, width, height, min_tiles=min(width, height))
     if unmarked[off:end] != BLANK_TERRAIN_STRUCT * (width * height):
         raise fail(f"{path}: the pre-marker body is not uniformly blank")
     differing = {
@@ -206,6 +211,18 @@ def _verify_raw(path: Path, donor: LoadedScenario, width: int, height: int, mark
         o = off + TERRAIN_STRUCT_SIZE * i
         if body[o] != terrain_id or body[o + 1 : o + 7] != BLANK_TERRAIN_STRUCT[1:]:
             raise fail(f"{path}: tile {i} is not terrain {terrain_id} with blank bytes 1..6")
+
+
+def probe_checklist(tiles: int) -> str:
+    """What to record in the AoE2:DE Scenario Editor for a map below the
+    app's floor, the in-game probe that sets the new floor."""
+    return "\n".join(
+        (
+            f"  (a) Opens with no error. (b) The map is {tiles}x{tiles}: count the tiles along one edge,",
+            "      or check the Map tab. (c) Save in the editor, reopen, still that size.",
+            "      (d) Test the scenario for about 10 seconds with no crash.",
+        )
+    )
 
 
 def expectation(width: int, height: int) -> str:
@@ -271,7 +288,20 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, help="Planting seed (default: a random one, printed)")
     parser.add_argument("--name", help="Output file name, for a single size (default: blank_WxH.aoe2scenario)")
+    parser.add_argument(
+        "--min-tiles",
+        type=int,
+        default=MIN_MAP_TILES,
+        help=f"Size floor, lowered to write in-game probe files below the app's {MIN_MAP_TILES} (default {MIN_MAP_TILES})",
+    )
     args = parser.parse_args()
+    for width, height in args.sizes:
+        try:
+            validate_map_size(width, height, min_tiles=args.min_tiles)
+        except ValueError as e:
+            parser.error(str(e))
+        if width != height and args.min_tiles < MIN_MAP_TILES:
+            parser.error("--min-tiles is for square sizes only: the non-square markers need a side of 61 or more")
     filled = args.terrain != 0 or args.trees or args.eye_candy or args.game_data != game_dataset.AOE2
     if filled and any(width != height for width, height in args.sizes):
         parser.error("--terrain, --trees, --eye-candy and --game-data are for square sizes only")
@@ -290,7 +320,12 @@ def main() -> None:
             seed = random.SystemRandom().randrange(2**32) if args.seed is None else args.seed
             kinds = {"trees": args.trees, "doodads": args.eye_candy}
             data = blank_scenario_bytes(
-                width, terrain_id=args.terrain, game_data=args.game_data, rng=random.Random(seed), **kinds
+                width,
+                terrain_id=args.terrain,
+                game_data=args.game_data,
+                rng=random.Random(seed),
+                min_tiles=args.min_tiles,
+                **kinds,
             )
             path.write_bytes(data)
             planted = []
@@ -302,17 +337,23 @@ def main() -> None:
                 f"{path}: {len(data)} bytes, verified {width}x{height} {args.game_data} terrain {args.terrain}, "
                 f"{len(planted)} GAIA units planted, seed {seed}"
             )
+            if width < MIN_MAP_TILES:
+                print(probe_checklist(width))
             continue
         if width == height:
-            data = blank_scenario_bytes(width)
+            data = blank_scenario_bytes(width, min_tiles=args.min_tiles)
             path.write_bytes(data)
             _verify(path, width)
             print(f"{path}: {len(data)} bytes, verified {width}x{height} blank")
+            if width < MIN_MAP_TILES:
+                print(probe_checklist(width))
             continue
         if donor is None:
             donor = load_map_and_units(BLANK_TEMPLATE_PATH)
         markers = marker_tiles(width, height)
-        body = apply_markers(blank_body(donor, width, height), donor.terrain_block_offset, markers)
+        body = apply_markers(
+            blank_body(donor, width, height, min_tiles=args.min_tiles), donor.terrain_block_offset, markers
+        )
         data = donor.header_bytes + _compress_bytes(body)
         path.write_bytes(data)
         _verify_raw(path, donor, width, height, markers)

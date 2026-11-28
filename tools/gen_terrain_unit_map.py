@@ -45,13 +45,11 @@ def main() -> None:
     args = parser.parse_args()
     _game_root.set_lenient(args.lenient)
 
-    from genieutils.datfile import DatFile
-
     dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
-    data = DatFile.parse(str(dat_path))
+    data = _game_root.parse_dat(dat_path)
     terrains = data.terrain_block.terrains
 
     mapping: dict[str, list[dict]] = {}

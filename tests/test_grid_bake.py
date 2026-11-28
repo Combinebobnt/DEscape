@@ -168,6 +168,7 @@ def test_stitched_chunks_match_the_full_render_with_the_grid_on(style, spec) -> 
     assert not np.array_equal(stitched, _whole(_BUILDERS[style](scn))), "the grid must actually paint"
 
 
+@pytest.mark.usefixtures("one_elev_step")
 @pytest.mark.parametrize("spec", [GRID, THICK_GRID])
 def test_sloped_equals_stepped_on_a_flat_map_with_the_grid_on(spec) -> None:
     """The full renders, then every level of the two caches (one ladder since
@@ -245,6 +246,7 @@ def _stepped_edge_mask(shape, proj, tile_px: int, wanted) -> np.ndarray:
     return mask
 
 
+@pytest.mark.usefixtures("one_elev_step")
 @pytest.mark.parametrize("style", ["stepped", "sloped"])
 def test_iso_majors_land_on_every_eighth_line_and_not_the_fourth(style) -> None:
     scn = _scenario()

@@ -9,7 +9,7 @@ import numpy as np
 from descape import (
     composite_backend,
     iso_geometry,
-    settings,
+    render_paint,
     terrain_blend,
 )
 from descape.grid_overlay import DEFAULT_GRID, GridBake
@@ -520,7 +520,11 @@ def _render_tile_iso(
 
 
 def render_terrain_iso(
-    scenario: LoadedScenario, with_units: bool = True, grid: GridBake = DEFAULT_GRID, blend: bool = True
+    scenario: LoadedScenario,
+    with_units: bool = True,
+    grid: GridBake = DEFAULT_GRID,
+    blend: bool = True,
+    elev_step_pct: int | None = None,
 ) -> np.ndarray:
     """The Stepped-mode counterpart to render_terrain(): real per-tile
     vertical displacement via iso_geometry's projection primitives, instead
@@ -542,11 +546,15 @@ def render_terrain_iso(
     for the version Phase 3's viewer uses, which also returns the elevations
     array and IsoProjection screen_to_tile() needs (Risk #6: those two must
     never drift from what actually got painted)."""
-    img, _elevations, _proj = render_terrain_iso_with_proj(scenario, with_units=with_units, grid=grid, blend=blend)
+    img, _elevations, _proj = render_terrain_iso_with_proj(
+        scenario, with_units=with_units, grid=grid, blend=blend, elev_step_pct=elev_step_pct
+    )
     return img
 
 
-def elevations_and_proj(scenario: LoadedScenario) -> tuple[np.ndarray, iso_geometry.IsoProjection]:
+def elevations_and_proj(
+    scenario: LoadedScenario, elev_step_pct: int | None = None
+) -> tuple[np.ndarray, iso_geometry.IsoProjection]:
     """(elevations, proj) only -- no tile_grid, no compositing -- the cheap
     half of render_terrain_iso_with_proj() that Phase B-C's IsoChunkCache-
     backed viewer init needs to size a cache and answer hit-tests, without
@@ -567,7 +575,7 @@ def elevations_and_proj(scenario: LoadedScenario) -> tuple[np.ndarray, iso_geome
     w, h, tile_px, elevations = _dims_and_elevations(scenario)
     proj = iso_geometry.canvas_size_and_origin(
         w, h, tile_px, iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION,
-        elev_step_pct=settings.get_elev_step_pct(),
+        elev_step_pct=render_paint.elev_step_pct_for("stepped") if elev_step_pct is None else elev_step_pct,
     )
     return elevations, proj
 
@@ -578,6 +586,7 @@ def render_terrain_iso_with_proj(
     with_sprites: bool = False,
     grid: GridBake = DEFAULT_GRID,
     blend: bool = True,
+    elev_step_pct: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, iso_geometry.IsoProjection]:
     """render_terrain_iso()'s real body, additionally returning the (h, w)
     elevations array and IsoProjection the render was actually computed
@@ -589,7 +598,8 @@ def render_terrain_iso_with_proj(
     screen (per Risk #6, IsoProjection is deliberately immutable and meant
     to be constructed once and threaded through, never rebuilt by a second
     caller who could compute a subtly different one). blend=False keeps the
-    pre-blending render (blend_effective())."""
+    pre-blending render (blend_effective()). elev_step_pct None means Stepped's
+    own setting (render_paint.elev_step_pct_for()); an int overrides it."""
     mm = scenario.map_manager
     w, h = mm.map_width, mm.map_height
     tile_px = tile_pixels_for_map(w, h)
@@ -600,9 +610,9 @@ def render_terrain_iso_with_proj(
     # stable across an elevation edit, which Phase 4's incremental redraw
     # (refresh_region_iso) depends on.
     min_elev, max_elev = iso_geometry.MIN_ELEVATION, iso_geometry.MAX_ELEVATION
-    proj = iso_geometry.canvas_size_and_origin(
-        w, h, tile_px, min_elev, max_elev, elev_step_pct=settings.get_elev_step_pct()
-    )
+    if elev_step_pct is None:
+        elev_step_pct = render_paint.elev_step_pct_for("stepped")
+    proj = iso_geometry.canvas_size_and_origin(w, h, tile_px, min_elev, max_elev, elev_step_pct=elev_step_pct)
 
     # canvas_size_and_origin() reserves no headroom for skirts -- a
     # compositing-policy question it explicitly leaves to its caller, see

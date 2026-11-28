@@ -325,7 +325,8 @@ if {script!r} in ("gen_unit_graphic_map.py", "gen_unit_render_data.py"):
 def spy_tools(tmp_path) -> Path:
     tools = tmp_path / "tools"
     tools.mkdir()
-    shutil.copy(DESCAPE.parent / "tools" / dat_derive.GAME_ROOT_HELPER, tools)
+    for helper in (dat_derive.GAME_ROOT_HELPER, *dat_derive.READER_HELPERS):
+        shutil.copy(DESCAPE.parent / "tools" / helper, tools)
     for script, names in dat_derive.GENERATORS:
         (tools / script).write_text(_SPY_GENERATOR.format(names=names, script=script))
     return tools

@@ -142,24 +142,30 @@ class BlankGenerationError(Exception):
     blank_body()'s preconditions -- see its docstring."""
 
 
-def _validate_axis(value: int, axis: str) -> int:
+def _validate_axis(value: int, axis: str, min_tiles: int) -> int:
+    if min_tiles < 1:
+        raise MapSizeError(f"min_tiles must be at least 1, got {min_tiles!r}")
     if not isinstance(value, int) or isinstance(value, bool):
         raise MapSizeError(f"Map {axis} must be an int, got {value!r}")
-    if not (MIN_MAP_TILES <= value <= MAX_MAP_TILES):
+    if not (min_tiles <= value <= MAX_MAP_TILES):
         raise MapSizeError(
-            f"Map {axis} {value} outside supported range [{MIN_MAP_TILES}, {MAX_MAP_TILES}]"
+            f"Map {axis} {value} outside supported range [{min_tiles}, {MAX_MAP_TILES}]"
         )
     return value
 
 
-def validate_map_size(width: int, height: int | None = None) -> tuple[int, int]:
+def validate_map_size(
+    width: int, height: int | None = None, *, min_tiles: int = MIN_MAP_TILES
+) -> tuple[int, int]:
     """Returns (width, height), height defaulting to width (square), or
     raises MapSizeError. Pure -- no I/O, no Qt -- so batch_api/tools/ callers
     get the hard cap for free without going through the GUI's dialog. Each
-    axis is bounded on its own, so a legal rectangle is any pair in range."""
+    axis is bounded on its own, so a legal rectangle is any pair in range.
+    `min_tiles` lowers the floor for probe tools only (in-game size probes);
+    no app path passes it."""
     if height is None:
-        return _validate_axis(width, "size"), width
-    return _validate_axis(width, "width"), _validate_axis(height, "height")
+        return _validate_axis(width, "size", min_tiles), width
+    return _validate_axis(width, "width", min_tiles), _validate_axis(height, "height", min_tiles)
 
 
 def validate_tiles(tiles: int) -> int:
@@ -216,6 +222,7 @@ def blank_body(
     *,
     terrain_id: int = 0,
     elevation: int = 0,
+    min_tiles: int = MIN_MAP_TILES,
 ) -> bytes:
     """Returns a new decompressed body: donor.decompressed_body with
     map_width/map_height rewritten to (width, height) and the terrain struct
@@ -234,7 +241,8 @@ def blank_body(
     square); tools/gen_blank_maps.py verifies those on raw bytes instead.
 
     Raises:
-        MapSizeError: width or height is outside [MIN_MAP_TILES, MAX_MAP_TILES].
+        MapSizeError: width or height is outside [min_tiles, MAX_MAP_TILES]
+            (min_tiles is MIN_MAP_TILES except in the in-game probe tools).
         BlankFillError: terrain_id or elevation is out of range.
         BlankGenerationError: the donor doesn't meet this splice's
             preconditions -- either its own terrain block failed load-time
@@ -246,13 +254,13 @@ def blank_body(
             again here because a caller could hand in a donor that was
             mutated after loading), or its camera fields could not be located.
     """
-    width, height = validate_map_size(width, height)
+    width, height = validate_map_size(width, height, min_tiles=min_tiles)
     fill = blank_terrain_struct(terrain_id, elevation)
 
     if not donor.terrain_write_supported:
         raise BlankGenerationError(
-            f"{donor.path}: terrain block failed load-time verification -- "
-            "refusing to splice bytes that may not be where they're expected."
+            f"{donor.path}: terrain block failed load-time verification. "
+            "Refusing to splice bytes that may not be where they're expected."
         )
 
     body = donor.decompressed_body
@@ -269,7 +277,7 @@ def blank_body(
     if _SIZE_STRUCT.unpack_from(body, size_offset) != (old_w, old_h):
         raise BlankGenerationError(
             f"{donor.path}: map_width/map_height bytes at {size_offset} don't "
-            f"match the parsed size ({old_w}, {old_h}) -- donor may be stale"
+            f"match the parsed size ({old_w}, {old_h}). The donor may be stale"
         )
 
     fields = player_fields.camera_fields(donor)
@@ -298,6 +306,7 @@ def blank_scenario_bytes(
     trees: bool = False,
     doodads: bool = False,
     rng: random.Random | None = None,
+    min_tiles: int = MIN_MAP_TILES,
 ) -> bytes:
     """Full .aoe2scenario file bytes for a blank width x height map (square
     when height is None), every tile terrain_id at elevation: donor's
@@ -314,11 +323,11 @@ def blank_scenario_bytes(
     planted units cannot be written into the spliced map."""
     if donor is None:
         donor = load_map_and_units(blank_template_path_for(game_data))
-    body = blank_body(donor, width, height, terrain_id=terrain_id, elevation=elevation)
+    body = blank_body(donor, width, height, terrain_id=terrain_id, elevation=elevation, min_tiles=min_tiles)
     data = donor.header_bytes + _compress_bytes(body)
     if not (trees or doodads):
         return data
-    width, height = validate_map_size(width, height)
+    width, height = validate_map_size(width, height, min_tiles=min_tiles)
     with game_dataset.activated(games.for_scenario(donor).id):
         specs = terrain_units.plan_fill(
             width, height, terrain_id, trees=trees, doodads=doodads, rng=random.Random() if rng is None else rng
@@ -353,12 +362,13 @@ def load_blank_scenario(
     trees: bool = False,
     doodads: bool = False,
     rng: random.Random | None = None,
+    min_tiles: int = MIN_MAP_TILES,
 ) -> LoadedScenario:
     """blank_scenario_bytes() reloaded through the real loader -- offsets are
     never carried across a length-changing splice, the same discipline
     tools/strip_units.py uses ('reload through the real loader, not just
     re-decompress in place'), and none across the planted units' splice."""
-    width, height = validate_map_size(width, height)
+    width, height = validate_map_size(width, height, min_tiles=min_tiles)
     data = blank_scenario_bytes(
         width,
         donor,
@@ -369,6 +379,7 @@ def load_blank_scenario(
         trees=trees,
         doodads=doodads,
         rng=rng,
+        min_tiles=min_tiles,
     )
     return load_map_and_units_from_bytes(data, f"blank_{width}x{height}.aoe2scenario")
 

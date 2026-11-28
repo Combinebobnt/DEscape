@@ -56,7 +56,7 @@ from descape.scenario_io import (
     retriever_length,
     unit_codec,
 )
-from descape.scenario_write import WriteBlockedError, _compress_bytes, build_patched
+from descape.scenario_write import WriteBlockedError, _compress_bytes, build_patched, refuse_legacy
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
 
@@ -125,30 +125,6 @@ def source_refusal(scenario_version: str) -> str | None:
         sources = " or ".join(STEPS)
         return f"Only version {sources} scenarios can be converted; this one is {scenario_version}."
     return None
-
-
-def paste_upgrade_fields(block_version: str, here: str) -> tuple[str, ...] | None:
-    """The condition attributes a trigger or entry block copied at
-    `block_version` needs defaulted to paste into a `here` document: () for
-    equal versions, None for a pair no step covers (the paste is refused)."""
-    if block_version == here:
-        return ()
-    step = STEPS.get(block_version)
-    if step is None or step.target != here:
-        return None
-    return (step.condition_field,)
-
-
-def paste_version_refusal(block_version: str, here: str, *, convertible: bool) -> str:
-    """The paste refusal for a block of another version, or "" when it pastes.
-    `convertible` is whether File > Convert is enabled for this document; the
-    hint is added only when converting it would make the paste legal."""
-    if paste_upgrade_fields(block_version, here) is not None:
-        return ""
-    reason = f"Copied from a {block_version} scenario; this one is {here}."
-    if convertible and paste_upgrade_fields(block_version, TARGET_VERSION) is not None:
-        reason += f" File > {action_label().replace('…', '')} upgrades this one."
-    return reason
 
 
 def action_label() -> str:
@@ -408,6 +384,7 @@ def convert_scenario(
     is left untouched. The result is the library's last load: a caller that
     loads anything else afterwards calls scenario_io.reactivate(result.loaded)
     before editing it."""
+    refuse_legacy(scenario)
     if reason := source_refusal(scenario.scenario_version):
         raise ConversionRefusedError(reason)
     step = STEPS[scenario.scenario_version]
@@ -438,8 +415,6 @@ __all__ = [
     "confirm_text",
     "convert_body",
     "convert_scenario",
-    "paste_upgrade_fields",
-    "paste_version_refusal",
     "source_refusal",
     "unit_insert_offset",
     "unit_struct_retrievers",

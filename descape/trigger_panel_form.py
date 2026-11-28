@@ -239,7 +239,7 @@ class _TriggerPanelFormMixin:
             if self._loaded is None:
                 return trigger_fields.TRIGGER_FIELDS
             # By version, as the vocabulary is picked: a field the file's format lacks gets no row.
-            return trigger_fields.trigger_specs(self._loaded.scenario_version)
+            return trigger_fields.trigger_specs(self._loaded.vocabulary_version)
         definition = self._definition_for(kind, entry)
         if definition is None:
             return ()

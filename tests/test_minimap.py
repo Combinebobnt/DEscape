@@ -211,15 +211,23 @@ def _settle() -> None:
 
 
 def _map_window(style: str = "Stepped", isometric: bool = True):
-    """A shown 1500x900 window with the blank template open in `style`, minimap opened and built."""
+    """A shown 1500x900 window with the blank template open in `style`, minimap opened at its
+    DEFAULT_HEIGHT (the 64 px floor would otherwise leave it at the log's height) and built."""
+    from PyQt5.QtCore import Qt
+
+    from descape.minimap_panel import DEFAULT_HEIGHT
     from descape.scenario_io import BLANK_TEMPLATE_PATH
 
     window = conftest.shown_window(1500, 900)
     window.minimap_dock.show()
+    _settle()
+    title = window.minimap_dock.height() - window.minimap_panel.height()
+    window.resizeDocks([window.minimap_dock], [DEFAULT_HEIGHT + title], Qt.Vertical)
     window.iso_action.setChecked(isometric)
     window.terrain_style_combo.setCurrentText(style)
     window.load_scenario(BLANK_TEMPLATE_PATH)
     _settle()
+    assert window.minimap_panel.height() == DEFAULT_HEIGHT
     window._rebuild_minimap()
     return window
 
@@ -367,9 +375,9 @@ def test_the_box_follows_a_centre_a_scroll_and_a_zoom(style: str, isometric: boo
 
 @pytest.mark.gui
 @_NEEDS_QT
-def test_a_press_and_drag_on_the_minimap_recentres_the_view_and_returns_focus() -> None:
+def test_a_press_and_drag_on_the_minimap_recentres_the_view_and_returns_focus(monkeypatch) -> None:
     from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
-    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtGui import QContextMenuEvent, QMouseEvent
     from PyQt5.QtTest import QTest
     from PyQt5.QtWidgets import QApplication
 
@@ -395,9 +403,16 @@ def test_a_press_and_drag_on_the_minimap_recentres_the_view_and_returns_focus() 
         assert window.map_view.hasFocus() or window.focusWidget() is window.map_view
         assert panel.focusPolicy() == Qt.NoFocus
         before = _box_centre_tile(window)
+        shown = _record_menus(monkeypatch)
         QTest.mouseClick(panel, Qt.RightButton, Qt.NoModifier, QPoint(5, 5))
+        QApplication.sendEvent(panel, QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(5, 5), panel.mapToGlobal(QPoint(5, 5))))
         _settle()
         assert _box_centre_tile(window) == before, "only the left button pans"
+        assert shown == [[("Zoom In", True), ("Zoom Out", False), ("Fit Whole Map", True)]]
+        for _ in range(8):
+            panel.zoom_by(1)
+        QApplication.sendEvent(panel, QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(5, 5), panel.mapToGlobal(QPoint(5, 5))))
+        assert shown[-1] == [("Zoom In", False), ("Zoom Out", True), ("Fit Whole Map", True)]
     finally:
         conftest.close_window(window)
 
@@ -437,25 +452,238 @@ def test_dragging_the_divider_from_the_log_widens_the_minimap_past_its_hint_and_
         conftest.close_window(window)
 
 
-@pytest.mark.gui
-@_NEEDS_QT
-def test_the_wheel_on_the_minimap_changes_nothing() -> None:
+def _record_menus(monkeypatch) -> list:
+    """Patches QMenu.exec_ to record each menu's action texts and close at once, so no modal popup runs."""
+    from PyQt5.QtWidgets import QMenu
+
+    shown: list = []
+    monkeypatch.setattr(QMenu, "exec_", lambda menu, *args: shown.append([(a.text(), a.isEnabled()) for a in menu.actions()]))
+    return shown
+
+
+def _wheel_minimap(panel, pos, delta: int = 120, modifiers=None):
     from PyQt5.QtCore import QPoint, QPointF, Qt
     from PyQt5.QtGui import QWheelEvent
     from PyQt5.QtWidgets import QApplication
+
+    pos = QPointF(pos)
+    event = QWheelEvent(
+        pos, QPointF(panel.mapToGlobal(pos.toPoint())), QPoint(0, 0), QPoint(0, delta),
+        Qt.NoButton, Qt.NoModifier if modifiers is None else modifiers, Qt.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(panel, event)
+    return event
+
+
+def _same_fit(a, b, tol: float = 0.5) -> bool:
+    from PyQt5.QtCore import QPointF
+
+    return all(
+        abs(a.map(p).x() - b.map(p).x()) <= tol and abs(a.map(p).y() - b.map(p).y()) <= tol
+        for p in (QPointF(0, 0), QPointF(120, 0), QPointF(120, 120), QPointF(0, 120))
+    )
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_the_wheel_zooms_the_minimap_never_the_map() -> None:
+    from PyQt5.QtCore import QPointF, Qt
+
+    from descape.minimap_panel import MAX_ZOOM, ZOOM_STEP
 
     window = _map_window("Stepped")
     try:
         panel = window.minimap_panel
         before = window.map_view.transform()
-        centre = QPointF(panel.width() / 2, panel.height() / 2)
-        event = QWheelEvent(
-            centre, QPointF(panel.mapToGlobal(centre.toPoint())), QPoint(0, 0), QPoint(0, 120),
-            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
-        )
-        QApplication.sendEvent(panel, event)
+        cursor = QPointF(panel.width() * 0.3, panel.height() * 0.6)
+        inverse, _ok = panel.fit().inverted()
+        under = inverse.map(cursor)
+        event = _wheel_minimap(panel, cursor)
         assert event.isAccepted()
+        assert abs(panel.zoom - ZOOM_STEP) < 1e-9
+        moved = panel.fit().map(under)
+        assert abs(moved.x() - cursor.x()) <= 1 and abs(moved.y() - cursor.y()) <= 1
         assert window.map_view.transform() == before
+        assert _wheel_minimap(panel, cursor, modifiers=Qt.ControlModifier).isAccepted()
+        assert abs(panel.zoom - ZOOM_STEP) < 1e-9, "a modified wheel changes nothing"
+        for _ in range(4):
+            _wheel_minimap(panel, cursor, 30)
+        assert abs(panel.zoom - ZOOM_STEP ** 2) < 1e-9, "four 30-unit deltas step once"
+        for _ in range(12):
+            _wheel_minimap(panel, cursor)
+        assert panel.zoom == MAX_ZOOM
+        for _ in range(12):
+            _wheel_minimap(panel, cursor, -120)
+        assert panel.zoom == 1.0
+        assert window.map_view.transform() == before
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_zoom_one_is_the_whole_map_fit() -> None:
+    from PyQt5.QtCore import QPointF
+
+    window = _map_window("Stepped")
+    try:
+        panel = window.minimap_panel
+        whole = panel.fit()
+        _wheel_minimap(panel, QPointF(40, 30))
+        _wheel_minimap(panel, QPointF(40, 30))
+        assert not _same_fit(panel.fit(), whole)
+        panel.fit_whole_map()
+        assert _same_fit(panel.fit(), whole)
+    finally:
+        conftest.close_window(window)
+
+
+@_NEEDS_QT
+def test_the_clamp_centres_a_span_that_fits_and_bands_none_that_overflows() -> None:
+    from PyQt5.QtCore import QPointF, QRectF
+
+    from descape.minimap_panel import MARGIN, clamped_offset
+
+    box = QRectF(10, 20, 100, 50)
+    # Scale 1 in a 200x100 panel: both axes fit, so it centres whatever the asked centre.
+    offset = clamped_offset(box, 200, 100, 1.0, QPointF(0, 0))
+    assert (offset.x(), offset.y()) == (40.0, 5.0)
+    # Scale 4: both overflow. A centre past the box's low corner pins that corner at MARGIN.
+    offset = clamped_offset(box, 200, 100, 4.0, QPointF(-500, -500))
+    assert (offset.x(), offset.y()) == (MARGIN - 40.0, MARGIN - 80.0)
+    offset = clamped_offset(box, 200, 100, 4.0, QPointF(900, 900))
+    assert (offset.x(), offset.y()) == (200 - MARGIN - 440.0, 100 - MARGIN - 280.0)
+    # Inside the range the centre lands on the panel's middle.
+    offset = clamped_offset(box, 200, 100, 4.0, QPointF(60, 45))
+    assert (offset.x(), offset.y()) == (100 - 240.0, 50 - 180.0)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_a_zoomed_minimap_shows_no_off_map_band_and_clamps_its_centre() -> None:
+    from PyQt5.QtCore import QPointF
+
+    from descape.minimap_panel import MARGIN, MAX_ZOOM
+
+    window = _map_window("Flat", isometric=False)
+    try:
+        panel = window.minimap_panel
+        corner = panel.fit().map(QPointF(0, 0))
+        for _ in range(8):
+            _wheel_minimap(panel, corner)
+        assert panel.zoom == MAX_ZOOM
+        drawn = panel.fit().map(panel._map_quad()).boundingRect()
+        assert drawn.left() <= MARGIN + 0.5 and drawn.top() <= MARGIN + 0.5
+        assert drawn.right() >= panel.width() - MARGIN - 0.5 and drawn.bottom() >= panel.height() - MARGIN - 0.5
+        centre, again = panel._centre, panel.fit()
+        assert panel._centre == centre and _same_fit(again, panel.fit(), 0.0), "fit() changes no state"
+    finally:
+        conftest.close_window(window)
+
+
+def _zoomed_three_notches(panel) -> None:
+    from PyQt5.QtCore import QPointF
+
+    _wheel_minimap(panel, QPointF(panel.width() / 2, panel.height() / 2))
+    _wheel_minimap(panel, QPointF(panel.width() / 2, panel.height() / 2))
+    _wheel_minimap(panel, QPointF(panel.width() / 2, panel.height() / 2))
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_a_zoomed_minimap_follows_the_view_at_its_edges() -> None:
+    from descape.minimap_panel import FOLLOW_INSET
+
+    window = _map_window("Flat", isometric=False)
+    try:
+        _zoom_in(window)
+        window.map_view.center_on_tile(60, 60)
+        _settle()
+        panel = window.minimap_panel
+        _zoomed_three_notches(panel)
+        window.map_view.center_on_tile(62, 61)
+        _settle()
+        held = panel.fit()
+        window.map_view.center_on_tile(61, 60)
+        _settle()
+        assert _same_fit(panel.fit(), held, 0.01), "a move inside the inner area scrolls nothing"
+        window.map_view.center_on_tile(95, 60)
+        _settle()
+        assert not _same_fit(panel.fit(), held, 0.01)
+        centre = panel.viewport_polygon().boundingRect().center()
+        assert abs(centre.x() - panel.width() * (1 - FOLLOW_INSET)) <= 1
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_an_edit_rebuild_does_not_move_a_zoomed_window() -> None:
+    from PyQt5.QtCore import QPointF
+
+    window = _map_window("Stepped")
+    try:
+        _zoom_in(window)
+        panel = window.minimap_panel
+        corner = panel.fit().map(QPointF(0, 120))
+        for _ in range(4):
+            _wheel_minimap(panel, corner)
+        held = panel.fit()
+        # A fallback build's retry returns before set_view(), which would test nothing.
+        window._minimap_retrying = False
+        window._rebuild_minimap()
+        window._push_minimap_view()
+        _settle()
+        assert _same_fit(panel.fit(), held, 0.01)
+        window.map_view.center_on_tile(110, 10)
+        _settle()
+        assert not _same_fit(panel.fit(), held, 0.01), "a real pan far from the window follows"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_a_drag_on_a_zoomed_minimap_holds_its_window_until_release() -> None:
+    from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
+    from PyQt5.QtGui import QMouseEvent
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+
+    window = _map_window("Flat", isometric=False)
+    try:
+        _zoom_in(window)
+        window.map_view.center_on_tile(60, 60)
+        _settle()
+        panel = window.minimap_panel
+        _zoomed_three_notches(panel)
+        held = panel.fit()
+        QTest.mousePress(panel, Qt.LeftButton, Qt.NoModifier, QPoint(panel.width() // 2, panel.height() // 2))
+        edge = QPointF(panel.width() - 2, panel.height() / 2)
+        move = QMouseEvent(QEvent.MouseMove, edge, Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(panel, move)
+        _settle()
+        assert _same_fit(panel.fit(), held, 0.01), "no follow while the drag is held"
+        QTest.mouseRelease(panel, Qt.LeftButton, Qt.NoModifier, edge.toPoint())
+        _settle()
+        assert not _same_fit(panel.fit(), held, 0.01), "the follow applies on release"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_a_new_document_resets_the_zoom() -> None:
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = _map_window("Stepped")
+    try:
+        panel = window.minimap_panel
+        _zoomed_three_notches(panel)
+        assert panel.zoom > 1
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        _settle()
+        assert panel.zoom == 1.0
     finally:
         conftest.close_window(window)
 
@@ -628,5 +856,49 @@ def test_a_fallback_build_retries_only_while_textures_load(monkeypatch) -> None:
         window._schedule_minimap()
         window._rebuild_minimap()
         assert built == [1, 1], "a real change builds whatever the texture count"
+    finally:
+        conftest.close_window(window)
+
+
+@pytest.mark.gui
+@_NEEDS_QT
+def test_a_zoomed_window_survives_a_panel_resize_a_main_view_zoom_and_keeps_its_zoom_over_an_orientation_round_trip() -> None:
+    from PyQt5.QtCore import QPointF, Qt
+
+    from descape.minimap_panel import DEFAULT_HEIGHT
+
+    window = _map_window("Stepped")
+    try:
+        panel = window.minimap_panel
+        corner = panel.fit().map(QPointF(0, 120))
+        _wheel_minimap(panel, corner)
+        held, zoom = panel.fit(), panel.zoom
+        title = window.minimap_dock.height() - panel.height()
+        # Tall enough that the zoomed span fits vertically, then back.
+        window.resizeDocks([window.minimap_dock], [320 + title], Qt.Vertical)
+        _settle()
+        window.resizeDocks([window.minimap_dock], [DEFAULT_HEIGHT + title], Qt.Vertical)
+        _settle()
+        assert panel.height() == DEFAULT_HEIGHT and panel.zoom == zoom
+        assert _same_fit(panel.fit(), held, 0.5), "the zoomed position comes back after a resize"
+        view = window.map_view
+        from descape import zoom_preframe
+
+        # With the box in the window's middle, a main-view zoom about its centre moves nothing here.
+        inverse, _ok = panel.fit().inverted()
+        middle = inverse.map(QPointF(panel.width() / 2, panel.height() / 2))
+        view.center_on_map_point(middle.x(), middle.y())
+        _settle()
+        held = panel.fit()
+        zoom_preframe.zoom_about(view, 1.25, view.viewport().rect().center())
+        view._note_viewport_changed()
+        _settle()
+        assert _same_fit(panel.fit(), held, 0.5), "a main-view zoom about its centre leaves the minimap alone"
+        window.iso_action.setChecked(False)
+        _settle()
+        window.iso_action.setChecked(True)
+        _settle()
+        # The toggle refits the main view itself, so the window may follow its box; the zoom stays.
+        assert panel.zoom == zoom
     finally:
         conftest.close_window(window)

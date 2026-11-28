@@ -323,6 +323,30 @@ def test_a_blocker_takes_its_orientation_sibling_under_an_axis_swap_and_is_repor
     assert set(render_units.occupied_tiles_for(image.unit_const, image.x, image.y, N, N)) == reflected
 
 
+def test_a_1x1_wooden_bridge_takes_its_sibling_and_a_2x2_one_is_reported_kept():
+    """TASK-706: square, yet the wooden 1x1 pieces carry a run axis (`a`/`b`);
+    the 2x2 ones have no `b` art, so they keep their const and are counted."""
+    source = _at(904, 1)
+    plan = _plan([source], mode_id=1)
+    assert [image.unit_const for image in plan.images] == [907]  # `a` sends an `a` top to a `b` top
+    assert plan.reoriented == [source] and plan.unsquare_spans == []
+    big = _at(911, 1)
+    plan = _plan([big], mode_id=1)
+    assert [image.unit_const for image in plan.images] == [911]
+    assert plan.unsquare_spans == [big] and plan.reoriented == []
+
+
+def test_a_1x1_wooden_bridge_on_a_diagonal_axis_straddles_rather_than_vanishing():
+    """Once it has siblings its image there is another const on its own tile,
+    so it overlaps itself like a classic bridge, and Place keeps the copy."""
+    piece = FakeUnit(904, 20.5, N - 20 - 1 + 0.5)  # on mode 1's axis row
+    plan = _plan([piece], mode_id=1)
+    assert plan.blocked and plan.straddling == [piece]
+    assert [(i.unit_const, i.x, i.y) for i in plan.overlapping] == [(907, piece.x, piece.y)]
+    placed = _plan([piece], mode_id=1, overlaps=OVERLAPS_PLACE)
+    assert [i.unit_const for i in placed.images] == [907]
+
+
 def test_a_blocker_under_a_non_swapping_element_occupies_its_reflection():
     source = _at(BLOCKER_3X1, 3)
     plan = _plan([source], mode_id=3)
@@ -1200,7 +1224,7 @@ def _f32(value: float) -> float:
 # TASK-329: bridges, chain, longhouse and blockers take their orientation siblings.
 A_TOP, A_MIDDLE, A_BOTTOM, B_MIDDLE = 605, 606, 607, 609
 MOLE = 2421  # (3, 1), no transposed partner
-DE_BRIDGE_PIECE = 1840  # (1, 2), excluded by family rule
+DE_BRIDGE_PIECE = 1840  # (1, 2), an end whose run sense is its frame (TASK-705)
 
 
 def test_a_bridge_top_under_a_half_turn_becomes_its_bottom_with_no_axis_swap():
@@ -1213,12 +1237,28 @@ def test_a_bridge_top_under_a_half_turn_becomes_its_bottom_with_no_axis_swap():
     assert tiles == {TRANSFORMS["r2"](tx, ty, N) for tx, ty in render_units.unit_occupied_tiles(source, N, N)}
 
 
-def test_a_mole_and_a_de_bridge_piece_still_keep_their_orientation_and_are_reported():
-    mole, piece = _at(MOLE, 1), _at(DE_BRIDGE_PIECE, 1, nth=40)
-    plan = _plan([mole, piece], mode_id=1)
-    assert plan.unsquare_spans == [mole, piece]
+def test_a_mole_still_keeps_its_orientation_and_is_reported():
+    mole = _at(MOLE, 1)
+    plan = _plan([mole], mode_id=1)
+    assert plan.unsquare_spans == [mole]
     assert plan.reoriented == [] and plan.gates == []
-    assert sorted(image.unit_const for image in plan.images) == sorted([MOLE, DE_BRIDGE_PIECE])
+    assert [image.unit_const for image in plan.images] == [MOLE]
+
+
+def test_a_de_bridge_end_under_d_takes_its_sibling_and_the_reversed_frame():
+    piece = _at(DE_BRIDGE_PIECE, 2, rotation=0.0)
+    plan = _plan([piece], mode_id=2)
+    (image,) = plan.images
+    assert (image.element, image.unit_const, image.rotation) == ("d", 1841, 1.0)
+    assert plan.reoriented == [piece] and plan.unsquare_spans == []
+
+
+def test_a_de_bridge_end_reversed_in_place_keeps_its_const_and_is_reported():
+    piece = _at(DE_BRIDGE_PIECE, 4, rotation=0.0)
+    plan = _plan([piece], mode_id=4)
+    (image,) = plan.images
+    assert (image.element, image.unit_const, image.rotation) == ("my", DE_BRIDGE_PIECE, 1.0)
+    assert plan.reoriented == [piece]
 
 
 def test_a_bridge_only_mirror_reports_objects_not_gates():

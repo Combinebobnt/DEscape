@@ -1,8 +1,9 @@
 """Tools > Map Analysis results: a modeless dialog over a map_analysis.AnalysisReport.
 
 Dumb the same way VariablesDialog is: it never touches the map. Double-
-clicking a finding with a tile or unit calls the on_navigate callback it was
-constructed with, and the window decides what "jump there" means.
+clicking a finding with a tile, unit or trigger calls the on_navigate
+callback it was constructed with, and the window decides what "jump there"
+means.
 """
 
 from __future__ import annotations
@@ -24,6 +25,10 @@ from descape.value_picker import _configure_scrolling
 _SEVERITY_TEXT = {"error": "Error", "warning": "Warning", "info": "Info"}
 # A check row's CheckResult.label: its text carries a count, so it can't name the check.
 _LABEL_ROLE = Qt.UserRole + 1
+
+
+def _navigable(finding: Finding) -> bool:
+    return finding.tile is not None or finding.unit_key is not None or finding.trigger_index is not None
 
 
 def _group_text(result: CheckResult) -> str:
@@ -64,7 +69,7 @@ class AnalysisDialog(QDialog):
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree.currentItemChanged.connect(self._on_current_item_changed)
 
-        hint = QLabel("Double-click a finding to jump to its tile or unit.")
+        hint = QLabel("Double-click a finding to jump to its tile, unit or trigger.")
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.close)
@@ -102,7 +107,7 @@ class AnalysisDialog(QDialog):
             for finding in result.findings:
                 item = QTreeWidgetItem([_SEVERITY_TEXT.get(finding.severity, finding.severity), finding.message])
                 item.setData(0, Qt.UserRole, finding)
-                if finding.tile is None and finding.unit_key is None:
+                if not _navigable(finding):
                     item.setToolTip(1, "No map location for this finding")
                 group.addChild(item)
             group.setExpanded(bool(result.findings) and result.label not in collapsed)
@@ -149,5 +154,5 @@ class AnalysisDialog(QDialog):
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         finding = item.data(0, Qt.UserRole)
-        if isinstance(finding, Finding) and (finding.tile is not None or finding.unit_key is not None):
+        if isinstance(finding, Finding) and _navigable(finding):
             self._on_navigate(finding)

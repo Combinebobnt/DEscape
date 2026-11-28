@@ -37,6 +37,7 @@ import numpy as np
 from descape import (
     asset_source,
     editor_markers,
+    iso_geometry,
     render_cache,
     render_iso,
     render_paint,
@@ -120,8 +121,10 @@ def _cache(scn, style: str):
     if style == "stepped":
         elevations, proj = render_iso.elevations_and_proj(scn)
         return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
-    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
-    return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
+    # Stepped's default pct, explicit: Sloped's own setting (GH #288) must not move a recorded crop.
+    pct = iso_geometry.ELEV_STEP_DEFAULT_PCT
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn, elev_step_pct=pct)
+    return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True, elev_step_pct=pct)
 
 
 def _box(cache, style: str, mip: int, tiles):

@@ -2,8 +2,9 @@
 selection sync with the Triggers panel and the on-map preview.
 
 Every write goes through _trigger_edit(), one undo record per action, with
-unchanged values filtered out first. New Objective and New Header add a
-trigger through structural_edit() in the same record that sets its flags.
+unchanged values filtered out first, on the field-edit tier plus
+refresh_trigger_rows(). New Objective and New Header add a trigger through
+structural_edit() in the same record that sets its flags, so they rebuild the panel.
 """
 
 from __future__ import annotations
@@ -82,12 +83,14 @@ class _ViewerObjectivesMixin:
         if not changed:
             self.refresh_objectives()
             return
-        # "panel" repopulates the Triggers panel, whose _show_triggers() refreshes this list too.
-        with self._trigger_edit(model, label, content_touched=sorted(changed), refresh="panel") as m:
+        # The field tier, which refreshes this list; no repopulate of a 590-trigger Triggers list per tick.
+        with self._trigger_edit(model, label, content_touched=sorted(changed)) as m:
             live = m.manager().triggers
             for index, attrs in changed.items():
                 for attr, value in attrs.items():
                     setattr(live[index], attr, int(value) if isinstance(value, bool) else value)
+        if self.mode == "triggers":
+            self.trigger_panel.refresh_trigger_rows(changed)
 
     def _objective_flags(self, indices: Sequence[int], attr: str, value: bool) -> None:
         self._objective_write("Set objective flags", {index: {attr: bool(value)} for index in indices})

@@ -46,14 +46,148 @@ by `tests/test_ror_editing.py`:
   `rotation` equal to `initial_animation_frame` on each.
 - Gates: 20 orientation groups (no Fort gate), 12 visible consts; 12
   placements, all `7.0`, all on their span anchor.
-- Non-square object siblings (`descape/object_orientation.py`): 38 consts
-  in 6 four-groups and 7 pairs (no longhouse or blockers), against AoE2's 44
-  in 6 and 10, derived from each game's tables with no RoR placement
+- Object orientation siblings (`descape/object_orientation.py`): 62 consts
+  in 8 four-groups and 15 pairs (no longhouse or blockers), against AoE2's 68
+  in 8 and 18, derived from each game's tables with no RoR placement
   measured; pinned by `tests/test_object_orientation.py`, not this corpus test.
 - Cycle Variant: derived from the RoR table, so Farm 50 and RoR scenery
   are cyclable there though INERT in AoE2; 56,364 placements,
   all literal. A RoR farm stores 0-3 with `initial_animation_frame` 0.
 - `_BODY_GRAPHIC_OVERRIDES`: 119 and 788 only (72 is a plain wall there).
+
+The Age of Kings / The Conquerors figures (TASK-430) come from 538 files
+(156 Age of Kings with 687,894 placements, 382 The Conquerors with 1,700,927,
+2026-11-27), each read twice: with AoE2 (DE) data, as every such file shows
+while no 1999 install is set, and with the 1999 game's own data (`aoc`; the
+test only reads). The rules (not the counts) are re-checked
+by `tests/test_aoc_corpus.py`, run as `AOC_INSTALL_PATH=<install> pytest -m
+corpus tests/test_aoc_corpus.py --scenario-dir <folder>` (it skips without
+the variable or such files):
+
+- ANGLE: with AoE2 data, 2,226 integer-index counterexamples among The
+  Conquerors' 60,169 ANGLE placements; with the 1999 `.dat`'s own type 70,
+  2 of 57,823 (const 302, a monk carrying a relic), and none of Age of Kings'
+  21,770.
+- Trees (`legacy_import.TREE_CONSTS`): all 1,375,135 store an integer
+  variant inside their 1999 graphic's frame count (348: 4, 349 and 411: 14,
+  350 and 413: 9, 351: 13), where AoE2 data needs `tree_variant()`'s remap.
+- Cliffs: all 61,716 store their frame as an integer rotation, inside the
+  1999 frame count (with AoE2 data one fell outside DE's).
+- Walls: the same with either data. Age of Kings 7,555 literal `0..4`, 24,545
+  radians `k*2π/5`, 110 neither; The Conquerors 13,353, 43,384 and 1,597. The
+  4-neighbour rule agrees with the stored shape on about 21% (5,325 of 25,580
+  and 9,567 of 45,416), so the 1999 data does not explain the disagreement.
+  Frame 0 on every Age of Kings wall and on 58,222 of The Conquerors' 58,334.
+- Gates: Age of Kings' 770 all store 0. The Conquerors' 2,970 store 0 (2,770)
+  or a real angle inside one turn (200, mostly π/4 and π/2): the 1999 data
+  does not change that a gate's orientation is its const.
+- Terrains 33 and 34, obsolete in AoE2:DE, are snow land in the 1999 data
+  (15,415 and 47,900 tiles in 101 Conquerors files), named from its `.dat`.
+- Consts the 1999 `.dat` lacks: 184 distinct, 26,934 placements, all in 39
+  WololoKingdoms and Voobly mod files (ids above 865, and 486). They draw as
+  the unknown-const mark; with AoE2 data 32 distinct consts are unknown.
+
+Band 1.23 (`scn-up`: UserPatch `.scx2` and some HD Edition `.scx`), which
+`aoc` also claims, was measured apart on 85 files (71 `.scx2`, 14 `.scx`,
+509,650 placements, 2026-11-27) and is left out of the test above:
+
+- ANGLE: with the 1999 data, 435 of 34,302 store an integer index, every one
+  const 302 storing 1, in five scenarios; with AoE2 data none of 29,034.
+  Those five are `.scx2` files whose const 302 placements all belong to
+  GAIA, storing 0 or 1, and HD Edition's `.dat` names slot 302 `BUSH`: most
+  likely scenery from HD-derived data, not monks.
+- Trees (349,503), cliffs (21,508) and gates (726, all 0 but three inside
+  one turn) as above.
+- Walls: 6,469 literal, 19,009 radians, 81 neither, frame 0 on all; the
+  4-neighbour rule agrees on 4,147 of 19,205.
+- Terrains 33 and 34: 4,499 and 9,333 tiles, snow land as above.
+- HD Edition reuses 66 of the 1999 `.dat`'s slots under new names (`OLD-*`
+  and placeholder slots: 1 `LEGION`, 119 `WALL4`, 301 `GRSSP`, 302 `BUSH`,
+  ...). A separate probe over the folders the HD Edition figures below
+  come from (not part of its test) found 27 band-1.23 files placing 5,743
+  units in them (3,801 in slot 301), which `aoc` data reads by the 1999
+  names.
+
+The HD Edition figures (TASK-431) come from 65 files, 2026-11-27, all read
+with HD Edition's own data (`hd`): 28 header-2 files (`scn-hd`: 10 at band
+1.21, 8 at 1.24, 10 at 1.26; 71,401 placements), which Auto shows with that
+data, and 37 header-3 ones (`hd-aoe2scenario`; 347,115 placements), which
+stay AoE2's and take it only by hand. The rules are re-checked by
+`tests/test_hd_corpus.py`, run as `HD_INSTALL_PATH=<install> pytest -m corpus
+tests/test_hd_corpus.py --scenario-dir <folder>`; it reads the install's own
+templates as well as the folder, and skips without the variable or a
+header-2 file:
+
+- The 28 header-2 files are all HD Edition's map templates: trees, cliffs,
+  mines and scenery, no wall, gate or ANGLE placement. Their trees (42,746)
+  and cliffs (1,750) hold the rules below; the rest come from the header-3
+  files.
+- Every placed const is in the HD Edition `.dat`, under either header.
+- ANGLE: none of 11,830 stores an integer index.
+- Trees: all 223,030 store an integer variant inside their HD graphic's
+  frame count, the header-3 files' 180,284 included.
+- Cliffs: all 12,832 are the class-34 consts 264..272 and store their frame.
+- Walls: every placed wall is one of the 5-angle class-27 consts (72, 117,
+  119, 155, 231, 370, 788 and 1062; 208 is not placed); 4,621 literal,
+  14,295 radians, 16 neither, frame 0 on all 18,932. The 4-neighbour rule
+  agrees on 3,758 of 17,725, about 21% as in the 1999 files.
+- Gates: 676 of 677 store 0, the other an angle inside one turn.
+
+## The compatibility view's writer (TASK-057)
+
+A scenario saved by a newer game version opens in compatibility mode
+(`descape/scenario_compat.py`): its `LoadedScenario` is a proxy of the
+newest known version, the file's trusted bytes with a blank template's in
+the rest. The proxy is never written: `write_scenario()` and
+`build_patched_body()` raise `CompatReadOnly` for it. Terrain and elevation
+may be written only when the file's map settings and units both read under
+the known structure (`scenario_compat.terrain_writable()`), and then only
+through `scenario_compat.write_compat()`, which Save, Save As, autosave and
+Tools > Launch in AoE2:DE call for such a document. It writes the original file: its own header, its
+own body with only each tile's `terrain_id`, elevation and layer patched at
+the scanned grid (`scenario_write.patch_tiles()`, the same packer as the
+normal writer), and its trailing bytes, everything else verbatim; with no
+tile changed it writes the original bytes unchanged. The tile's field
+layout is the known structure's, not checked against the file: a newer
+version that reordered a tile's fields at the same size would pass the scan
+and take the bytes at the wrong offsets, so a version whose tile struct
+changed needs its own structure before it is writable. It runs
+`write_scenario()`'s destination guards (`check_destination()`) and its
+backup and no-op rules (`_write_file_bytes()`). It is not an exception to
+"verbatim": no unit field is written, and Trees and Eye candy plant nothing
+there. `tests/test_scenario_compat_write.py`, `tests/test_viewer_compat.py`.
+
+## Pre-DE documents saved back (TASK-520)
+
+A FileHeader-version-2 file (Age of Kings, The Conquerors, HD Edition
+`.scn`/`.scx`, UserPatch `.scx2`) saves back to its own format through
+`scenario_write.build_patched()`, the normal splicing writer, which asks
+`legacy_write.refusal()` about every pending edit before a byte is written:
+the model edits up front, then the terrain block's changed tiles once every
+patch has run. Only the four families (terrain, elevation, Messages text,
+diplomacy stances) can pass, each only once its band's `ALLOWED` entry holds
+it; units, every other option, allied victory, Messages string-table ids and
+triggers always raise `LegacyEditNotAllowed`. So no unit field is ever
+written to such a file and it is not an exception to "verbatim". A changed
+tile whose terrain id is outside the band's `LEGAL_TERRAIN` or whose
+elevation is above `BAND_MAX_ELEVATION` is refused too. A header splice
+rewrites `header_length`; an untouched Messages field writes its stored
+bytes. `check_destination()` refuses an `.aoe2scenario` name for such a
+document. `legacy_write._allow_for_oracle()` widens one band for
+`tools/legacy_oracle_pairs.py` and tests only. Writers that never write a
+legacy file call `refuse_legacy()` instead (resize, Convert to Version,
+`_patch_header_trigger_count()`, `strip_units`, `gen_blank_template`).
+A script run (`scripting.ScriptRun`) refuses a unit write on such a
+document up front and fails on a tile its band would not save
+(`legacy_write.tile_findings()`). `tests/test_legacy_write.py`,
+`tests/test_legacy_format.py`, `tests/test_legacy_corpus.py`.
+
+An Age of Empires (1997) / Rise of Rome file (data version 1.15) stores no
+`initial_animation_frame` or `garrisoned_in_id`: its units read as 0 and -1
+(`scenario_format.absent_unit_fields()`, defaulted in the fast unit codec,
+never in the library). Its band has no `ALLOWED` family and
+`scenario_format.converts()` refuses it, so no write path ever encodes one
+of its units. `tests/test_aoe1_format.py`.
 
 ## The exceptions to "verbatim"
 
@@ -100,7 +234,9 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   facing through `facing_image()`, a wall's shape index through
   `wall_index_image()` in an integer-encoded file only, a gate's
   orientation through `reorient_gate_const()`, a bridge's, chain's,
-  longhouse's or blocker's through `reorient_object_const()`, and every other rotation,
+  longhouse's or blocker's through `reorient_object_const()`, a DE bridge
+  piece's frame through `reorient_piece_frame()` (TASK-705, the *Map
+  mirroring* bullet), and every other rotation,
   VARIANT and INERT alike, copied verbatim. `add()` is unvalidated, so the
   guard is `transform_block()`, pinned by `tests/test_region_transform.py`.
   After the re-paste each pasted wall takes its neighbour-derived shape
@@ -121,14 +257,16 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   a wall's shape index through `wall_index_image()`, in an
   integer-encoded file only and only when the element changes it,
   written by `set_wall_variant()`; a gate's orientation through
-  `reorient_gate_const()`, and a non-square object's through
+  `reorient_gate_const()`, and an orientation-sibling object's through
   `reorient_object_const()`, written by `set_unit_const()`; a gate's
   carried 1x1 corner piece (TASK-532) at its own image point, an end tile
   of its gate's image, as `gate_orientation.corner_piece()` of the gate's
   image const (`unit_images()`' `gate` index), written by
-  `set_unit_const()`; and every other
+  `set_unit_const()`; a DE bridge piece's frame through
+  `reorient_piece_frame()` (TASK-705), only when it changes, written by
+  `set_variant()` after the piece's `set_unit_const()`; and every other
   rotation (cliffs, VARIANT, INERT) left verbatim, with no write at all.
-  Guards: the three setters' own, plus `plan_in_place()` pinned by
+  Guards: the four setters' own, plus `plan_in_place()` pinned by
   `tests/test_region_transform.py`. Allowed for its own reason, not the
   *Wall shapes re-derived from neighbours* bullet's: the permuted value is the
   element's image of a shape or facing the game already accepted, the
@@ -151,14 +289,25 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `mirror_tools.facing_image()`, whose 2x2 matrix is `TRANSFORMS`' own
   linear part, so the facing cannot drift from the positions. A gate's
   image takes its orientation sibling through `reorient_gate_const()`, and
-  a bridge's, chain's, longhouse's or blocker's through
+  a bridge's (the 1x1 wooden pieces included, TASK-706), chain's,
+  longhouse's or blocker's through
   `reorient_object_const()` (`descape/object_orientation.py`, TASK-329): the
   other axis's sibling under an axis-swapping element, and for a classic,
-  Asian or European bridge's top or bottom piece the end the element's
+  Asian, European or 1x1 wooden bridge's top or bottom piece the end the element's
   image of its run points to, so a turn or flip that reverses the run swaps
   top and bottom (and broken top and broken bottom) on an unchanged span.
-  The mole and the DE bridge pieces (`s_bridge_piece_*`, whose ends are
-  rotation frames) keep their const and are reported as kept. Every other
+  A DE bridge piece (`s_bridge_piece_*` with a (1, 2) or (2, 1) span,
+  TASK-705) takes its other-axis sibling the same way, and its rotation
+  frame through `mirror_tools.reorient_piece_frame()`: an end frame (which
+  side the rest of the bridge is on) becomes the image const's end frame
+  whose inward vector is the element's image of its own, a middle or
+  broken frame the image const's frame of the same kind, by the measured
+  table in `descape/bridge_piece_frames.py`, only while the dataset's art
+  matches that table (`covers()`); a broken frame's damage side does not
+  turn. It is written as a literal integer, and the stored value stays
+  verbatim when neither frame nor const changes.
+  The mole and the 2x2 wooden bridges (no `b` art) keep their const and
+  are reported as kept. Every other
   rotation, VARIANT and INERT alike, is copied verbatim; a longhouse's
   index is a roof style its two orientations share.
   The angular modes (3-way, 6-way rotational, 6-way reflective: tile-space
@@ -173,10 +322,12 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   that overlap is accepted, not repaired. A gate's image takes the
   orientation sibling nearest the
   rotated run direction (always 15 degrees off, never a tie), still via
-  `reorient_gate_const()`. A non-square object takes the other axis by the
+  `reorient_gate_const()`. An orientation-sibling object takes the other axis by the
   wall rule's nearest axis below, and a bridge end the end whose run
   direction is nearer its rotated one (never a tie, since the axis choice
-  rules out a perpendicular image), still via `reorient_object_const()`.
+  rules out a perpendicular image), still via `reorient_object_const()`,
+  and a DE piece's end frame the end whose inward vector is nearest the
+  rotated one (never a tie, likewise).
   A wall's axis-run index (0 or 1) swaps when the
   element carries the x axis nearer the y axis (60 and 120 degrees and `a`
   do, 180 degrees and the other two reflections do not), under the same
@@ -206,7 +357,8 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   for that value is unchecked.
   Its callers are Cycle Variant, the Rotate actions, the Rotation field,
   Move's pending turn (GH #280) and the wheel's selected-units choices (GH
-  #356), the last two per the *Rotate* bullet above, and a script's
+  #356), the last two per the *Rotate* bullet above, the *Selection
+  transform* bullet's DE bridge piece frame (TASK-705), and a script's
   `editor.set_variant()`, which takes only an `int` inside the const's
   variant count and writes it as its literal float.
 - *Wall shapes re-derived from neighbours*: Place Unit's wall-run
@@ -374,6 +526,18 @@ verbatim (`AGENTS.md`'s GAIA rule). The exceptions, in `AGENTS.md`'s order:
   `unit_variant.variant_count_for()` on every const either game plants
   (39 on 2026-10-29). That equality is re-measured per game by
   `tests/test_terrain_units.py`, not trusted.
+- *Convert to .aoe2scenario's unit images* (GH #315): a pre-DE document's
+  units, imported once into a new document built from the DE blank
+  (`UnitEditModel.import_units()`, which keeps their `reference_id`s and
+  refuses a document that had units). `legacy_convert.unit_rule()` picks a
+  rule per const, measured on AoE2:DE's own import of two AoC files: trees
+  (`legacy_import.TREE_CONSTS`) `3v` to `3v+2` at random, frame equal;
+  walls their neighbour shape (`wall_variant_from_neighbours8()`, the tower
+  for none), stored as a literal index; fish one random frame in both
+  fields; `.dat` type-80 buildings rotation 0 and a random frame of their
+  graphic, gates keeping their rotation. Every other const passes through
+  verbatim. `tests/test_legacy_convert.py`,
+  `tests/test_legacy_convert_oracle.py`.
 
 ## Gates
 
@@ -413,7 +577,10 @@ writes `0.0` when a non-wall becomes a wall; the viewer then writes that
 wall's neighbour-derived shape through `set_wall_variant()`; and the new wall images of
 Map mirroring and a *Region turn* (GH #197), whose index goes through
 `mirror_tools.wall_index_image()`, the element's permutation of that same
-neighbour table, in an integer-encoded file only. A wall's correct stored value is also a
+neighbour table, in an integer-encoded file only; and Convert to
+.aoe2scenario (GH #315), whose new walls take the shape
+`legacy_convert.wall_shapes()` derives from the converted wall connectors
+(the tower when they give none), as AoE2:DE's import re-derives it. A wall's correct stored value is also a
 function of its neighbours (98.9%/99.1% agreement between neighbour mask and
 stored index across the corpus), so rotating one would write a value the game
 re-derives. Walls are VARIANT, and Rotate skips them in a unit selection; a
@@ -425,7 +592,9 @@ for the square grid; that is draw-only, and no write path may use it. Every
 view draws a wall with at most one neighbour as the tower whatever its stored
 index, and every wall of a radian-encoded file by its neighbours
 (`unit_sprites.wall_drawn_shape()`); that is draw-only too, and no write path
-may use it.
+may use it. A pre-DE file's trees draw with the variant AoE2:DE's importer
+gives them (`legacy_import.drawn_rotation_overrides()`, merged into the same
+override dict); that is draw-only as well, and no write path reads it.
 
 ## The two exceptions to "a placed unit's `unit_const` never changes"
 
@@ -444,7 +613,7 @@ may use it.
 - `set_unit_const()` changes a gate's const only to one of the four
   orientation siblings `descape/gate_orientation.py` derives for it, and a
   non-square object's (a bridge, chain, longhouse or blocker, TASK-329)
-  only to one of its own group's siblings from
+  or a 1x1 wooden bridge's (TASK-706) only to one of its own group's siblings from
   `descape/object_orientation.py`, for the gate rule's reason: the
   orientation lives in the const. Its
   callers are Rotate and the Rotation field (a selected gate cycles), Move
@@ -473,7 +642,12 @@ may use it.
   `7.0`, and every sibling has `angle_count == 1`, so there is nothing
   there to normalize. A bridge, chain or blocker is INERT the same way
   (every corpus bridge stores `0.0` or `7.0`), and a longhouse's three
-  frames are roof styles its two orientations share.
+  frames are roof styles its two orientations share. The twelve DE bridge
+  pieces are the one exception (VARIANT, their end in their frame,
+  TASK-705): `set_unit_const()` still leaves their `rotation` as stored,
+  and the *Selection transform* writes the turned frame right after it
+  through `set_variant()`; the mirror and the region turn carry it on the
+  new unit.
 - Map mirroring is not an exception to this rule: it never changes a placed
   gate's or object's const, it `add()`s a *new* one whose const comes from
   `mirror_tools.reorient_gate_const()` or `reorient_object_const()` and
@@ -488,7 +662,11 @@ may use it.
 ## A pasted unit's `reference_id`
 
 Every new unit's `reference_id` is minted by `UnitEditModel.add()` (or
-`add_many()`). The one exception is a same-document paste of a Unit Cut
+`add_many()`), with two exceptions. Convert to .aoe2scenario (GH #315)
+keeps a legacy file's ids through `UnitEditModel.import_units()`, which
+fills a document that had no units, once, and raises for a negative,
+repeated, self-linked or dangling id; its counter ends above every imported
+id. The other is a same-document paste of a Unit Cut
 (Edit > Cut Units, then Paste Units): the cut block remembers each unit's
 own id and the document it came from (`RegionUnit.cut_reference_id`,
 `RegionBlock.cut_doc_id`, never saved with a block), and

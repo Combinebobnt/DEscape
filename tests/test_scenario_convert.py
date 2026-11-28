@@ -303,20 +303,26 @@ def test_the_gate_catches_a_skipped_count_overwrite(monkeypatch) -> None:
         convert_scenario(load_map_and_units(TRIGGERS))
 
 
-# -- the paste step table and the label --------------------------------------------
+# -- the paste refusal and the label ----------------------------------------------
 
 
-def test_paste_upgrade_fields_covers_equal_versions_and_the_one_step() -> None:
-    versions = library_compat.vocabulary_versions()
-    for a in versions:
-        for b in versions:
-            fields = scenario_convert.paste_upgrade_fields(a, b)
-            if a == b:
-                assert fields == ()
-            elif (a, b) == ("1.58", "1.59"):
-                assert fields == ("allow_in_fog",)
-            else:
-                assert fields is None, (a, b)
+def test_paste_refusal_allows_the_convert_step_and_equal_versions_and_refuses_a_lossy_block() -> None:
+    """GH #317 moved the paste rule to trigger_version_compat; the step this
+    module converts must still paste, and a block that loses a value not."""
+    from descape import trigger_clipboard, trigger_version_compat
+
+    loaded = load_map_and_units(TRIGGERS)  # held: new_effect finds the scenario in the library's weak store
+    manager = parse_triggers(loaded)
+    block = trigger_clipboard.copy_block(manager, list(range(len(manager.triggers))), doc_id="A", scenario_version="1.58")
+    assert trigger_version_compat.paste_refusal(block, "1.59", 5.0, convertible=True) == ""
+    assert trigger_version_compat.paste_refusal(block, "1.58", 4.9, convertible=True) == ""
+    trigger = manager.add_trigger("Lossy")
+    trigger.new_effect.display_instructions(source_player=1)
+    vars(trigger.effects[0])["use_tag_color_for_icon"] = 1
+    lossy = trigger_clipboard.copy_block(manager, [len(manager.triggers) - 1], doc_id="A", scenario_version="1.58")
+    assert "Use Tag Color For Icon, which 1.57 does not store" in trigger_version_compat.paste_refusal(
+        lossy, "1.57", 4.7, convertible=False
+    )
 
 
 def test_the_label_tracks_the_target() -> None:

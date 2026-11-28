@@ -9,21 +9,27 @@ from descape import (
     asset_source,
     brush,
     debug_log,
+    legacy_write,
     perf_trace,
+    scenario_compat,
     scenario_convert,
     settings,
     terrain_target,
     tool_options,
     view_layers,
+    viewer_game_launch,
+    viewer_legacy_convert,
 )
 from descape.beach_edges import ring_mode
 from descape.terrain_palette import name_for_terrain_id
 from descape.terrain_style import label_for, style_for_label
 from descape.viewer_common import (
+    _ANALYSIS_TIP,
     _SCATTER_TIP,
     _TOOL_PARAM,
     _TOOL_SHAPE,
     _WALL_TOOLS,
+    ELEVATION_LEVEL_MAX,
     GATE_WALLS_TOOLS,
     OFF_GRID_TOOLS,
     PLACE_RANDOM_TOOLS,
@@ -146,7 +152,7 @@ class _ViewerToolStateMixin:
         # ValueError on any non-square map -- confirmed against
         # AoE2ScenarioParser's source, not just an assumption). Terrain
         # painting has no such constraint, only terrain_write_supported --
-        # Paint Can shares that same gate (write_ok, not elevation_ok): it
+        # Paint Can shares that same gate (terrain_ok, not terrain_elevation_ok): it
         # never calls get_tile()/set_elevation() either, so squareness is
         # irrelevant to it too.
         has_map = self.scenario is not None
@@ -154,6 +160,16 @@ class _ViewerToolStateMixin:
         unlocked = self.game_data_lock_reason() is None
         write_ok = has_map and self.scenario.terrain_write_supported and unlocked
         elevation_ok = write_ok and self.scenario.map_is_square
+        # TASK-057 B2: a compat document may paint and save its terrain while the rest stays
+        # locked. Equal to write_ok/elevation_ok for every other document.
+        terrain_ok = has_map and self.scenario.terrain_write_supported and self.terrain_lock_reason() is None
+        # TASK-520: a pre-DE document's elevation and Save follow its band's own families.
+        terrain_elevation_ok = (
+            has_map and self.scenario.terrain_write_supported and self.scenario.map_is_square
+            and self.terrain_lock_reason(legacy_write.ELEVATION) is None
+        )
+        save_ok = has_map and self.scenario.terrain_write_supported and self.terrain_lock_reason(legacy_write.ANY) is None
+        legacy = self._file_is_legacy()
         # Phase 3's decision #6 scope cut (Stepped had no bounded
         # incremental redraw, so editing there meant a full ~1-2s
         # re-render per touched tile) is lifted as of Phase 4 --
@@ -190,14 +206,18 @@ class _ViewerToolStateMixin:
         # instead (below). A Terrain tool on write-unsupported/non-square
         # data now stays greyed AND visible rather than vanishing; a
         # mode-inapplicable tool hides outright instead of greying.
-        self.draw_action.setEnabled(has_map and write_ok)
-        self.fill_action.setEnabled(has_map and write_ok)
+        self.draw_action.setEnabled(terrain_ok)
+        self.spray_action.setEnabled(terrain_ok)
+        self.fill_action.setEnabled(terrain_ok)
         # Same gate as Draw: terrain only, no elevation call anywhere in
         # either tool's commit path, so squareness is irrelevant to them.
-        self.draw_line_action.setEnabled(has_map and write_ok)
-        self.draw_rect_action.setEnabled(has_map and write_ok)
-        self.elevation_action.setEnabled(has_map and elevation_ok)
-        self.set_level_action.setEnabled(has_map and elevation_ok)
+        self.draw_line_action.setEnabled(terrain_ok)
+        self.draw_rect_action.setEnabled(terrain_ok)
+        self.replace_brush_action.setEnabled(terrain_ok)
+        # Draw's gate; its Elevation box takes Paste's elevation_ok below (_clone_elevation_ok()).
+        self.clone_action.setEnabled(terrain_ok)
+        self.elevation_action.setEnabled(terrain_elevation_ok)
+        self.set_level_action.setEnabled(terrain_elevation_ok)
         # Map mirroring (Stage 1). Same gate as Set Level/Elevate --
         # plan_mirror's elevation half raw-assigns tile.elevation, the same
         # thing MapManager.set_elevation does, so it needs the same
@@ -211,18 +231,24 @@ class _ViewerToolStateMixin:
         # entry in this loop keys off. See _disables_editable().
         self.disables_action.setEnabled(self._disables_editable())
         self._regate_swap()
-        # Read-only, so any loaded map; each check reports what it can't run.
-        self.analysis_action.setEnabled(has_map)
+        # Read-only, so any loaded map; each check reports what it can't run. Not a
+        # compatibility-mode document (TASK-057), whose Messages may be the donor's.
+        compat = scenario_compat.lock_reason(self.scenario) if has_map else None
+        self.analysis_action.setEnabled(has_map and compat is None)
+        self.analysis_action.setToolTip(compat or _ANALYSIS_TIP)
         self.find_action.setEnabled(has_map)
-        # Same gate as Draw/Paint Can (has_map and write_ok, no squareness
-        # requirement): a cliff placement never touches the elevation
-        # recursion elevation_ok exists for.
+        # TASK-270: View > Saved Views, any document; an empty slot's Go stays on to say why it did nothing.
+        for action in (*self.saved_view_go_actions.values(), *self.saved_view_save_actions.values()):
+            action.setEnabled(has_map)
+        self.clear_saved_views_action.setEnabled(has_map)
+        # write_ok, no squareness requirement: a cliff placement never touches the elevation
+        # recursion elevation_ok exists for. Not terrain_ok: a cliff is a unit write.
         self.cliff_action.setEnabled(has_map and write_ok)
-        # Same gate as Draw/Paint Can/Cliff: a pick never calls
+        # Same gate as Draw/Paint Can (terrain_ok): a pick never calls
         # set_elevation() either, so squareness is irrelevant to it too.
         # In Units mode it writes UI state only, so no terrain gate applies.
-        self.eyedropper_action.setEnabled(has_map and (write_ok or self.mode == "units"))
-        # Same gate as Eyedropper in Terrain mode: Select only reads (Copy)
+        self.eyedropper_action.setEnabled(has_map and (terrain_ok or self.mode == "units"))
+        # write_ok, not Eyedropper's terrain_ok: a compat document refuses Copy. Select only reads (Copy)
         # and its own write (Paste) is gated separately below, so squareness
         # is irrelevant to the tool itself, only to whether the Elevation
         # paste checkbox may be checked, gated further down. In Units mode it
@@ -268,13 +294,19 @@ class _ViewerToolStateMixin:
             action.setVisible(unit_editable)
         self._update_rotate_enabled()
         self.close_action.setEnabled(has_map)
-        self.save_action.setEnabled(write_ok)
-        self.save_as_action.setEnabled(write_ok)
+        self.save_action.setEnabled(save_ok)
+        self.save_as_action.setEnabled(save_ok)
         convert_refusal = self._convert_version_refusal()
         self.convert_version_action.setEnabled(convert_refusal is None)
         self.convert_version_action.setToolTip(
             convert_refusal or f"Upgrade this scenario to version {scenario_convert.TARGET_VERSION}, the format the current game saves"
         )
+        legacy_refusal = self._convert_legacy_refusal()
+        self.convert_legacy_action.setEnabled(legacy_refusal is None)
+        self.convert_legacy_action.setToolTip(legacy_refusal or viewer_legacy_convert.ACTION_TIP)
+        launch_refusal = self._launch_refusal()
+        self.launch_game_action.setEnabled(launch_refusal is None)
+        self.launch_game_action.setToolTip(launch_refusal or viewer_game_launch.ACTION_TIP)
         self.resize_action.setEnabled(elevation_ok)  # square-only, see scenario_resize
         self.terrain_style_combo.setEnabled(has_map)
         for action in self.elevation_actions.values():
@@ -444,6 +476,7 @@ class _ViewerToolStateMixin:
         # param_widget="terrain" but lays no ring, so the box must not show for it.
         auto_beach_ok = (
             base_param_ok
+            and not legacy  # a shoreline lays DE beach ids
             and self._current_tool in _AUTO_BEACH_TOOLS
             and ring_mode(self.terrain_panel.terrain_id()) is not None
         )
@@ -461,10 +494,33 @@ class _ViewerToolStateMixin:
         self.beach_combo.setEnabled(beach_param_ok)
         self.beach_width_param_action.setVisible(beach_param_ok)
         self.beach_width_spin.setEnabled(beach_param_ok)
-        self.paint_trees_param_action.setVisible(base_param_ok)
-        self.paint_trees_check.setEnabled(base_param_ok)
-        self.paint_eye_candy_param_action.setVisible(base_param_ok)
-        self.paint_eye_candy_check.setEnabled(base_param_ok)
+        # The Clone Stamp's Terrain and Elevation; it plants on its own rule, not the Target's (GH #285).
+        clone_param_ok = self._current_tool == "clone" and self.clone_action.isEnabled()
+        self.clone_terrain_param_action.setVisible(clone_param_ok)
+        self.clone_terrain_check.setEnabled(clone_param_ok)
+        self.clone_elevation_param_action.setVisible(clone_param_ok)
+        self.clone_elevation_check.setEnabled(clone_param_ok and elevation_ok)
+        clone_plants = clone_param_ok and self.clone_terrain_check.isChecked()
+        # Planting is a unit write, which a compat document never takes (TASK-057).
+        # A pre-DE document plants none either: DE tree consts and variants (TASK-520).
+        plant_ok = (base_param_ok or clone_plants) and scenario_compat.plan_of(self.scenario) is None and not legacy
+        self.paint_trees_param_action.setVisible(plant_ok)
+        self.paint_trees_check.setEnabled(plant_ok)
+        self.paint_eye_candy_param_action.setVisible(plant_ok)
+        self.paint_eye_candy_check.setEnabled(plant_ok)
+        # Keyed on the tool: Spray's param_widget is already spent on "terrain".
+        spray_param_ok = self._current_tool == "spray" and current_action is not None and current_action.isEnabled()
+        for action in (self.spray_flow_label_action, self.spray_flow_param_action,
+                       self.spray_hardness_label_action, self.spray_hardness_param_action):
+            action.setVisible(spray_param_ok)
+        self.spray_flow_spin.setEnabled(spray_param_ok)
+        self.spray_hardness_spin.setEnabled(spray_param_ok)
+        # Keyed on the tool too, for the same reason.
+        replace_flood_ok = self._current_tool == "replace_brush" and current_action is not None and current_action.isEnabled()
+        self.replace_flood_label_action.setVisible(replace_flood_ok)
+        self.replace_flood_param_action.setVisible(replace_flood_ok)
+        self.replace_flood_combo.setEnabled(replace_flood_ok)
+        self.elevation_level_spin.setMaximum(legacy_write.max_elevation(self.scenario, ELEVATION_LEVEL_MAX))
         self.level_param_label_action.setVisible(level_param_ok)
         self.level_param_spin_action.setVisible(level_param_ok)
         self.elevation_level_spin.setEnabled(level_param_ok)
@@ -616,6 +672,7 @@ class _ViewerToolStateMixin:
             or unit_shape_param_ok or cliff_param_ok or brush_ok or select_param_ok or rect_param_ok
             or beach_param_ok or unrestricted_ok or off_grid_ok or ruler_param_ok or skip_occupied_ok
             or wall_pick_ok or gate_walls_ok or area_param_ok or eyedropper_return_ok or place_random_ok
+            or spray_param_ok or replace_flood_ok or clone_param_ok
         )
 
         # Stage 3: mode may have just changed which tools are applicable,
@@ -741,6 +798,8 @@ class _ViewerToolStateMixin:
         beach_edges.ring_mode() accepts) and logs the new terrain."""
         self._update_tool_enabled()
         self._log_status(f"Terrain type: {name_for_terrain_id(terrain_id)}")
+        if self.draw_action.isEnabled():  # a pre-DE band without it says so at the pick
+            self._refuse_legacy_terrain()
 
     def _on_auto_beach_toggled(self, checked: bool) -> None:
         # Re-gates the combo and width, which are visible only while the box

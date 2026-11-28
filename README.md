@@ -5,8 +5,11 @@ files. Renders the terrain grid and unit placement, and supports terrain/elevati
 editing with undo/redo and a scriptable batch-edit API, without needing the
 in-game editor.
 Older scenarios from before the Definitive Edition (Age of Kings and The
-Conquerors `.scn`/`.scx`, and some HD Edition `.scx`) open view-only. Other
-HD Edition and UserPatch `.scx`/`.scx2` files aren't supported yet.
+Conquerors `.scn`/`.scx`, HD Edition `.scx` and UserPatch `.scx2`) open
+view-only, triggers included, and File > Convert to .aoe2scenario makes an
+editable AoE2:DE copy of one (triggers not carried yet). Age of Empires
+(1997) and Rise of Rome `.scn`/`.scx` files open view-only too, shown with
+Return of Rome's data.
 
 ![DEscape showing a campaign scenario in the Stepped elevation view](docs/images/editor.png)
 
@@ -237,6 +240,25 @@ Markdown in [`descape/help/`](descape/help/), readable on GitHub:
 backups and autosave, and each mode and the map-wide tools have their own
 page.
 
+**Launch in AoE2:DE.** Tools > Launch in AoE2:DE writes the open map,
+unsaved edits included, to a fixed `DEscape_launch.aoe2scenario` in the game
+profile's scenario folder (never under your own file's name), then starts
+AoE2:DE through Steam. That file keeps `.bak`/`.orig` backups like any Save in
+the profile, and if it was changed outside DEscape you are asked before it is
+overwritten (the changed file is kept beside it under a dated `.bak` name).
+The game's arguments come from `aoe2de_launch_args` in config.yaml, one
+string split like a shell command line (default `EDITOR`).
+
+| Platform | How it starts the game |
+|---|---|
+| Linux, Flatpak Steam profile | `flatpak run com.valvesoftware.Steam -applaunch 813780 <args>` |
+| Linux, `steam` on PATH | `steam -applaunch 813780 <args>` |
+| Linux, otherwise | `xdg-open steam://run/813780//<args>/` |
+| Windows (UNTESTED) | `steam.exe -applaunch 813780 <args>` from the registry, else the `steam://` URL |
+| macOS | not supported: AoE2:DE has no macOS build |
+
+The Flatpak route is untested too.
+
 For XS scripts in Script Call triggers, including scripts longer than the
 in-game editor accepts, see `docs/XS_SCRIPTING.md`.
 
@@ -258,6 +280,9 @@ sets or removes a tile's layered terrain (the second terrain drawn over its
 base) and leaves the base alone; call it after `set_terrain`, which still
 clears the layer. `resize_map(scenario, 168, 168, "CENTER")` does what
 Map > Resize Map… does (square maps only, not undoable).
+`convert_legacy("old.scx")` does what File > Convert to .aoe2scenario does
+and returns the new document and a report (`report.lines()`); save it with
+`batch_api.save()`. Its `seed=` fixes the random tree and building variants.
 
 **Unit edits persist only through a `UnitEditModel`.** `batch_api.save()`
 always writes Map terrain exactly like the viewer's Save As does. Units are
@@ -278,9 +303,11 @@ one global, `editor`, with reads of the map and its units plus terrain,
 elevation and unit writes that keep the editor's own rules. The whole run is
 one undo step, and an error or Cancel rolls all of it back; nothing is saved
 until you save. A unit changed without `editor` fails the run. DEscape asks
-before running a new or changed script, since scripts are not sandboxed. The
-in-app guide's Scripts page (Help > DEscape Guide) has the full API and an
-example.
+before running a new or changed script, since scripts are not sandboxed. An
+addon (a `.py` file or package in your addons folder, loaded at startup)
+registers commands of its own in **Tools > Addons**, each run the same way.
+The in-app guide's Scripts and Addons page (Help > DEscape Guide) has the full
+API and examples.
 
 `descape/scatter.py` places units at random, reproducible positions across a
 tile set you build yourself (e.g. every water tile, or one connected pond):
@@ -371,6 +398,9 @@ at the OS-standard per-user config location, not in the repo checkout:
 - **macOS:** `~/Library/Application Support/DEscape/config.yaml`
 - **Windows:** `%APPDATA%\DEscape\config.yaml`
 
+Saved map prefabs (Edit > Save as Prefab…) live in a `prefabs` folder beside
+it, one `.descape-prefab` file each.
+
 With an install configured the map draws each terrain's real texture, blends
 each tile into higher-priority neighbouring terrain through the game's own
 transition masks, and draws a tile's second ("layered") terrain over it.
@@ -381,7 +411,7 @@ In Terrain mode, the Target option on the Tool Options row chooses which of
 the two a terrain tool edits (the in-game editor's Layering Mode). Terrain
 paints the base terrain and clears the tile's layered terrain, Layer paints
 the layered terrain and leaves the base alone, and Clear layer removes it.
-Draw, Draw Line, Draw Rectangle and Paint Can follow it; the Eyedropper picks
+Draw, Spray Can, Draw Line, Draw Rectangle, Replace Brush and Paint Can follow it; the Eyedropper picks
 the layered terrain while it is on Layer. Hovering a tile names its layered
 terrain, and Paste Region carries it. A layered terrain is saved either way,
 but only drawn with an install configured and both View > Layers rows on.

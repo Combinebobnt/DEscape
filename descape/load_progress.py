@@ -14,8 +14,8 @@ from __future__ import annotations
 from PyQt5.QtCore import QCoreApplication, QEvent
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QSizePolicy, QWidget
 
-# Highest rank first: a data mod parse can start inside a load (for_document()).
-OWNERS = ("load", "data_mod")
+# Highest rank first: a data mod parse can start inside a load (for_document()), and a 1999 root build inside either.
+OWNERS = ("game_root", "load", "data_mod")
 # A scenario load's stages: what the caption says, and the bar's percent as it starts.
 SCENARIO_STAGES = {
     "read": ("reading the file", 10),

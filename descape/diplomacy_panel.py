@@ -71,7 +71,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from descape import option_fields, player_labels, trigger_fields
+from descape import option_fields, player_labels, scenario_compat, trigger_fields
 from descape.diplomacy_fields import (
     allied_victory_cell_id,
     allied_victory_value,
@@ -337,7 +337,7 @@ class DiplomacyPanel(QWidget):
         rows = max(len(self._active_players) - 1, 0)
         total = rows + 1 + len(self._option_specs)  # + allied-victory + Teams rows
         read_only = total - sum(1 for cid in self._values if cid in self._editable_fields)
-        version = self._loaded.scenario_version
+        version = scenario_compat.display_version(self._loaded)
         summary = [f"{rows} stance{'' if rows == 1 else 's'} for Player {self._player_id} — scenario {version}"]
         if read_only == total and total:
             summary.append("all read-only")

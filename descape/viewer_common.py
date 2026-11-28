@@ -582,6 +582,7 @@ _WALL_TOOLS = ("place_unit", "unit_line", "unit_shape")
 
 
 # GH #196: Edit > Scatter Units in Region's tooltip, and why it is greyed with a map open.
+_ANALYSIS_TIP = "Check the open map for common problems before you ship it. Changes nothing"
 _SCATTER_TIP = (
     "Place random copies of the Units panel's object across the selected region or around the selected units, "
     "or move the selected units there"

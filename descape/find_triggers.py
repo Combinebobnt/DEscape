@@ -88,6 +88,7 @@ class TriggerHit:
     spans: tuple[tuple[int, int], ...] = ()
     text_mode: str = ""
     display_slot: int = -1  # the entry's 0-based row in the Triggers pane (GH #213), -1 for the trigger's own fields
+    entry_label: str = ""  # the type's shown name (VocabularyEntry.label); entry_name stays the key
 
     @property
     def location(self) -> tuple[int, str, int, str]:
@@ -121,7 +122,7 @@ def _read(obj: Any, attribute: str) -> Any:
 
 
 def _vocabulary(loaded):
-    version = loaded.scenario_version
+    version = loaded.vocabulary_version
     if version and library_compat.vocabulary_is_available(version):
         return library_compat.load_vocabulary(version)
     return None
@@ -176,6 +177,11 @@ def find_triggers(loaded, criteria: TriggerFindCriteria) -> list[TriggerHit]:
     if manager is None:
         return []
     vocabulary = _vocabulary(loaded)
+    labels = {} if vocabulary is None else {
+        (kind, d.name): d.label
+        for kind, entries in (("condition", vocabulary.conditions), ("effect", vocabulary.effects))
+        for d in entries.values()
+    }
     pattern = compile_pattern(criteria.text, criteria.regex, criteria.case_sensitive)
     scopes = criteria.text_scopes
     results: list[TriggerHit] = []
@@ -193,8 +199,9 @@ def find_triggers(loaded, criteria: TriggerFindCriteria) -> list[TriggerHit]:
                 if kind not in _slots:
                     _slots[kind] = {index: s for s, index in enumerate(entry_display_order(_t, kind))}
                 slot = _slots[kind].get(e_index, e_index)
+            label = labels.get((kind, entry_name), entry_name.replace("_", " "))
             return TriggerHit(_i, _n, _e, kind, e_index, entry_name, attribute, field_class, display, value,
-                              tuple(spans), mode, slot)
+                              tuple(spans), mode, slot, label)
 
         text_hits: list[TriggerHit] = []
         type_hits: list[TriggerHit] = []

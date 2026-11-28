@@ -23,6 +23,10 @@ than writing a file if any of that stops holding: a violation is the signal
 that a game update changed the field's meaning, and papering over it would
 silently mis-shore every map.
 
+The 1999, 1997 and HD Edition .dats (--dataset aoc, aoe1, hd) have no such
+byte: their values are the hand tables _AOC_IS_WATER, _AOE1_IS_WATER and
+_HD_IS_WATER, each checked against that .dat's own ship restriction.
+
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install -- neither of which this repo depends on for normal use, only for
 regenerating this file if the game updates its terrain table.
@@ -70,6 +74,79 @@ def decode(raw: int) -> tuple[str, str]:
     return FAMILY_BITS[family_bits], CLIMATE_BITS[climate_bits]
 
 
+# The 1999 .dat has no is_water byte. Each value is DE's byte for the same id,
+# which keeps the 1999 terrain at that id, except 33, 34, 38 and 39: the 1999
+# Snow Dirt, Snow Grass, Snow Road and Snow Road 2, which DE made obsolete.
+_AOC_IS_WATER = {
+    **dict.fromkeys(range(41), 0x20),
+    1: 0x04, 2: 0x10, 4: 0x08, 15: 0x01, 22: 0x02, 23: 0x01,
+    21: 0xA0, 26: 0x48, 32: 0xA0, 33: 0xA0, 34: 0xA0, 35: 0x60, 36: 0xA0, 37: 0x50, 38: 0xA0, 39: 0xA0,
+}
+# The 1997 .dat has none either. Its 23 terrains are Return of Rome's at the same ids and
+# names (checked on the run), so each value is that game's byte (descape/ror/terrain_classes.json).
+_AOE1_IS_WATER = {
+    **dict.fromkeys(range(23), 0x20),
+    1: 0x04, 2: 0x10, 4: 0x08, 15: 0x01, 21: 0xA0, 22: 0x02,
+}
+_AOE1_TERRAIN_NAMES = (
+    "Grass", "Water", "Beach", "Thin River", "Shallows", "Jungle Edge", "Desert", "Crop", "Rows", "Wheat",
+    "Forest", "Dirt", "Grass 2", "Desert Palm", "Desert Impas", "Water Impass", "Grass Impass", "Fog",
+    "Forest Edge", "Pine Forest", "Jungle", "Pine Edge", "Water Dark",
+)
+# HD Edition's .dat has none either. Its ids 0..67 are DE's at the same names, so each is DE's
+# byte, except the eight DE made obsolete (33, 34, 38, 39 snow land as in 1999; 43, 44, 61, 62
+# land). 68..99 are HD's own modding slots, classed by their names (Reserved and Grass land,
+# Shallows, Shallow Water, Normal Water, Deep Water); the ship check below confirms every water id.
+_HD_IS_WATER = {
+    **dict.fromkeys(range(100), 0x20),
+    1: 0x04, 2: 0x10, 4: 0x08, 15: 0x01, 22: 0x02, 23: 0x01,
+    21: 0xA0, 26: 0x48, 32: 0xA0, 33: 0xA0, 34: 0xA0, 35: 0x60, 36: 0xA0, 37: 0x50, 38: 0xA0, 39: 0xA0,
+    51: 0x10, 52: 0x10, 53: 0x10, 54: 0x08, 55: 0x08, 57: 0x02, 58: 0x04, 59: 0x08,
+    **dict.fromkeys(range(63, 68), 0x08),
+    **dict.fromkeys(range(90, 95), 0x08), 95: 0x04, 96: 0x04, 97: 0x01, 98: 0x01, 99: 0x02,
+}
+# The HD slot names _HD_IS_WATER's 68..99 were classed by (2026-11-27).
+_HD_SLOT_NAMES = (
+    "Reserved", "Reserved", *["Grass"] * 20, *["Shallows"] * 5, "Shallow Water", "Shallow Water",
+    "Normal Water", "Normal Water", "Deep Water",
+)
+_HAND_IS_WATER = {_game_root.AOC: _AOC_IS_WATER, _game_root.AOE1: _AOE1_IS_WATER, _game_root.HD: _HD_IS_WATER}
+# A hand-classed .dat's ship restriction (the one its boats carry) and the families it must pass
+# exactly, less the terrains no ship enters. The 1999 one passes beaches, the 1997 one does not.
+_SHIP_FAMILIES = frozenset({"medium_water", "deep_water", "shallow_water", "shallows", "beach"})
+_SHIP_CHECKS = {
+    _game_root.AOC: (3, _SHIP_FAMILIES, frozenset()),
+    _game_root.AOE1: (3, _SHIP_FAMILIES - {"beach"}, frozenset({15})),  # 15 Water Impass
+    _game_root.HD: (3, _SHIP_FAMILIES, frozenset()),
+}
+
+
+def _raw_is_water(dataset: str, terrain_id: int, terrain) -> int:
+    if dataset in _HAND_IS_WATER:
+        return _HAND_IS_WATER[dataset].get(terrain_id, 0)
+    return int(terrain.is_water) & 0xFF
+
+
+def _ship_check(dataset: str, data, classes: dict[str, dict]) -> None:
+    """Refuses a classic table whose water families differ from the .dat's own ship restriction."""
+    restriction, families, impassable = _SHIP_CHECKS[dataset]
+    row = data.terrain_restrictions[restriction].passable_buildable_dmg_multiplier
+    passed = {terrain_id for terrain_id, value in enumerate(row) if value > 0}
+    watery = {int(key) for key, entry in classes.items() if entry["family"] in families} - impassable
+    if passed != watery:
+        raise SystemExit(
+            f"the {dataset} ship restriction passes {sorted(passed)} but the class table's ship terrains "
+            f"are {sorted(watery)}: re-measure its hand is_water table"
+        )
+
+
+def _aoe1_name_check(terrains) -> None:
+    """Refuses a 1997 .dat whose enabled terrains are not _AOE1_IS_WATER's ids and names."""
+    names = {terrain_id: t.name for terrain_id, t in enumerate(terrains) if t.enabled}
+    if names != dict(enumerate(_AOE1_TERRAIN_NAMES)):
+        raise SystemExit(f"the 1997 terrains are {names}, not those _AOE1_IS_WATER was measured on")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -87,14 +164,16 @@ def main() -> None:
     args = parser.parse_args()
     _game_root.set_lenient(args.lenient)
 
-    from genieutils.datfile import DatFile
-
     dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
-    data = DatFile.parse(str(dat_path))
+    data = _game_root.parse_dat(dat_path)
     terrains = data.terrain_block.terrains
+    if args.dataset == _game_root.AOE1:
+        _aoe1_name_check(terrains)
+    if args.dataset == _game_root.HD and tuple(t.name for t in terrains[68:100]) != _HD_SLOT_NAMES:
+        raise SystemExit(f"HD terrains 68..99 are {[t.name for t in terrains[68:100]]}, not those _HD_IS_WATER was classed by")
 
     classes: dict[str, dict] = {}
     # (terrain id, report line)
@@ -102,7 +181,7 @@ def main() -> None:
     for i, t in enumerate(terrains):
         if not t.enabled:
             continue
-        raw = int(t.is_water) & 0xFF
+        raw = _raw_is_water(args.dataset, i, t)
         try:
             family, climate = decode(raw)
         except ValueError as exc:
@@ -127,6 +206,8 @@ def main() -> None:
             "Refusing to write: a game update has changed what this field means. "
             "Re-measure before touching descape/terrain_classes.py."
         )
+    if args.dataset in _SHIP_CHECKS:
+        _ship_check(args.dataset, data, classes)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.out_dir / "terrain_classes.json"

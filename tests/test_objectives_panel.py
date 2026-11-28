@@ -145,6 +145,38 @@ def test_a_flag_set_on_two_rows_is_one_undo_step(window):
     assert [row.mute for row in panel.rows()] == [False, True, True], "redo refreshes the list"
 
 
+def test_a_flag_write_patches_the_triggers_rows_without_a_rebuild(window, monkeypatch):
+    """A rebuild per tick is slow on a 590-trigger list: the field tier restyles
+    the changed rows (the flags feed needs_effects()) and keeps Trigger Details' current entry."""
+    from descape.trigger_status import Status
+
+    panel = window.trigger_panel
+    panel.select_triggers([1])
+    panel.select_entry("effect", 1)
+    _settle()
+    rebuilds = []
+    monkeypatch.setattr(window, "_show_triggers", lambda *a, **k: rebuilds.append(a))
+    window._objective_remove([0, 1])
+    _settle()
+    assert rebuilds == []
+    assert [row.index for row in window.objectives_panel.rows()] == [2]
+    assert panel.entry_tree.currentItem().data(0, 0x0100) == ("effect", 1)
+    # Effects emptied behind the panel's back: the next flag write must re-evaluate the rollup.
+    _triggers(window)[0].effects = []
+    window._objective_flags([0], "display_as_objective", True)
+    assert panel.status_of(0).trigger.status is not Status.PROBLEM
+    window._objective_flags([0], "display_as_objective", False)
+    assert panel.status_of(0).trigger.status is Status.PROBLEM
+    assert rebuilds == []
+    # The rebuild leaves an open picker open and latched to its trigger.
+    panel.select_triggers([0])
+    panel._open_picker(0)
+    window._objective_flags([0], "display_as_objective", True)
+    assert panel.picker_showing() and not panel.entry_tree.isEnabled()
+    assert panel._picker_trigger_index == 0
+    assert panel.status_of(0).trigger.status is not Status.PROBLEM
+
+
 def test_moving_a_row_up_rewrites_its_order_and_survives_a_save(window, tmp_path):
     panel = window.objectives_panel
     panel.select_indices([2])
@@ -1069,6 +1101,31 @@ def test_a_narrow_panel_scrolls_only_the_preview_across(window):
         assert outer.widget().width() <= outer.viewport().width(), "the list and its controls never scroll sideways"
         assert panel.box_scroll.horizontalScrollBar().maximum() > 0, "the preview keeps the game box's width and scrolls"
         assert panel.box.toolTip() == TICK_NOTE
+        # The button and Preview rows wrap rather than clip their labels, and nothing overlaps the list.
+        controls = (
+            panel.new_objective_button, panel.new_header_button, panel.add_trigger_button, panel.remove_button,
+            panel.up_button, panel.down_button, panel.renumber_button,
+            panel.place_combo, panel.all_radio, panel.start_radio, panel.variable_combo,
+        )
+        content = outer.widget()
+        tree_box = panel.tree.geometry().translated(panel.tree.parentWidget().mapTo(content, panel.tree.pos()) - panel.tree.pos())
+        for control in controls:
+            box = control.geometry().translated(control.parentWidget().mapTo(content, control.pos()) - control.pos())
+            assert control.width() >= min(control.minimumSizeHint().width(), control.maximumWidth()), control
+            assert box.right() <= content.width(), f"{box} past {content.width()}"
+            assert not box.intersects(tree_box), f"{box} overlaps the list {tree_box}"
+        assert panel.renumber_button.y() > panel.new_objective_button.y(), "the buttons wrapped onto a second line"
     finally:
         panel.close()
         panel.deleteLater()
+
+
+def test_the_list_keeps_seven_rows_visible_at_its_minimum(window):
+    from descape.objectives_panel import LIST_MIN_ROWS
+
+    _many_objectives(window, 12)
+    tree = window.objectives_panel.tree
+    tree.resize(tree.width(), tree.minimumHeight())
+    _settle()
+    row = tree.sizeHintForRow(0)
+    assert tree.viewport().height() >= row * LIST_MIN_ROWS

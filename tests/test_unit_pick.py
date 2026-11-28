@@ -280,11 +280,10 @@ def _sloped_geometry(scn, elev_step_pct: int = 50):
     elev_step_pct stop.
 
     Built here rather than through render_sloped.sloped_elevations_and_proj()
-    purely so the stop is a parameter: that function reads
-    settings.get_elev_step_pct(), and the candidate-loop bound below has to
-    be exercised at several stops (the persisted value on a real machine is
-    50; the Appearance slider reaches 200, which makes every rise -- and so
-    the loop -- four times longer). Everything else matches that function
+    from before that function took an explicit elev_step_pct: the
+    candidate-loop bound below has to be exercised at several stops (Sloped
+    defaults to 100; the Appearance slider reaches 200, which makes every
+    rise -- and so the loop -- longer). Everything else matches that function
     exactly, corner_headroom_steps=1 included."""
     mm = scn.map_manager
     tile_px = render_paint.tile_pixels_for_map(mm.map_width, mm.map_height)

@@ -93,6 +93,19 @@ def apply_default(
     return f"Wayland session: using QT_QPA_PLATFORM={choice} (XWayland), the X11 compatibility setting is on."
 
 
+def system_tool_env(environ: Mapping[str, str], frozen: bool) -> dict[str, str]:
+    """`environ` for a spawned system tool: a frozen (PyInstaller) build points
+    LD_LIBRARY_PATH at its bundle, so the original from LD_LIBRARY_PATH_ORIG comes back."""
+    env = dict(environ)
+    if frozen:
+        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original is None:
+            env.pop("LD_LIBRARY_PATH", None)
+        else:
+            env["LD_LIBRARY_PATH"] = original
+    return env
+
+
 def portal_file_chooser_problem(
     environ: Mapping[str, str],
     *,
@@ -104,14 +117,7 @@ def portal_file_chooser_problem(
     version 3 or later, asked with the first of gdbus or busctl found, else why
     not, for the debug log. Reading the property also starts a
     D-Bus-activatable portal that is not running yet."""
-    env = dict(environ)
-    if frozen:
-        # PyInstaller points LD_LIBRARY_PATH at the bundle; a system tool needs the original.
-        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
-        if original is None:
-            env.pop("LD_LIBRARY_PATH", None)
-        else:
-            env["LD_LIBRARY_PATH"] = original
+    env = system_tool_env(environ, frozen)
     for tool, args in _PORTAL_QUERIES:
         exe = which(tool)
         if exe is None:

@@ -32,6 +32,7 @@ from descape import (
     zoom_stops,
 )
 from descape.map_view_highlight import _HOVER_GHOST_TOOLS, _LATCHED_SHAPES
+from descape.map_view_stroke_tick import _TICK_STROKE_TOOLS
 
 # The two non-Flat terrain styles, which share a projected pick plane and a
 # diamond ground outline. Aliased to this module's existing private name so
@@ -51,7 +52,9 @@ from descape.viewer_common import (
 
 # Stroke tools _touch_tile gap-fills. Cliff too: each path tile feeds the chain walk
 # in order, so a fast drag lays the same run as a slow one.
-_INTERPOLATED_STROKE_TOOLS = frozenset({"draw", "elevation", "set_level", "convert", "eraser", "cliff", "unit_brush"})
+_INTERPOLATED_STROKE_TOOLS = frozenset(
+    {"draw", "replace_brush", "clone", "elevation", "set_level", "convert", "eraser", "cliff", "unit_brush"}
+)
 
 
 # Units-mode brushes: a drag mutates, so they skip the selection click and hover cue.
@@ -186,6 +189,9 @@ class _MapViewInputMixin:
         return self._map_rect is not None and self._map_rect.contains(pos)
 
     def _touch_tile(self, tile_x: int, tile_y: int, modifiers) -> None:
+        # A tick tool's move only moves the nozzle: the press dabs, then _on_stroke_tick().
+        if self._tool in _TICK_STROKE_TOOLS and self._stroke_last_tile is not None:
+            return
         key = (tile_x, tile_y)
         # Qt's motion compression lands a slow stroke's cursor tiles apart: fill the
         # gap, in one call. Off-map moves keep the last tile, so re-entry spans a skirt.
@@ -231,6 +237,7 @@ class _MapViewInputMixin:
         with perf_trace.span("release"):
             with perf_trace.phase("gc_resume"):
                 self.resume_stroke_gc()
+            self.stop_stroke_tick()
             self._stroke_active = False
             self._stroke_touched = set()
             self._stroke_last_tile = None
@@ -471,6 +478,19 @@ class _MapViewInputMixin:
             if self._pos_on_map(pos):
                 self._on_click_edit(*self._pick_tile(pos), event.modifiers())
             return
+        # GH #285: a Ctrl+press sets the Clone Stamp's source and opens no stroke. Either
+        # button, so a Ctrl+right press never clones by surprise; mid-stroke it is ignored below.
+        if (
+            self._tool == "clone"
+            and event.modifiers() & Qt.ControlModifier
+            and event.button() in (Qt.LeftButton, Qt.RightButton)
+            and self._map_rect is not None
+            and not self._stroke_active
+        ):
+            pos = self.mapToScene(event.pos())
+            if self._pos_on_map(pos):
+                self._on_clone_source(self._pick_tile(pos))
+            return
         # Right button starts a stroke exactly like left does -- the only
         # difference is _touch_tile()'s elevation-lowering synthesis above,
         # which the "draw"/"set_level" tools simply don't look at, and the
@@ -506,6 +526,7 @@ class _MapViewInputMixin:
                     self._stroke_touched = set()
                     self._stroke_last_tile = None
                     self._stroke_button = event.button()
+                    self._stroke_nozzle_pos = event.pos()
                     # Pauses the pulse for the duration of the stroke, which is
                     # the one time its 40ms tick competes with real edit work.
                     self._sync_pulse_timer()
@@ -518,6 +539,8 @@ class _MapViewInputMixin:
                     )
                     self._on_stroke_start()
                     self._touch_tile(*self._pick_tile(pos), event.modifiers())
+                    if self._tool in _TICK_STROKE_TOOLS and self._stroke_active:
+                        self._stroke_tick_timer.start()
             return
         super().mousePressEvent(event)
 
@@ -1605,6 +1628,8 @@ class _MapViewInputMixin:
                 # Kept current mid-stroke, so the ghost returns here at release.
                 # The backing field: the run's head footprint stays off the map.
                 self._cliff_hover_tile = tile if on_map else None
+            if self._stroke_active:
+                self._stroke_nozzle_pos = event.pos()
             if on_map:
                 with perf_trace.phase("highlight"):
                     self._update_highlight(*tile)

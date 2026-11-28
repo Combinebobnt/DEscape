@@ -321,11 +321,13 @@ def test_toggling_sloped_sprites_on_widens_the_visible_canvas(sprite_install, mo
     paint it."""
     from descape import settings
 
-    monkeypatch.setattr(settings, "_elev_step_pct", 25)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", 25)
     window = conftest.blank_window()
     try:
         window.show_sprites_action.setChecked(False)
         window.terrain_style_combo.setCurrentText("Sloped")
+        proj = window._cache.proj
+        assert proj.elev_step == round(proj.half_h * 25 / 100), "pct did not reach the projection"
         before_h = window.map_view._canvas_item.boundingRect().height()
         before_scene_h = window.map_view.sceneRect().height()
         assert before_h == window._cache.proj.canvas_h, "fixture assumption: sprites start off, canvas tight"

@@ -15,6 +15,7 @@ image exists, handed to a reviewer that is told nothing about what changed.
 Run:
     tools/gen_review_pack.py --pack shadow_band
     tools/gen_review_pack.py --pack shadow_band --inject no-apex-wedge
+    tools/gen_review_pack.py --pack shadow_band --inject one-flank
     tools/gen_review_pack.py --pack ground_texture --inject old-basis
     tools/gen_review_pack.py --check --pack ground_texture
 
@@ -235,6 +236,22 @@ def _inject_no_apex_wedge(_tile_px, _rise_px):
     return (_EMPTY, _EMPTY, _EMPTY, _EMPTY)
 
 
+# Bound before any patch swaps the module attribute, so the inject can wrap it.
+_HEAD_APEX_INDICES = ig.shadow_apex_indices
+
+
+def _inject_one_flank(tile_px, rise_px):
+    """LOCALIZED, and on the run frames an inverted control. Keeps only the
+    wedge's up-left flank (dst_x <= half_w) at every caster: the side split
+    the GH #15 back-out removed, applied globally. On the one-sided run that
+    drops exactly the 1px tick and nothing else; on the band and corner it
+    drops the connective flank of each caster whose lower side is up-right."""
+    dst_y, dst_x, depth, span = _HEAD_APEX_INDICES(tile_px, rise_px)
+    half_w, _half_h = ig.half_dims(tile_px)
+    keep = dst_x <= half_w
+    return dst_y[keep], dst_x[keep], depth[keep], span[keep]
+
+
 @dataclass(frozen=True)
 class _Inject:
     """One known defect: which iso_geometry entry point it replaces, the
@@ -246,12 +263,15 @@ class _Inject:
     bound: object
 
 
-# The localized injects (notch-inject, no-tip) toggled the side-split apex
-# wedge and the inner-corner tip pass, which were backed out (GH #15); their
-# defects are the clean render now. A localized inject for the line-style
-# render is still owed, so the size-differs check below has nothing to compare.
+# Largest one-flank piece is 16 px (one tick at pct 100); band pct 100 is the
+# widest reach at 0.675% changed.
+ONE_FLANK_BOUND = rp.LocalizedBound(max_changed_fraction=0.01, max_component_px=16)
+
+# The earlier localized injects (notch-inject, no-tip) toggled passes the
+# GH #15 back-out removed; one-flank replaces them for the line-style render.
 INJECTS = {
     "no-apex-wedge": _Inject("shadow_apex_indices", _inject_no_apex_wedge, None),
+    "one-flank": _Inject("shadow_apex_indices", _inject_one_flank, ONE_FLANK_BOUND),
 }
 
 # The coarse inject is the yardstick any localized one is localized AGAINST,
@@ -270,6 +290,12 @@ COARSE_MIN_COMPONENT_RATIO = 3.0
 # lines stop either side of a 2-column bare slot at the vertex, so two pieces.
 CLEAN_BAND_COMPONENTS = 1
 CLEAN_CORNER_COMPONENTS = 2
+
+# one-flank on the run frames removes one tick per apex in frame and keeps the
+# run whole. 11, not 9: the padded crop catches apexes beyond the 9 named run
+# tiles, so a change here after a crop-box change is a crop change.
+ONE_FLANK_RUN_TICKS = 11
+ONE_FLANK_TICK_MAX_PX = 16
 
 
 # ----------------------------------------------------------------- rendering
@@ -380,7 +406,7 @@ def _flat_frame(size: tuple[int, int]) -> np.ndarray:
 
 
 def _shadow_band_spec() -> rp.PackSpec:
-    """The pilot pack, re-posed in round 3. Each question sits on frames that
+    """The pilot pack, re-posed in round 3 and straight_run_edge again in round 4. Each question sits on frames that
     can answer it: a pyramid for whether the band breaks, a pure one-sided
     straight run for perpendicular artifacts, a bare inner corner for whether
     its vertex mass is split, and a flat field where none of them is possible.
@@ -491,28 +517,34 @@ def _shadow_band_spec() -> rp.PackSpec:
         ),
         rp.Check(
             id="straight_run_edge",
+            # Measured on the run frames: the tick is 1 px thick, even (shade 0.64-0.65),
+            # sloped against the contour and reaching 9 / 16 rows off it at pct 50 / 100;
+            # every other contact pixel stays within 2 rows of the contour, graded 0.64-0.88.
             question=(
                 "First, in your own words, describe every dark mark you can see along this straight "
-                "terrace edge, and for each one say whether it touches the main dark contour or is "
-                "separated from it by a strip of ordinary un-darkened ground.\n\n"
-                "Then the closed question, which is about ONE specific mark and not about anything "
-                "else you described. Both of the following sit on the same side of the contour, on "
-                "the lower ground, so which side a mark is on does not distinguish them. What "
-                "distinguishes them is whether the mark is attached:\n"
-                "- A solid wedge TOUCHING the contour, thickest where it meets the line and "
-                "tapering smoothly to nothing along it, its darkness strongest at the line and "
-                "fading out. One per tile. That is this edge's expected shading. It is NOT what "
-                "this question asks about, however prominent or spur-like its thick end looks.\n"
-                "- A thin DETACHED line, roughly one pixel thick in the original and so a few "
-                "pixels thick at this enlargement, of near-uniform darkness end to end, standing "
-                "clear of the contour with un-darkened ground between it and the line, and running "
-                "away from it at an angle. One per tile.\n\n"
-                "Does the second kind appear -- a thin detached line standing off the contour with "
-                "clear ground between? Judge this on the raw frames. The amplified difference "
-                "frames may corroborate what you already see there, but cannot settle it on their "
-                "own: they show every pixel the pass touched, expected shading included, so a mark "
-                "that only appears in a difference frame does not count. "
-                "Answer PASS if no such detached line is present, FAIL if one is."
+                "terrace edge: how thick it is, which direction it runs compared with the edge, how "
+                "far it reaches away from the edge, and whether its darkness is even or fades.\n\n"
+                "Then the closed question, which is about ONE kind of mark and not about anything "
+                "else you described. The edge is a dark contour line running diagonally across the "
+                "frame. Two things are NOT what this question asks about:\n"
+                "- The contour itself getting thicker for a short stretch, once per tile, with its "
+                "darkness fading along that stretch, while it keeps running in the contour's own "
+                "direction and stays within about 8 pixels of the line at this enlargement. That is "
+                "this edge's expected shading, however blocky or uneven it looks.\n"
+                "- The end of a stretch of contour shading, where the shading along the edge stops "
+                "and the next stretch starts. Such an end may be cut at a slant, but it stays on the "
+                "contour, within about 8 pixels of it at this enlargement.\n"
+                "A CROSS-LINE is a thin straight line, about one pixel thick in the original and so "
+                "a few pixels thick at this enlargement, of even darkness end to end, that starts at "
+                "the contour and runs away from it along the OTHER diagonal, sloping the opposite way "
+                "to the contour, and reaches well clear of it into the open ground: at least about "
+                "30 pixels off the contour at this enlargement on the 50% and 100% frames. On the 10% "
+                "frame such a line may be only a stub.\n\n"
+                "Judge this on the raw frames. The amplified difference frames may corroborate what "
+                "you already see there, but cannot settle it on their own: they show every pixel the "
+                "pass touched, expected shading included, so a mark that only appears in a difference "
+                "frame does not count. "
+                "Answer CROSS-LINE if such lines appear, NO-CROSS-LINE if none do."
             ),
             frames=(
                 "run_pct10_raw",
@@ -522,6 +554,7 @@ def _shadow_band_spec() -> rp.PackSpec:
                 "run_pct100_raw",
                 "run_pct100_diff",
             ),
+            answers=("CROSS-LINE", "NO-CROSS-LINE", "CANNOT-TELL"),
         ),
         # Raw before diff: once a reviewer has seen the amplified mass, it would
         # be judging the raw frames from memory of it.
@@ -594,8 +627,7 @@ def _shadow_band_spec() -> rp.PackSpec:
 GROUND_MAP = ROOT / "examples" / "8tp3w9j.aoe2scenario"
 GRASS, FOREST = 0, 10  # GRASS_1, FOREST_OAK
 # FARM_0 (g_fc1.dds): 40 furrows across the texture's rows, constant along its
-# columns, so its frame has a measured direction (coherence 0.60 clean, 0.27
-# turned-cells) that grass lacks (0.09 either way). FARM (7) is the fallback.
+# columns, so pattern_joins has lines to see shifted at a border. FARM (7) is the fallback.
 FIELD = 29
 
 # frame id -> (style, tile_px, centre tile, crop (w, h), terrain ids it may show).
@@ -618,11 +650,6 @@ _GROUND_FRAMES = {
 # Flat blits whole contiguous crops, so no per-cell join can break there.
 _GROUND_SPECIFICITY = "grass_overhead"
 _FIELD_FRAMES = tuple(fid for fid, frame in _GROUND_FRAMES.items() if FIELD in frame[4])
-
-# one-cell-shift's tile, off-centre inside field_angled. A whole-tile offset
-# is in phase on the furrows (64 texels is 5 periods) and so invisible; the
-# shift is half a furrow across them instead.
-_SHIFT_TILE = (129, 102)
 
 _GROUND_SCENES: dict[int | None, tuple] = {}
 
@@ -698,7 +725,6 @@ def _legacy_inverse_sample(dst_x, dst_y, half_w: int, half_h: int, tile_px: int)
     return src_y, src_x
 
 
-_REAL_CROP_OFFSET = render_paint._crop_offset
 _REAL_TEXTURE_AT = asset_source.terrain_texture_at
 
 
@@ -715,14 +741,6 @@ def _half_period(tile_px: int) -> int:
     spectrum = np.abs(np.fft.rfft(rows - rows.mean()))
     peak_bin = int(np.argmax(spectrum[1:])) + 1
     return round(texture.shape[0] / peak_bin / 2)
-
-
-def _shifted_crop(half_period: int):
-    def crop(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
-        ox, oy = _REAL_CROP_OFFSET(x, y, texture_size, tile_px)
-        return (ox, oy + half_period) if (x, y) == _SHIFT_TILE else (ox, oy)
-
-    return crop
 
 
 _TEXTURE_VARIANTS: dict[tuple, np.ndarray] = {}
@@ -767,51 +785,32 @@ def _derive_texture(kind: str, path: Path, terrain_id: int, tile_px: int, size: 
     return arr
 
 
-@dataclass(frozen=True)
-class _GroundInject:
-    """`patches(style, tile_px, frame_id)` lists (object, attribute,
-    replacement) for one frame's render; `bound` is set only on the localized
-    inject."""
-
-    patches: object
-    bound: object = None
-
-
-def _patch_old_basis(_style, _tile_px, _frame_id):
+def _patch_old_basis(_style, _tile_px):
     """COARSE. The pre-TASK-201 render: every cell's crop read in the old
     basis, so no cell's pattern continues into its neighbour's."""
     return [(ig, "_inverse_sample", _legacy_inverse_sample)]
 
 
-def _patch_one_cell_shift(_style, tile_px, frame_id):
-    """LOCALIZED, field frames only. One cell's crop slides half a furrow
-    across the furrows, so they dislocate at its border (clean vs shifted luma
-    correlate -0.52 there). On grass a whole-tile offset scored +0.09 and was
-    not seen, so the grass and forest frames get no shifted cell."""
-    if frame_id not in _FIELD_FRAMES:
-        return []
-    return [(RENDER, "_crop_offset", _shifted_crop(_half_period(tile_px)))]
-
-
-def _patch_unfiltered(style, tile_px, _frame_id):
+def _patch_unfiltered(style, tile_px):
     """COARSE, angled frames only. Point-sampled source with no prefilter,
     on top of the angled views' ~2.8:1 vertical minification."""
     return [] if style == "flat" else [(asset_source, "terrain_texture_at", _texture_variant("unfiltered", tile_px))]
 
 
-def _patch_turned(style, tile_px, _frame_id):
+def _patch_turned(style, tile_px):
     """COARSE, angled frames only. Every other cell's crop turned 90
     degrees, in a checkerboard."""
     return [] if style == "flat" else [(asset_source, "terrain_texture_at", _texture_variant("turned", tile_px))]
 
 
+# Each lists (object, attribute, replacement) for one frame's render. All are
+# coarse: the localized one-cell-shift and its direction check were dropped
+# (TASK-213); orientation is pinned in tests/test_texture_continuity.py.
 GROUND_INJECTS = {
-    "old-basis": _GroundInject(_patch_old_basis),
-    "one-cell-shift": _GroundInject(_patch_one_cell_shift, bound="one-cell"),
-    "unfiltered": _GroundInject(_patch_unfiltered),
-    "turned-cells": _GroundInject(_patch_turned),
+    "old-basis": _patch_old_basis,
+    "unfiltered": _patch_unfiltered,
+    "turned-cells": _patch_turned,
 }
-GROUND_COARSE_INJECT = "old-basis"
 
 
 def _clear_texture_caches() -> None:
@@ -832,7 +831,7 @@ def _ground_frame_images(inject: str | None) -> dict[str, np.ndarray]:
 
     images = {}
     for frame_id, (style, tile_px, *_rest) in _GROUND_FRAMES.items():
-        patches = GROUND_INJECTS[inject].patches(style, tile_px, frame_id) if inject else []
+        patches = GROUND_INJECTS[inject](style, tile_px) if inject else []
         try:
             with pytest.MonkeyPatch.context() as mp:
                 for target, name, new in patches:
@@ -847,12 +846,10 @@ def _ground_frame_images(inject: str | None) -> dict[str, np.ndarray]:
 def _ground_texture_spec() -> rp.PackSpec:
     """TASK-201's iso texture continuity, on a real map with real textures.
     Each check's options are written against the injects' measured masks:
-    a break is one cell's border (one-cell-shift is exactly one component,
-    on the field frame, its furrows dislocated half a period), a turned cell
-    is a 90-degree turn of the crop (only the furrowed field has a direction
-    to turn: coherence --check measures), and speckle is the isolated-pixel
-    rate --check measures, ~0.5% on clean angled grass against ~10%
-    unfiltered."""
+    a break is a cell's border (old-basis and turned-cells break every one),
+    and speckle is the isolated-pixel rate --check measures, ~0.5% on clean
+    angled grass against ~10% unfiltered. No localized inject: a one-cell
+    furrow shift went unseen at 64 px and no closer frame passed (TASK-213)."""
     angled = (
         "grass_angled", "grass_angled_near", "grass_hillside", "forest_edge_angled", "forest_edge_hillside",
         "field_angled",
@@ -899,23 +896,6 @@ def _ground_texture_spec() -> rp.PackSpec:
             ),
             frames=angled,
             answers=("BREAKS-PRESENT", "NO-BREAKS", "CANNOT-TELL"),
-        ),
-        rp.Check(
-            id="pattern_direction",
-            question=(
-                "Look only at the ploughed farmland frame. Its ground is a grid of diamond-shaped map cells "
-                "seen from an angle, each painted with a patch of the farmland texture. First, in your own "
-                "words, describe which way the furrows run, and whether that differs from one cell to the "
-                "next.\n\n"
-                "Then the closed question, which is about DIRECTION only. Do neighbouring cells show furrows "
-                "running at visibly different angles from each other, so the field reads as a patchwork of "
-                "separately turned pieces? NOT that: furrows that keep the same lean on both sides of a cell "
-                "border but do not line up across it.\n\n"
-                "Answer TURNED if neighbouring cells show furrows at visibly different angles, ALIGNED if the "
-                "furrows run the same way all across the frame."
-            ),
-            frames=_FIELD_FRAMES,
-            answers=("TURNED", "ALIGNED", "CANNOT-TELL"),
         ),
         rp.Check(
             id="fine_grain",
@@ -1014,10 +994,9 @@ def _ground_purity_failures() -> list[str]:
 
 def _check_ground_texture() -> None:
     """--check for ground_texture: spec coupling, frame band, crop purity,
-    each inject's reach (printed), the specificity frame untouched by every
-    inject, one-cell-shift exactly one bounded cell on the field frames only
-    and under old-basis' largest delta, the speckle rates fine_grain's
-    options rest on, and the field frames' direction and shift gates."""
+    each inject's reach (printed), every angled frame touched and the
+    specificity frame untouched by every inject, and the speckle rates
+    fine_grain's options rest on."""
     reason = _ground_prerequisites()
     if reason:
         raise SystemExit(f"ground_texture: {reason}")
@@ -1038,12 +1017,8 @@ def _check_ground_texture() -> None:
             failures.append(str(exc))
 
     angled = [fid for fid in _GROUND_FRAMES if fid != _GROUND_SPECIFICITY]
-    largest_cell = max(ig.diamond_indices(tp)[0].size for _s, tp, *_r in _GROUND_FRAMES.values())
-    # A sloped cell stretches past its diamond (measured 1.25x); 1.5x of the largest is still one cell.
-    one_cell = rp.LocalizedBound(max_changed_fraction=0.02, max_component_px=largest_cell * 3 // 2)
-    reach: dict[str, dict[str, tuple[int, int]]] = {}
     injected_by_name = {}
-    for name, inject in GROUND_INJECTS.items():
+    for name in GROUND_INJECTS:
         injected = injected_by_name[name] = _ground_frame_images(name)
         touched = {}
         for frame_id in _GROUND_FRAMES:
@@ -1051,34 +1026,13 @@ def _check_ground_texture() -> None:
             changed = int(np.count_nonzero(mask))
             if changed:
                 touched[frame_id] = (changed, rp.largest_component_px(mask))
-            if inject.bound and frame_id in _FIELD_FRAMES:
-                failures += one_cell.failures(mask, f"inject {name} on {frame_id}")
-                if changed and rp.components(mask) != 1:
-                    failures.append(f"inject {name} on {frame_id}: {rp.components(mask)} pieces, not one cell")
         if _GROUND_SPECIFICITY in touched:
             failures.append(f"inject {name}: reached the specificity frame {_GROUND_SPECIFICITY}")
-        # The coarse injects bite every angled frame; the localized one exactly the field frames.
-        scope = _FIELD_FRAMES if inject.bound else angled
-        missed = [fid for fid in scope if fid not in touched]
+        missed = [fid for fid in angled if fid not in touched]
         if missed:
             failures.append(f"inject {name}: changed nothing in {', '.join(missed)}")
-        strays = [fid for fid in touched if fid not in scope]
-        if strays:
-            failures.append(f"inject {name}: reached {', '.join(strays)}, outside its frames")
-        reach[name] = touched
         shown = ", ".join(f"{fid} {px}px/{comp}max" for fid, (px, comp) in sorted(touched.items()))
         print(f"reach: {name} -> {shown or 'nothing'}")
-
-    coarse = reach[GROUND_COARSE_INJECT]
-    for name, inject in GROUND_INJECTS.items():
-        if inject.bound is None:
-            continue
-        for frame_id, (_px, comp) in sorted(reach[name].items()):
-            if frame_id in coarse and comp >= coarse[frame_id][1]:
-                failures.append(
-                    f"inject {name} on {frame_id}: largest delta {comp} px is not under the coarse "
-                    f"inject's {coarse[frame_id][1]} px there, so the two no longer differ in size"
-                )
 
     rates = []
     for frame_id in _check_frames(spec, "fine_grain"):
@@ -1093,60 +1047,15 @@ def _check_ground_texture() -> None:
             failures.append(f"{frame_id}: unfiltered speckle {noisy_rate:.2%} under {UNFILTERED_SPECKLE_MIN:.0%}")
     print(f"speckle (clean/unfiltered): {', '.join(rates)}")
 
-    failures += _field_failures(clean, injected_by_name)
-
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}")
         raise SystemExit(f"{len(failures)} check(s) failed")
     print(
         f"OK: ground_texture frames couple to its checks, land in {rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px and "
-        f"show only their own terrain; the coarse injects bite every angled frame, none reaches "
-        f"{_GROUND_SPECIFICITY}; one-cell-shift is one bounded, anticorrelated cell on {', '.join(_FIELD_FRAMES)} "
-        f"only; the field frames read a direction that turned-cells breaks"
+        f"show only their own terrain; every inject bites every angled frame, none reaches "
+        f"{_GROUND_SPECIFICITY}"
     )
-
-
-# The field frame's gates (measured 2026-10-13, FARM_0 at 64 px): coherence
-# 0.60 clean and 0.27 under turned-cells, so pattern_direction has a direction
-# to lose; 0.63 and 0.33 with the angled prefilter (2026-11-24, turned-cells
-# turns the filtered texture). Clean vs one-cell-shift luma over the changed cell correlate -0.52 (-0.62 since);
-# the grass whole-tile offset nobody saw on 2026-10-07 scored +0.09, and a
-# whole-tile offset on the furrows (in phase, 5 periods) +1.00.
-FIELD_COHERENCE_MIN = 0.45
-TURNED_COHERENCE_MAX = 0.35
-SHIFT_CORRELATION_MAX = -0.30
-
-
-def _field_failures(clean: dict, injected_by_name: dict) -> list[str]:
-    """The field frames still pose direction, turned-cells still breaks it,
-    one-cell-shift still dislocates the furrows, and its crop stays inside
-    the texture (_crop_offset slices with no wraparound)."""
-    failures = []
-    for frame_id in _FIELD_FRAMES:
-        tile_px = _GROUND_FRAMES[frame_id][1]
-        half = _half_period(tile_px)
-        size = _field_texture(tile_px).shape[0]
-        _ox, oy = _REAL_CROP_OFFSET(*_SHIFT_TILE, size, tile_px)
-        if half < 1 or oy + half + tile_px > size:
-            failures.append(f"{frame_id}: shifted crop {oy}+{half}+{tile_px} leaves the {size} px texture")
-        scores = {name: rp.coherence(images[frame_id]) for name, images in injected_by_name.items()}
-        print(
-            f"coherence on {frame_id} (half period {half}): clean {rp.coherence(clean[frame_id]):.2f}, "
-            + ", ".join(f"{name} {score:.2f}" for name, score in scores.items())
-        )
-        if rp.coherence(clean[frame_id]) < FIELD_COHERENCE_MIN:
-            failures.append(f"{frame_id}: clean coherence under {FIELD_COHERENCE_MIN}, no direction to judge")
-        if scores["turned-cells"] > TURNED_COHERENCE_MAX:
-            failures.append(f"{frame_id}: turned-cells coherence over {TURNED_COHERENCE_MAX}, no turn to see")
-        shifted = injected_by_name["one-cell-shift"][frame_id]
-        mask = rp.changed_pixels(clean[frame_id], shifted)
-        if np.any(mask):
-            corr = rp.masked_correlation(clean[frame_id], shifted, mask)
-            print(f"one-cell-shift on {frame_id}: bbox {rp.delta_bbox(mask)} at 1:1, correlation {corr:+.2f}")
-            if corr > SHIFT_CORRELATION_MAX:
-                failures.append(f"{frame_id}: one-cell-shift correlation {corr:+.2f} over {SHIFT_CORRELATION_MAX}")
-    return failures
 
 
 def _check_frames(spec: rp.PackSpec, check_id: str) -> tuple[str, ...]:
@@ -1812,22 +1721,28 @@ _SLOPED_ROW_SHIFT_FRAMES = ("hill_a", "hill_b", "forest_a", "forest_b")
 _SLOPED_SCENE: dict[tuple[str, bool], object] = {}
 
 
+# Sloped's pinned vertical scale: Stepped's default, so recorded pre-registrations stay valid.
+# --sloped-pct moves it (Sloped has its own setting since GH #288, defaulting to 100).
+SLOPED_PCT = ig.ELEV_STEP_DEFAULT_PCT
+
+
 class _PinnedSettings:
-    """Pins the two settings a full Sloped render depends on (vertical scale,
+    """Pins the settings a full render depends on (both styles' vertical scale,
     graphics quality) through settings' in-process cache, never set_*()."""
 
     def __enter__(self):
         from descape import settings
 
-        self.saved = (settings._elev_step_pct, settings._graphics_quality)
+        self.saved = (settings._elev_step_pct, settings._sloped_elev_step_pct, settings._graphics_quality)
         settings._elev_step_pct = ig.ELEV_STEP_DEFAULT_PCT
+        settings._sloped_elev_step_pct = SLOPED_PCT
         settings._graphics_quality = 3
         return self
 
     def __exit__(self, *exc):
         from descape import settings
 
-        settings._elev_step_pct, settings._graphics_quality = self.saved
+        settings._elev_step_pct, settings._sloped_elev_step_pct, settings._graphics_quality = self.saved
 
 
 def _sloped_cache(map_key: str, units: bool, chunk_px: int = SLOPED_CHUNK_PX):
@@ -4842,7 +4757,8 @@ def _check_shadow_band() -> None:
     lands in the judgeable band, each inject actually changes pixels, and the
     localized injects really do differ in SIZE from the coarse one. That last
     one is the whole negative control: a reviewer that catches "the band is
-    gone" has proved nothing about whether it resolves a 2px tick.
+    gone" has proved nothing about whether it resolves a 2px tick. It also
+    pins the run-frame topology straight_run_edge's answers rest on.
 
     It also prints, per inject, which frames it touched and by how much.
     Pre-registering a verdict matrix means predicting the off-diagonal cells,
@@ -4915,6 +4831,23 @@ def _check_shadow_band() -> None:
             f"connected components, under the {COARSE_MIN_COMPONENT_RATIO}x the coarse control needs"
         )
 
+    # straight_run_edge's CROSS-LINE / NO-CROSS-LINE rests on these mask facts.
+    boxes = _clean_boxes()
+    for pct in (50, 100):
+        if (got := _component_count("run", "one-flank", pct)) != 1:
+            failures.append(f"inject one-flank: run at pct {pct} is {got} components, not 1, so it no longer keeps the run whole")
+        with _GeometryPatch(None):
+            clean_raw, _ = _scene_pair("run", pct, boxes[("run", pct)])
+        with _GeometryPatch(INJECTS["one-flank"]):
+            flank_raw, _ = _scene_pair("run", pct, boxes[("run", pct)])
+        ticks = rp.changed_pixels(clean_raw, flank_raw)
+        count, largest = rp.components(ticks), rp.largest_component_px(ticks)
+        if count != ONE_FLANK_RUN_TICKS or largest > ONE_FLANK_TICK_MAX_PX:
+            failures.append(
+                f"inject one-flank: run pct {pct} tick mask is {count} pieces, largest {largest} px, not "
+                f"{ONE_FLANK_RUN_TICKS} pieces of at most {ONE_FLANK_TICK_MAX_PX} px"
+            )
+
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}")
@@ -4922,12 +4855,16 @@ def _check_shadow_band() -> None:
     print(
         f"OK: shadow_band frames couple to its checks, every frame lands in "
         f"{rp.MIN_LONG_EDGE}-{rp.MAX_LONG_EDGE} px, all {len(INJECTS)} injects bite and stay inside their bounds, and the band goes "
-        f"{clean_components} -> {coarse_components} components under the coarse one, and the corner "
-        f"diff mask is {CLEAN_CORNER_COMPONENTS} pieces"
+        f"{clean_components} -> {coarse_components} components under the coarse one, the corner "
+        f"diff mask is {CLEAN_CORNER_COMPONENTS} pieces, and one-flank removes {ONE_FLANK_RUN_TICKS} ticks "
+        f"from a run it keeps whole"
     )
 
 
 def main() -> None:
+    global SLOPED_PCT
+    from descape import settings
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR, help="Output directory")
     parser.add_argument("--pack", default="shadow_band", choices=sorted(PACKS), help="Which pack to render")
@@ -4943,7 +4880,12 @@ def main() -> None:
         "--replica", type=int, default=0, help="Replica number, for a second or third opaque directory of the same run"
     )
     parser.add_argument("--check", action="store_true", help="Validate without writing any files")
+    parser.add_argument(
+        "--sloped-pct", type=int, default=SLOPED_PCT, choices=settings.ELEV_STEP_PCT_STOPS,
+        help=f"Sloped elevation height sloped_mip and sloped_fine pin (default {SLOPED_PCT}); ground frames stay at 50",
+    )
     args = parser.parse_args()
+    SLOPED_PCT = args.sloped_pct
 
     if args.check:
         check(args.pack)

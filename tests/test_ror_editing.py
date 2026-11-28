@@ -35,6 +35,8 @@ from testkit.ror_fixture import ROR_VARIANT, ror_copy
 ROR_WALLS = (72, 117, 119, 155, 231, 370, 788, 1062)
 SHORT_MARBLE = range(2190, 2226)
 TREBUCHETS = (42, 331, 1690, 1691)
+# The 1999 and HD Edition .dats have the first two only (1690/1691 are DE additions).
+_TREBUCHETS_BY_GAME = {"aoc": (42, 331), "hd": (42, 331)}
 FARM, RICE_FARM, PASTURE = 50, 1187, 1897
 CLIFF, HOPLITE = 264, 93
 BARRACKS = 12
@@ -87,7 +89,7 @@ def test_the_literals_stay_the_aoe2_sets_under_ror():
 @pytest.mark.parametrize("dataset", game_dataset.DATASETS)
 def test_the_trebuchets_are_angle_and_not_variant(dataset):
     game_dataset.set_active(dataset)
-    for const in TREBUCHETS:
+    for const in _TREBUCHETS_BY_GAME.get(dataset, TREBUCHETS):
         assert unit_rotation.rotation_is_angle(const), const
         assert not unit_sprites.rotation_is_variant(const), const
 

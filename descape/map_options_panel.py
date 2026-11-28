@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     option_fields,
+    scenario_compat,
 )
 from descape.scenario_io import (
     LoadedScenario,
@@ -358,7 +359,7 @@ class MapOptionsPanel(QWidget):
         read_only = total - len(self._editable_fields)
         as_stored = sum(1 for w in self._widgets.values() if isinstance(w, QLabel))
 
-        summary = [f"{total} setting{'' if total == 1 else 's'} — scenario {loaded.scenario_version}"]
+        summary = [f"{total} setting{'' if total == 1 else 's'} — scenario {scenario_compat.display_version(loaded)}"]
         detail = [self._ABSENT_NOTE]
         if read_only == total and total:
             summary.append("all read-only")

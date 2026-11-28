@@ -79,7 +79,7 @@ class MirrorDialog(QDialog):
         layout = QVBoxLayout(self)
 
         note = QLabel(
-            "The map renders as a diamond on screen (isometric projection) -- "
+            "The map renders as a diamond on screen (isometric projection), so "
             "mode names below describe the screen tips they pair up, not raw "
             "array directions. The shaded area on the map is the source slice. "
             "The 3-way and 6-way modes split the map into equal wedges by tile distance, "
@@ -369,7 +369,7 @@ class MirrorDialog(QDialog):
             )
         if blockers:
             self.summary_label.setText(
-                f"{len(plan.changes)} tile(s) would change -- BLOCKED: "
+                f"{len(plan.changes)} tile(s) would change. BLOCKED: "
                 + "; ".join(blockers)
                 + ". Pick a different mode, or move the offending objects."
                 + "".join(f" {part[0].upper()}{part[1:]}." for part in leftovers)
@@ -388,8 +388,8 @@ class MirrorDialog(QDialog):
                     parts.append(f"{len(unit_plan.reoriented)} object(s) reoriented")
                 if unit_plan.unsquare_spans:
                     parts.append(
-                        f"{len(unit_plan.unsquare_spans)} non-square footprint(s) cannot be "
-                        f"reflected onto the other axis"
+                        f"{len(unit_plan.unsquare_spans)} object(s) have no turned form "
+                        f"and keep their orientation"
                     )
                 if unit_plan.overlapping:
                     fate = "will be skipped" if unit_plan.overlaps == OVERLAPS_SKIP else "will be placed overlapping"

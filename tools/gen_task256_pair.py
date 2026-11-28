@@ -141,7 +141,7 @@ def _first_units(members) -> list[region_transform.FirstUnit]:
 
 
 def _write(model, members, plan) -> None:
-    """The viewer's _write_lift_units() order: gate sibling, position, facing or wall index."""
+    """The viewer's _write_lift_units() order: gate sibling, position, facing, wall index or DE bridge frame."""
     for image in plan.images:
         unit = members[image.key]
         if image.unit_const != unit.unit_const:
@@ -151,8 +151,12 @@ def _write(model, members, plan) -> None:
             kind, value = image.rotation_write
             if kind == region_transform.WRITE_ANGLE:
                 model.set_rotation(unit, value)
-            else:
+            elif kind == region_transform.WRITE_WALL:
                 model.set_wall_variant(unit, int(value))
+            elif kind == region_transform.WRITE_VARIANT:
+                model.set_variant(unit, value)
+            else:
+                raise ValueError(f"unknown rotation write {kind!r}")
 
 
 def _check_on_map(plan, mm) -> None:

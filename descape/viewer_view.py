@@ -336,6 +336,8 @@ class _ViewerViewMixin:
         # Before the processEvents() below: the placeholder watchdog re-arms on _busy in that turn.
         was_busy = self._busy
         self._busy = True
+        # Before the processEvents() below: a poll fired there warms with these ids (TASK-693).
+        self._prefetch_textures([self._cache.mip_tile_px(m) for m in self._cache.resident_levels()])
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -451,6 +453,8 @@ class _ViewerViewMixin:
         # Before the processEvents() below: the placeholder watchdog re-arms on _busy in that turn.
         was_busy = self._busy
         self._busy = True
+        # Before the processEvents() below: a poll fired there warms with these ids (TASK-693).
+        self._prefetch_textures([self._cache.mip_tile_px(m) for m in self._cache.resident_levels()])
         self.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -754,6 +758,45 @@ class _ViewerViewMixin:
         if self._minimap_fallback and asset_source.loaded_texture_count() > self._minimap_textures:
             self._minimap_fallback = False
             self._schedule_minimap()
+
+    def _save_view(self, slot: int) -> None:
+        """View > Saved Views > Save View as `slot` (TASK-270). Not a document edit:
+        no undo record, no dirty flag, nothing written into the scenario."""
+        view = self.map_view.capture_saved_view()
+        if self.scenario is None or view is None:
+            return
+        self._saved_views = {**self._saved_views, slot: view}
+        if self._untitled:
+            self._log_status(f"Saved view {slot}; it is kept once the map is saved")
+            return
+        settings.set_saved_views(self.scenario.path, self._saved_views)
+        self._log_status(f"Saved view {slot}")
+
+    def _go_to_view(self, slot: int) -> None:
+        """Go to View `slot`. Refused while a mouse button is held: a jump mid-drag
+        would make the next move's gap-fill paint a line across the map."""
+        if self.scenario is None:
+            return
+        view = self._saved_views.get(slot)
+        if view is None:
+            self._log_status(f"View {slot} is empty: save it with View > Saved Views > Save View")
+        elif QApplication.mouseButtons() != Qt.NoButton:
+            self._log_status(f"Go to View {slot} needs every mouse button released")
+        else:
+            self.map_view.apply_saved_view(view)
+
+    def _clear_saved_views(self) -> None:
+        if self.scenario is None:
+            return
+        self._saved_views = {}
+        if not self._untitled:
+            settings.set_saved_views(self.scenario.path, {})
+        self._log_status("Cleared the saved views")
+
+    def _label_saved_view_slots(self) -> None:
+        """Saved Views' aboutToShow: an empty slot's Go reads "(empty)", and stays enabled."""
+        for slot, action in self.saved_view_go_actions.items():
+            action.setText(f"Go to View {slot}" + ("" if slot in self._saved_views else " (empty)"))
 
     def _on_minimap_pan(self, mx: float, my: float) -> None:
         self.map_view.center_on_map_point(mx, my)

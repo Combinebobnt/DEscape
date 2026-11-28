@@ -66,6 +66,11 @@ what each check actually covers is recorded rather than hoped for:
   RED, 4 of 4, via the thin-straight checks' placement assertion, added for
   exactly this (the axis and reach assertions alone stayed green). Recorded
   2026-11-25.
+- Centre an edge-clipped de-projection on its clamped rect (pass no centre
+  shift, TASK-708): RED, 3 of 3, via the map-edge check, once the cliff
+  fixture's blocks were shaded by column (with a uniform band only the
+  right-edge case went red). Drop `clip` from `_flat_unit_icon()` alone: RED,
+  3 of 3, on the layer path. Recorded 2026-11-26.
 """
 
 from __future__ import annotations
@@ -567,8 +572,10 @@ _CLIFF_BLOCKS_W, _CLIFF_BLOCKS_H = 40, 24
 _STROKE_FRAMES = {10: -1, 4: -1, 8: 1}  # frame -> rows per step along +x
 
 
-def _stroke_layer(mask: np.ndarray, rgb565: int) -> bytes:
-    """A MAIN layer drawing a solid block wherever `mask` holds, skipping the rest."""
+def _stroke_layer(mask: np.ndarray, rgb565: int, k: int = 1) -> bytes:
+    """A MAIN layer drawing a solid block wherever `mask` holds, skipping the
+    rest, its green shaded by the block's x1 column so a shift along a run
+    shows (TASK-708: a uniform band crops the same wherever it is centred)."""
     flat, cmds, i = mask.ravel(), [], 0
     while i < flat.size:
         skip = draw = 0
@@ -579,7 +586,7 @@ def _stroke_layer(mask: np.ndarray, rgb565: int) -> bytes:
         cmds.append(bytes((skip, draw)))
     h, w = mask.shape
     body = struct.pack("<4H2B", 0, 0, 4 * w, 4 * h, 0, 1) + struct.pack("<H", len(cmds)) + b"".join(cmds)
-    body += bc1_solid(rgb565) * int(flat.sum())
+    body += b"".join(bc1_solid(rgb565 | (c // k) << 5) for c in np.nonzero(mask)[1])
     return struct.pack("<I", 4 + len(body)) + body
 
 
@@ -598,7 +605,7 @@ def _cliff_sld(k: int = 1) -> bytes:
                 mask[row, max(0, col - 1) : col + 1] = True
         mask = mask.repeat(k, axis=0).repeat(k, axis=1)
         out += _FRAME_HEADER.pack(w, h, w // 2, h // 2, MAIN, 0, frame)
-        out += _stroke_layer(mask, 0x0800 * (frame + 1))
+        out += _stroke_layer(mask, 0x0800 * (frame + 1), k)
         out += bytes([0xAA]) * ((4 - len(out)) % 4)
     return bytes(out)
 
@@ -697,6 +704,34 @@ def test_a_de_projected_cliff_at_enhanced_draws_the_x2_art_in_the_same_place(cli
     assert abs(row1 - row2) <= 2.0, f"run centre row {row1:.1f} at x1, {row2:.1f} at x2"
     assert 2 / 3 <= thick2 / thick1 <= 3 / 2, f"run thickness {thick1:.1f} px at x1, {thick2:.1f} at x2"
     assert min(len1, len2) >= 0.9 * 3 * 64, f"the run covers {len1} px at x1, {len2} at x2, of {3 * 64}"
+
+
+@pytest.mark.parametrize(("const", "frame", "clipped", "whole"), [
+    (CLIFF_X, 10, (0.5, 5.0), (4.5, 5.0)),  # tiles -1..1, one off the left edge
+    (CLIFF_X, 10, (MAP_W - 0.5, 5.0), (4.5, 5.0)),  # tiles 10..12, one off the right edge
+    (CLIFF_Y, 8, (5.0, 0.5), (5.0, 4.5)),  # tiles -1..1, one off the top edge
+])
+def test_a_de_projected_cliff_clipped_by_the_map_edge_keeps_its_ink_on_its_tiles(cliff_install, const, frame, clipped, whole):
+    """TASK-708: the part of an edge-clipped thin piece left on the map draws
+    exactly what those tiles show of the same piece wholly on the map, on
+    both Flat icon paths. Centred on its clamped rect, the run lands half a
+    tile inland instead."""
+    tile_px = 32
+    units = [Unit(*clipped, const, float(frame)), Unit(*whole, const, float(frame))]
+    scn = _scenario([units])
+    (b_clip, b_whole) = (render_units.unit_tile_bounds(u, MAP_W, MAP_H) for u in units)
+    cut = render_units.unit_tile_clip(units[0], b_clip)
+    assert sum(cut) == 1 and render_units.unit_tile_clip(units[1], b_whole) == (0, 0, 0, 0)
+    layer, rows = render_flat._flat_icon_layer(scn, tile_px)
+    assert rows == 2
+    oracle = [render_flat._flat_icon_for_unit(scn, u, 0, 0, MAP_W, MAP_H, tile_px) for u in units]
+    for name, (icon, whole_icon) in (("layer", (layer[0], layer[1])), ("oracle", oracle)):
+        assert icon.rgba[..., 3].any(), f"{name}: the clipped icon has no ink, so this proves nothing"
+        left, right, top, bottom = (c * tile_px for c in cut)
+        h, w = whole_icon.rgba.shape[:2]
+        want = whole_icon.rgba[top : h - bottom, left : w - right]
+        assert icon.rgba.shape == want.shape
+        assert np.array_equal(icon.rgba, want), f"{name}: the clipped draw is not the whole one's on-map part"
 
 
 @pytest.mark.parametrize("const", [CLIFF_X, CLIFF_Y])

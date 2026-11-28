@@ -543,12 +543,12 @@ def test_a_typed_number_saves_once_on_enter_not_per_keystroke(monkeypatch, spin_
         conftest.close_window(window)
 
 
-@pytest.mark.parametrize("game_id", ["aoe2", "ror"])
+@pytest.mark.parametrize("game_id", ["aoe2", "ror", "aoc", "hd"])
 def test_the_preview_samples_are_objects_every_games_editor_lists(game_id: str) -> None:
     """AoE2's Castle (82), the old sample, is editor-hidden under Return of Rome."""
     from descape import game_dataset, games, object_catalog, trigger_details_page, trigger_fields
 
-    assert {game.id for game in games.GAMES} == {"aoe2", "ror"}, "a new game: add it here"
+    assert {game.id for game in games.GAMES} == {"aoe2", "ror", "aoc", "hd"}, "a new game: add it here"
     with game_dataset.activated(game_id):
         listed = {entry.id: entry for entry in object_catalog.objects()}
         for const in (trigger_details_page.SAMPLE_BUILDING, trigger_details_page.SAMPLE_UNIT):

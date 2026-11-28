@@ -402,6 +402,14 @@ regenerate it on stock zlib.
   search's two-insert fuzz over 300 seeds, with and without a reference,
   and `test_blind_retries_on_trigger_structs_never_come_out_wrong` fuzzes
   the retries after a blind dead end.
+- The compatibility view tests: `test_scenario_compat.py` (the analysis
+  and proxy), `test_scenario_compat_write.py` (the terrain writer) and
+  `test_viewer_compat.py` (the window, offscreen) simulate a
+  newer version by reading a known file under the version before it, or
+  with its version rewritten to 1.60. Quick suite, the game re-save item
+  `test_map`. The `corpus` item reads every corpus file under the version
+  before its own, fails on any trusted area that disagrees with the normal
+  load, and with the private corpus present pins `COMPAT_COVERAGE`.
 - `tests/fixtures/test_map_script.xs`: an empty-`main()` stub for the
   `script_name` the map names. DEscape never embeds script content, so to
   open the map in AoE2:DE without an "XS: Error 0354: failed to open file"

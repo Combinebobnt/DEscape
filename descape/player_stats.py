@@ -334,9 +334,9 @@ def trigger_summary(loaded: LoadedScenario) -> TriggerSummary | None:
     if loaded.trigger_read_supported is not True:
         return None
     manager = parse_triggers(loaded)
-    if manager is None or not library_compat.vocabulary_is_available(loaded.scenario_version):
+    if manager is None or not library_compat.vocabulary_is_available(loaded.vocabulary_version):
         return None
-    vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+    vocabulary = library_compat.load_vocabulary(loaded.vocabulary_version)
     kinds = (
         ("conditions", "condition_type", vocabulary.conditions, vocabulary.condition_presentation),
         ("effects", "effect_type", vocabulary.effects, vocabulary.effect_presentation),

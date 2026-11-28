@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import math
 import zlib
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 import numpy as np
+
+from descape.structure_walk import Column, Walk
 
 # The body's raw-deflate stream starts right after the FileHeader. The
 # header's own header_length field is 0 in every corpus file, so the start is
@@ -66,6 +68,24 @@ KNOWN_TRIGGER_VERSIONS: dict[str, tuple[float, float]] = {
 }
 TRIGGER_VERSION_HEADROOM = 2.0
 
+# The in-app compat view's bounds (TASK-057), lower than the tool's above
+# because they must admit DEscape's own New Map output. Measured 2026-11-25
+# over 170 files (New Map 61..119 tiles in both games, the library's
+# v1.54..v1.59 defaults, the corpus, tests/fixtures): one body and one grid
+# each, at the offsets the normal load finds.
+COMPAT_MAP_TILES_MIN = 61  # scenario_new.MIN_MAP_TILES; admitted no second grid anywhere
+# Half the smallest body measured (47307, a 61x61 Return of Rome New Map);
+# the largest accidental stream found was 22166 bytes.
+COMPAT_MIN_BODY_BYTES = 47307 // 2
+
+# Unit plausibility filters: every unit of every corpus file passes them.
+UNIT_STATUS_RANGE = (0, 7)
+UNIT_CONST_RANGE = (0, 4095)  # corpus 1..2708, the frozen re-save keeps a const 0; headroom above
+UNIT_Z_RANGE = (0.0, float(ELEVATION_MAX))
+CAPTURE_FLAG_RANGE = (-1, 3)
+CAPTION_STRING_ID_MIN = -1
+UNITS_PREFIX = ("Units", "players_units", "units")
+
 
 @dataclass(frozen=True)
 class Body:
@@ -87,6 +107,13 @@ def _inflate(raw: bytes, start: int, cap: int) -> tuple[bytes, int] | None:
     if not inflater.eof or len(data) > cap:
         return None
     return data, len(inflater.unused_data)
+
+
+def inflate_at(raw: bytes, start: int, cap: int = BODY_CAP) -> Body | None:
+    """The raw-deflate stream starting at `start`, or None when none starts
+    there, it doesn't end inside `raw`, or it inflates past `cap`."""
+    result = _inflate(raw, start, cap)
+    return None if result is None else Body(start, result[0], result[1])
 
 
 def find_body(raw: bytes, *, limit: int = BODY_SEARCH_LIMIT, min_bytes: int = MIN_BODY_BYTES, cap: int = BODY_CAP) -> Body | str:
@@ -214,3 +241,81 @@ def plausible_trigger_version(value: float, known_range: tuple[float, float]) ->
         return False
     lo, hi = known_range
     return lo - 1e-9 <= value <= hi + TRIGGER_VERSION_HEADROOM + 1e-9
+
+
+def column_array(walk: Walk, path: tuple[str, ...]) -> tuple[Column, np.ndarray] | None:
+    """A walked column as a numpy array, None when absent, empty or not all ints or all floats."""
+    col = walk.columns.get(path)
+    if col is None or not len(col) or col.values is None:
+        return None
+    values = col.values
+    if not isinstance(values, list):
+        return col, np.frombuffer(values, dtype=np.int64 if values.typecode == "q" else np.float64)
+    if all(type(v) is int for v in values):
+        try:
+            return col, np.asarray(values, dtype=np.int64)
+        except OverflowError:
+            return None
+    if all(type(v) is float for v in values):
+        return col, np.asarray(values, dtype=np.float64)
+    return None
+
+
+def unit_filter_violations(
+    walk: Walk,
+    prefix: tuple[str, ...],
+    map_size: tuple[int, int] | None,
+    note: Callable[[Column, np.ndarray, str], None],
+) -> None:
+    """Calls `note(column, bad_mask, reason)` for each unit filter over the
+    UnitStruct fields read under `prefix`: x/y inside the map, z, status,
+    unit_const, capture_flag and caption_string_id in range, reference_id
+    non-negative and unique."""
+
+    def get(name: str):
+        return column_array(walk, (*prefix, name))
+
+    w, h = map_size if map_size else (math.inf, math.inf)
+    with np.errstate(invalid="ignore"):
+        for name, limit in (("x", w), ("y", h)):
+            got = get(name)
+            if got is not None:
+                v = got[1].astype(np.float64)
+                note(got[0], ~(np.isfinite(v) & (v >= 0) & (v <= limit)), f"unit {name} off the map")
+        checks = (
+            ("z", UNIT_Z_RANGE),
+            ("status", UNIT_STATUS_RANGE),
+            ("unit_const", UNIT_CONST_RANGE),
+            ("capture_flag", CAPTURE_FLAG_RANGE),
+            ("caption_string_id", (CAPTION_STRING_ID_MIN, math.inf)),
+        )
+        for name, (lo, hi) in checks:
+            got = get(name)
+            if got is not None:
+                v = got[1].astype(np.float64)
+                note(got[0], ~(np.isfinite(v) & (v >= lo) & (v <= hi)), f"unit {name} outside {lo}..{hi}")
+    got = get("reference_id")
+    if got is not None:
+        v = got[1]
+        bad = v < 0
+        _, first = np.unique(v, return_index=True)
+        dup = np.ones(len(v), dtype=bool)
+        dup[first] = False
+        note(got[0], bad | dup, "unit reference_id negative or repeated")
+
+
+def unit_filters(walk: Walk, width: int, height: int, prefix: tuple[str, ...] = UNITS_PREFIX) -> str | None:
+    """The first unit filter a walk's units fail, as "<reason> at <offset>",
+    or None when every unit passes."""
+    best: tuple[int, str] | None = None
+
+    def note(col: Column, bad: np.ndarray, why: str) -> None:
+        nonlocal best
+        hits = np.flatnonzero(bad)
+        if hits.size:
+            off = col.offsets[int(hits[0])]
+            if best is None or off < best[0]:
+                best = (off, why)
+
+    unit_filter_violations(walk, prefix, (width, height), note)
+    return None if best is None else f"{best[1]} at byte {best[0]}"

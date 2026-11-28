@@ -259,7 +259,7 @@ def test_refusals_come_before_the_prompt(scripts, prompts, errors, why):
     window = _window(load=why != "no_scenario")
     try:
         if why == "locked":
-            window.game_data_lock_reason = lambda: "shown with another game's data"
+            window.game_data_lock_reason = lambda family=None: "shown with another game's data"
         if why == "stroke":
             window.edit_history.begin_stroke(window.scenario.map_manager.terrain)
         _row(window, "paint").trigger()

@@ -61,10 +61,10 @@ from descape import (
     game_dataset,
     games,
     grid_overlay,
-    iso_geometry,
     mod_graphics,
     settings,
     settings_file,
+    settings_game_install,
     settings_snapshot,
     terrain_catalog,
     theme_file,
@@ -73,6 +73,7 @@ from descape import (
     view_layers,
 )
 from descape.settings_dialog_apply import _SettingsDialogApplyMixin
+from descape.settings_elev_rows import _ElevStepRowsMixin
 from descape.spin_boxes import keep_cursor_before_suffix
 from descape.tool_defaults_page import ToolDefaultsPage
 from descape.trigger_details_page import TriggerDetailsPage
@@ -184,7 +185,7 @@ _SECTION_GAP = 6
 _COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five"}
 
 
-class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
+class SettingsDialog(_SettingsDialogApplyMixin, _ElevStepRowsMixin, QDialog):
     """Tabbed settings dialog: General (app-wide behavior, including the
     AoE2DE install path -- not its own tab since it's a one-time setup
     step, not a recurring one), Mods (the profile folder and Mod art
@@ -370,7 +371,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         tooltip = (
             "A settings file carries your preferences from every tab, the View menu and the panels: keybinds, "
             "the look, tool defaults and the rest. Not folder paths, recent files, the New Map dialog's last "
-            "choices, File > Data Mod's choice for each map, window layout or X11 compatibility on Wayland. "
+            "choices, File > Data Mod's choice for each map, View > Saved Views, window layout or X11 "
+            "compatibility on Wayland. "
             "An import replaces your preferences and takes effect the next time DEscape starts."
         )
         self.settings_export_button = QPushButton("Export settings…")
@@ -680,34 +682,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self._update_x2_art_label()
         layout.addWidget(self.x2_art_label)
 
-        height_row = QHBoxLayout()
-        height_row.addWidget(QLabel("Isometric elevation height:"))
-        self.elev_step_slider = QSlider(Qt.Horizontal)
-        # Value space is the 1-based stop index, not the pct -- setSingleStep
-        # alone only governs arrow keys and the wheel, so a drag would still
-        # produce arbitrary off-stop pcts via QStyle::sliderValueFromPosition.
-        # Same shape as graphics_quality_slider above.
-        self.elev_step_slider.setRange(1, len(settings.ELEV_STEP_PCT_STOPS))
-        self.elev_step_slider.setTickInterval(1)
-        self.elev_step_slider.setTickPosition(QSlider.TicksBelow)
-        self.elev_step_slider.setSingleStep(1)
-        self.elev_step_slider.setPageStep(1)
-        self.elev_step_slider.setToolTip(
-            "How tall one elevation level stands on screen in Stepped, Sloped, and Flat with "
-            "Isometric View. 100% matches the game's own height. Flat with Isometric View "
-            "always renders at elevation 0, so there this only shapes the diamond tiles. "
-            f"The default is Tall ({iso_geometry.ELEV_STEP_DEFAULT_PCT}%). Heights above it are "
-            "real headroom: the game's elevation changes are smooth ramps over several tiles, "
-            "so a taller setting hides fewer tiles behind their neighbours than one sharp step that tall would."
-        )
-        self.elev_step_slider.setValue(settings.elev_step_index(settings.get_elev_step_pct()))
-        self.elev_step_value_label = QLabel()
-        self._update_elev_step_label(settings.get_elev_step_pct())
-        self.elev_step_slider.valueChanged.connect(self._on_elev_step_slider_changed)
-        self.elev_step_slider.sliderReleased.connect(self._persist_elev_step_pct)
-        height_row.addWidget(self.elev_step_slider, stretch=1)
-        height_row.addWidget(self.elev_step_value_label)
-        layout.addLayout(height_row)
+        self._add_elev_step_rows(layout)
 
         pan_row = QHBoxLayout()
         pan_row.addWidget(QLabel("Pan speed:"))
@@ -1609,7 +1584,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
 
     def _update_x2_art_label(self) -> None:
         detected = False
-        if asset_source.get_install_path() is None:
+        if asset_source.get_de_install_path() is None:
             text = "Enhanced Graphics DLC: no install configured."
         elif unit_sprites.x2_art_installed():
             detected = True
@@ -1639,31 +1614,6 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         value = self.graphics_quality_slider.value()
         settings.set_graphics_quality(value)
         self._window._log_status(f"Graphics quality: {settings.GRAPHICS_QUALITY_LABELS[value]}{_sync_hi_res()}")
-        self._window.refresh_map()
-
-    def _update_elev_step_label(self, pct: int) -> None:
-        suffix = " (Tall, default)" if pct == iso_geometry.ELEV_STEP_DEFAULT_PCT else ""
-        self.elev_step_value_label.setText(f"{pct}%{suffix}")
-
-    def _on_elev_step_slider_changed(self, value: int) -> None:
-        # value is a stop index -- _update_elev_step_label still takes a pct,
-        # so its "(Tall, default)" test against ELEV_STEP_DEFAULT_PCT holds.
-        self._update_elev_step_label(settings.elev_step_pct_for_index(value))
-        # Each application is a full Stepped-mode re-render
-        # (elevations_and_proj + IsoChunkCache rebuild) -- expensive enough
-        # on a real map that applying it live per-pixel would make dragging
-        # itself laggy. While the mouse is down, just update the label and
-        # wait for sliderReleased to apply. Keyboard arrow presses have no
-        # press/release pair, so fall back to a short debounce timer for
-        # those instead.
-        if self.elev_step_slider.isSliderDown():
-            return
-        self._elev_step_apply_timer.start(200)
-
-    def _persist_elev_step_pct(self) -> None:
-        value = settings.elev_step_pct_for_index(self.elev_step_slider.value())
-        settings.set_elev_step_pct(value)
-        self._window._log_status(f"Isometric elevation height: {value}%")
         self._window.refresh_map()
 
     def _update_pan_speed_label(self, px_per_s: int) -> None:
@@ -1730,6 +1680,8 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        # TASK-430, TASK-431: one row per game with its own install (the 1999 game, HD Edition).
+        self.install_rows = [settings_game_install.InstallRow(self, layout, game) for game in settings_game_install.install_games()]
 
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
@@ -2167,7 +2119,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
                     cleared_edit.blockSignals(False)
             which = "that binding has" if len(cleared) == 1 else "those bindings have"
             self._keybind_warning_label.setText(
-                f"'{text}' was already assigned to {self._keybind_names(cleared)} -- {which} been cleared."
+                f"'{text}' was already assigned to {self._keybind_names(cleared)}, so {which} been cleared."
             )
         # A search by key would otherwise keep showing rows by their old binding.
         self._filter_keybinds(self._keybind_filter_edit.text())
@@ -2184,7 +2136,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
             # explicit override.
             holder_label = self._keybind_names(holders)
             self._keybind_warning_label.setText(
-                f"'{default}' is assigned to {holder_label} -- "
+                f"'{default}' is assigned to {holder_label}, so "
                 f"{settings.get_action_label(action_id)}'s default was not restored."
             )
             self._window._log_status(
@@ -2206,7 +2158,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
 
         install_row = QHBoxLayout()
         self.install_path_edit = QLineEdit()
-        existing_install = asset_source.get_install_path()
+        existing_install = asset_source.get_de_install_path()
         if existing_install is not None:
             self.install_path_edit.setText(str(existing_install))
         install_row.addWidget(self.install_path_edit, stretch=1)
@@ -2270,7 +2222,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         """Drops the override and the saved path, so the art caches clear with it."""
         asset_source.save_install_path_to_config(None)
         asset_source.set_install_path_override(None)
-        remaining = asset_source.get_install_path()  # only AOE2DE_INSTALL_PATH can still set one
+        remaining = asset_source.get_de_install_path()  # only AOE2DE_INSTALL_PATH can still set one
         if remaining is None:
             self.install_path_edit.clear()
             self._set_install_status("No install path configured. Using flat fallback colors.", ok=False)
@@ -2282,7 +2234,7 @@ class SettingsDialog(_SettingsDialogApplyMixin, QDialog):
         self._after_install_change()
 
     def _after_install_change(self) -> None:
-        self.install_clear_button.setEnabled(asset_source.get_install_path() is not None)
+        self.install_clear_button.setEnabled(asset_source.get_de_install_path() is not None)
         self._update_x2_art_label()
         terrain_catalog.install_changed()  # GH #271: a data mod's terrains and names follow the install's strings
         self._window.refresh_map()

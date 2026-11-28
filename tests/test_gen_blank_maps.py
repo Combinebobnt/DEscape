@@ -56,7 +56,8 @@ def test_markers_refuse_a_square_or_a_non_discriminating_rectangle(tool) -> None
 def test_parse_size(tool) -> None:
     assert tool.parse_size("168") == (168, 168)
     assert tool.parse_size("120x168") == (120, 168)
-    for bad in ("120x", "60x120", "a", "1x2x3"):
+    assert tool.parse_size("8") == (8, 8)  # the range is main()'s, after --min-tiles
+    for bad in ("120x", "a", "1x2x3"):
         with pytest.raises(argparse.ArgumentTypeError):
             tool.parse_size(bad)
 
@@ -146,10 +147,26 @@ def test_the_planted_verifier_rejects_units_other_than_the_planned_ones(tool, tm
 
 @pytest.mark.parametrize(
     "argv",
-    [["--sizes", "120x168", "--trees"], ["--sizes", "120", "144", "--name", "x.aoe2scenario"]],
+    [
+        ["--sizes", "120x168", "--trees"],
+        ["--sizes", "120", "144", "--name", "x.aoe2scenario"],
+        ["--sizes", "60x120"],
+        ["--sizes", "15", "--min-tiles", "16"],
+        ["--sizes", "0", "--min-tiles", "0"],
+        ["--sizes", "12x40", "--min-tiles", "8"],
+    ],
 )
-def test_main_refuses_planting_a_non_square_size_or_one_name_for_two_sizes(tool, tmp_path, monkeypatch, argv) -> None:
+def test_main_refuses_bad_size_requests_before_writing(tool, tmp_path, monkeypatch, argv) -> None:
     monkeypatch.setattr(sys, "argv", ["gen_blank_maps", "--out", str(tmp_path), *argv])
     with pytest.raises(SystemExit):
         tool.main()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_main_writes_a_probe_file_below_the_floor_with_its_checklist(tool, tmp_path, monkeypatch, capsys) -> None:
+    argv = ["gen_blank_maps", "--out", str(tmp_path), "--sizes", "16", "--min-tiles", "16", "--name", "p.aoe2scenario"]
+    monkeypatch.setattr(sys, "argv", argv)
+    tool.main()
+    out = capsys.readouterr().out
+    assert "verified 16x16 blank" in out and tool.probe_checklist(16) in out
+    assert (tmp_path / "p.aoe2scenario").is_file()

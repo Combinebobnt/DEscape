@@ -468,7 +468,7 @@ class OptionsEditModel:
             )
         if not verify_options_block(loaded, specs):
             raise OptionEditsUnavailableError(
-                "This file's map-option block failed its verification -- at least one "
+                "This file's map-option block failed its verification: at least one "
                 "computed offset does not hold the bytes its retriever parsed."
             )
 
@@ -735,6 +735,25 @@ class OptionsEditModel:
     def has_map_string_edits(self) -> bool:
         """The signal scenario_write.py re-gates map_strings_write_supported() on."""
         return not self._pending.keys().isdisjoint(MAP_STRING_FIELDS)
+
+    def pending_kinds(self) -> set[str]:
+        """What a pre-DE save carries (legacy_write.pending_kinds()): "diplomacy"
+        for stance cells only, a named kind for every other pending field."""
+        kinds = set()
+        for field_id in self._pending:
+            if field_id in self._diplomacy_targets:
+                kinds.add("allied victory")
+            elif field_id in self._diplomacy_field_ids:
+                kinds.add("diplomacy")
+            elif field_id in self._player_field_ids:
+                kinds.add("players")
+            elif field_id in self._disables_field_ids:
+                kinds.add("disables")
+            elif field_id in self._personality_field_ids:
+                kinds.add("AI personality")
+            else:
+                kinds.add("map options")
+        return kinds
 
     def original_personality(self, player_id: int) -> AiChoice:
         return self._personality_choices[self._original[player_fields.personality_field_id(player_id)]]

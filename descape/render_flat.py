@@ -32,6 +32,7 @@ from descape.render_units import (
     stored_rotation,
     unit_paint_offset,
     unit_tile_bounds,
+    unit_tile_clip,
     wall_variant_rotation_overrides,
 )
 from descape.scenario_io import LoadedScenario
@@ -349,6 +350,7 @@ def _flat_unit_icon(
         (tile_y1 - tile_y0) * tile_px,
         getattr(unit, "reference_id", None),
         art,
+        _clip_px(unit, bounds, tile_px),
     )
     if icon is None and with_farms and _terrain_overlay_for(unit.unit_const) is not None:
         return FLAT_DRAPED
@@ -628,7 +630,14 @@ def _flat_icon_for_unit(
         (tile_y1 - tile_y0) * tile_px,
         getattr(unit, "reference_id", None),
         player_art_for(scenario, player_id),
+        _clip_px(unit, bounds, tile_px),
     ))
+
+
+def _clip_px(unit, bounds: tuple[int, int, int, int], tile_px: int) -> tuple[int, int, int, int]:
+    """icon_for()'s `clip`: unit_tile_clip() in px."""
+    left, right, top, bottom = unit_tile_clip(unit, bounds)
+    return left * tile_px, right * tile_px, top * tile_px, bottom * tile_px
 
 
 def refresh_units_over(img: np.ndarray, scenario: LoadedScenario, dirty_tiles, tile_px: int) -> None:

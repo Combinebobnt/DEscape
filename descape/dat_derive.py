@@ -56,6 +56,8 @@ TABLE_NAMES: tuple[str, ...] = tuple(name for _script, names in GENERATORS for n
 # Imported by every generator; part of what derive() runs, so part of source_digest().
 GAME_ROOT_HELPER = "_game_root.py"
 GAME_ROOT_MODULE = "_game_root"
+# The 1999 and 1997 games' .dat readers and the archive reader, which _game_root and the generators import too.
+READER_HELPERS = ("_dat57.py", "_dat37.py", "_drs.py")
 
 
 def tools_dir() -> Path:
@@ -67,11 +69,12 @@ def tools_dir() -> Path:
 
 
 def source_files(tools: Path | None = None) -> list[Path]:
-    """Every source file a derivation runs: the generators, their helper, this
+    """Every source file a derivation runs: the generators, their helpers, this
     module. The frozen build bundles all of them as data (packaging/descape.spec);
     its --self-check calls source_digest() to prove it."""
     tools = tools_dir() if tools is None else tools
-    return [tools / script for script, _names in GENERATORS] + [tools / GAME_ROOT_HELPER, Path(__file__).resolve()]
+    helpers = [tools / name for name in (GAME_ROOT_HELPER, *READER_HELPERS)]
+    return [tools / script for script, _names in GENERATORS] + helpers + [Path(__file__).resolve()]
 
 
 def source_digest(tools: Path | None = None) -> str:

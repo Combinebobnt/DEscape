@@ -72,11 +72,12 @@ def test_the_choice_labels_are_the_games_own_and_distinct():
     }
 
 
-def test_only_capture_flag_is_gated_per_file():
+def test_only_capture_flag_and_garrison_are_gated_per_file():
     """Unit State's byte is in every version; Capture Flag is stored from
-    1.59. The gate is its own attribute, not a `conditional` (per const)."""
+    1.59, and Age of Empires (1997) files store no garrison. The gate is its
+    own attribute, not a `conditional` (per const)."""
     gated = {spec.field_id: spec.requires_codec_field for spec in unit_fields.FIELDS if spec.requires_codec_field}
-    assert gated == {"capture_flag": "capture_flag"}
+    assert gated == {"capture_flag": "capture_flag", "garrisoned_in_id": "garrisoned_in_id"}
     assert not [spec.field_id for spec in unit_fields.FIELDS if spec.choices and spec.kind != unit_fields.CHOICE]
 
 

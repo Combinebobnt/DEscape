@@ -426,8 +426,23 @@ def _sld_frame_count(path: Path) -> int | None:
     return int.from_bytes(head[6:8], "little")
 
 
+def _art_frame_count(graphics_dir, stem: str) -> int | None:
+    """A graphic's stored frame count: its .sld header's, or under a classic run
+    (`graphics_dir` the DRS lookup) its SLP header's. None when unreadable."""
+    if not _SLP_ART:
+        return _sld_frame_count(graphics_dir / f"{stem}.sld")
+    import _drs
+
+    try:
+        return len(_drs.slp_header(graphics_dir.read("slp", int(stem.removeprefix("slp_")))).frames)
+    except (KeyError, ValueError):
+        return None
+
+
 def _looks_modern(file_name: str | None) -> bool:
-    """DE's own on-disk convention for a real, renderable .sld stem."""
+    """DE's own on-disk convention for a real, renderable .sld stem; a classic run's slp_<id>."""
+    if _SLP_ART:
+        return bool(file_name) and _SLP_STEM.fullmatch(file_name) is not None
     return bool(file_name) and file_name != "None" and file_name.endswith("_x1")
 
 
@@ -481,7 +496,15 @@ def _hidden_body(graphics: list, shell):
 
 
 def _shell_deltas(graphics: list, shell) -> list:
-    """A shell's deltas in .dat order, its shadow twins dropped when lenient (GH #272)."""
+    """A shell's deltas in .dat order, its shadow twins dropped when lenient (GH #272).
+    A classic run keeps the object-layer ones only: a shell there also lists the
+    underlays drawn beneath its body (a dock's 5, a ship's 10)."""
+    if _SLP_ART:
+        return [
+            d for d in shell.deltas
+            if d.graphic_id is not None and 0 <= d.graphic_id < len(graphics)
+            and graphics[d.graphic_id] is not None and graphics[d.graphic_id].layer >= _SHELL_DELTA_LAYER
+        ]
     return _without_shadow_twins(graphics, shell.deltas) if _game_root.lenient() else list(shell.deltas)
 
 
@@ -1683,7 +1706,8 @@ def _resolve_shell_delta_pieces(
         and graphics[d.graphic_id] is not None
         and _looks_modern(graphics[d.graphic_id].file_name)
     ]
-    if len(deltas) < 2:
+    if len(deltas) < 2 or (_SLP_ART and unit_type != _CREATABLE_TYPE):
+        # A classic building's several object-layer deltas wait on its art's review: its body draws alone.
         return None
     if graphics[deltas[0].graphic_id] is not hull:
         _game_root.refuse(
@@ -2056,7 +2080,7 @@ def _graphic_entry_for(
         unit.type != _CREATABLE_TYPE and graphic.angle_count > 1
     ):
         entry["rotation_is_variant"] = True
-        frames = _sld_frame_count(graphics_dir / f"{graphic.file_name}.sld")
+        frames = _art_frame_count(graphics_dir, graphic.file_name)
         if frames is not None and graphic.frame_count > 0:
             entry["variant_count"] = frames // graphic.frame_count
     # By graphic, not const: DOLP3 452's standing graphic is already the Marlin body.
@@ -2150,6 +2174,9 @@ _WAVE_CONFLICT_SLOTS: frozenset[int] = frozenset({68, 129, 130, 131, 1734, 2556}
 # 2026-10-28): DEscape shows a Mill where the game shows a Folwark. The run fails
 # unless the measured breaks are exactly these.
 _UPGRADE_HOLDOUTS: dict[int, frozenset[int]] = {38: frozenset({68, 129, 130, 131})}
+# (base, target) every-civ age upgrades whose art breaks only _ART_INVARIANT_FIELDS: the base keeps
+# its own art at every age. None in DE or the 1999 game; the run fails unless the measured ones are exactly these.
+_AGE_UPGRADE_HOLDOUTS: dict[tuple[int, int], str] = {}
 
 
 def _research_buttons(tech) -> list[list[int]]:
@@ -2341,6 +2368,11 @@ _ART_INVARIANT_HOLDOUTS: dict[int, str] = {
 }
 
 
+def _art_fields_only(what: str, found: list[str]) -> bool:
+    """Whether every _art_invariant_violations() line in `found` is an _ART_INVARIANT_FIELDS one, not the footprint."""
+    return all(line.removeprefix(f"{what}: ").split(" ", 1)[0] in _ART_INVARIANT_FIELDS for line in found)
+
+
 def _wall_frames_agree(field: str, entry: dict, ref_entry: dict, unit, ref_unit) -> bool:
     """A wall's art may store frames past its reference's variant_count: every
     wall write path stores an index in 0..4 and the render's wall rule draws one.
@@ -2408,10 +2440,17 @@ def _structure_violations(what: str, entry: dict | None, unit, gaia_entry: dict 
 def _annex_upgrades(ages: dict[int, dict[int, int]]) -> dict[int, dict[int, int]]:
     """composite const -> {annex unit_id: the one drawn instead}, for every
     const the age table reaches at some age: its annexes are upgraded by the
-    same table at that same age (Slice 2; see _resolve_pieces())."""
+    same table at that same age (Slice 2; see _resolve_pieces()). A target a
+    slot keeps through the next ages (the 1997 game upgrades a building once)
+    is reached at its first age only, unless it is a composite: one age's annex map can't serve later ages."""
     age_of: dict[int, int] = {}
     for by_age in ages.values():
-        for age, target in by_age.items():
+        held: tuple[int, int] | None = None
+        for age, target in sorted(by_age.items()):
+            reached_before = held == (age - 1, target)
+            held = (age, target)
+            if reached_before and target not in _COMPOSITE_SCOPE:
+                continue
             if age_of.setdefault(target, age) != age:
                 _game_root.refuse(
                     f"const {target} is an age target at two ages -- re-verify",
@@ -2572,7 +2611,7 @@ def _unit_art(
         names = [entry["file_name"], *(p["file_name"] for p in (*entry.get("pieces", ()), *entry.get("garrison_flags", ())))]
         for name in names:
             if name not in readable_names:
-                readable_names[name] = _sld_frame_count(graphics_dir / f"{name}.sld") is not None
+                readable_names[name] = _art_frame_count(graphics_dir, name) is not None
         return [name for name in names if not readable_names[name]]
 
     for civ_index, civ in enumerate(data.civs):
@@ -2679,6 +2718,7 @@ def _building_art(
     bad_ages: set[tuple[int, int, int]] = set()
     drawn_rows: set[tuple[int, int, int]] = set()
     held_upgrades: dict[int, set[int]] = {}
+    held_ages: set[tuple[int, int]] = set()
     # old_file -> {const: {civ}}, for the report: gate pieces drawn with Gaia's, and those left missing.
     gate_swaps: dict[str, dict[int, set[int]]] = {}
     gate_unfixed: dict[str, dict[int, set[int]]] = {}
@@ -2687,7 +2727,7 @@ def _building_art(
     def readable(name: str) -> bool:
         # Header only (12 bytes), once per file name: this runs for every civ's every gate piece.
         if name not in readable_names:
-            readable_names[name] = _sld_frame_count(graphics_dir / f"{name}.sld") is not None
+            readable_names[name] = _art_frame_count(graphics_dir, name) is not None
         return readable_names[name]
 
     def age_fallback(base: int) -> str:
@@ -2778,6 +2818,10 @@ def _building_art(
                 for c in holders:
                     held_upgrades.setdefault(c, set()).add(base)
                 continue
+            if found and None in holders and (base, target) in _AGE_UPGRADE_HOLDOUTS and _art_fields_only(what, found):
+                held_ages.add((base, target))
+                bad_ages.add(row)
+                continue
             if found and lenient:
                 for problem in found:
                     _game_root.refuse(problem, age_fallback(base), kind="age_art", subject=base)
@@ -2815,7 +2859,10 @@ def _building_art(
         violations += unit_art.violations
     building_held_out = set(held_out)
     held_out |= unit_art.held_out if unit_art is not None else set()
-    unexplained = held_out != set(_ART_INVARIANT_HOLDOUTS) or measured_upgrades != listed_upgrades
+    unexplained = (
+        held_out != set(_ART_INVARIANT_HOLDOUTS) or measured_upgrades != listed_upgrades
+        or held_ages != set(_AGE_UPGRADE_HOLDOUTS)
+    )
     if _DATA_MOD_DAT:
         unexplained = not held_out <= set(_ART_INVARIANT_HOLDOUTS) or any(
             not bases <= listed_upgrades.get(c, frozenset()) for c, bases in measured_upgrades.items()
@@ -2826,7 +2873,9 @@ def _building_art(
             "re-verify against the .dat:\n  " + "\n  ".join(violations[:40])
             + f"\n  holdouts measured {sorted(held_out)}, listed {sorted(_ART_INVARIANT_HOLDOUTS)}"
             + (f"\n  upgrade holdouts measured {_holdout_text(measured_upgrades)}, listed {_holdout_text(listed_upgrades)}"
-               if measured_upgrades != listed_upgrades else ""),
+               if measured_upgrades != listed_upgrades else "")
+            + (f"\n  age upgrade holdouts measured {sorted(held_ages)}, listed {sorted(_AGE_UPGRADE_HOLDOUTS)}"
+               if held_ages != set(_AGE_UPGRADE_HOLDOUTS) else ""),
             "written as measured",
             kind="age_art",
         )
@@ -2852,8 +2901,10 @@ def _building_art(
         print(f"    gate pieces missing with no Gaia fallback: {by_file(gate_unfixed)}; civs {civs_of(gate_unfixed)}")
     if lenient_held_out:
         print(f"    held out on Gaia art (lenient): {sorted(lenient_held_out)}")
-    if bad_ages:
-        print(f"    age rows dropped (lenient): {sorted(bad_ages)}")
+    if held_ages:
+        print(f"    age upgrades held out, the base keeps its art: {sorted(held_ages)}")
+    if lenient_ages := {row for row in bad_ages if (row[0], row[2]) not in held_ages}:
+        print(f"    age rows dropped (lenient): {sorted(lenient_ages)}")
     if no_gaia_entry:
         print(f"    skipped, no Gaia entry to fall back from: {sorted(no_gaia_entry)}")
     # Civs sharing an art set share entries, so each distinct one is stored once.
@@ -2953,14 +3004,72 @@ _ROR_ART_INVARIANT_HOLDOUTS: dict[int, str] = {
 }
 
 
+# The 1999 game's values, measured on its Conquerors .dat (2026-11-26). Its art is
+# one SLP per graphic, so none of DE's shell, composite or override measurements
+# carry over: each list starts empty and is measured against the 1999 art in turn.
+_AOC_VALUES: dict[str, object] = {
+    # TREBU 42 and PTREB 331 (type 80); DE's 1690/1691 are past its unit table.
+    "_EXTRA_ANGLE_CONSTS": frozenset({42, 331}),
+    "_COMPOSITE_SCOPE": frozenset(),
+    "_PIECE_SLOTS": {},
+    "_TOWN_CENTRE_SCOPE": frozenset(),
+    "_AGE_ART_SCOPE": frozenset(),
+    "_PIECE_SLOTS_BY_ART": {},
+    "_ANNEX_TREE_SCOPE": frozenset(),
+    "_BODY_GRAPHIC_OVERRIDES": {},
+    "_UNDERWATER_BODY_CONSTS": frozenset(),
+    "_BODY_FRAME_OFFSETS": {},
+    "_PARTICLE_CONSTS": frozenset(),  # no particle effects in the 1999 game
+    "_START_UPGRADE_TECHS": None,
+    "_ART_INVARIANT_HOLDOUTS": {},
+}
+# Age of Empires with Rise of Rome, measured on data2/empires.dat (2026-11-27). Its art is
+# one SLP per graphic like the 1999 game's, so it starts from the same empty lists.
+_AOE1_VALUES: dict[str, object] = {
+    **_AOC_VALUES,
+    "_EXTRA_ANGLE_CONSTS": frozenset(),  # no packed trebuchet: no type 80 unit turns
+    "_GATE_CLASS": -1,  # no gates in the 1997 game: its class 39 is the slinger
+    # Which variant of the upgraded art a placed base draws is unmeasured (TASK-515 step D).
+    "_AGE_UPGRADE_HOLDOUTS": {
+        (12, 132): "Barracks1 -> Barracks2 from Bronze Age: 2 stored variants vs 1",
+        (45, 133): "Dock_1 -> Dock_2 from Bronze Age: 2 stored variants vs 1",
+        (70, 154): "House -> House1 from Tool Age: 3 stored variants vs 1",
+        (84, 116): "Market1 -> Market2 from Bronze Age: 2 stored variants vs 1",
+        (103, 105): "Storage_Pit1 -> Storage_Pit2 from Bronze Age: 2 stored variants vs 1",
+    },
+}
+# HD Edition, measured on its empires2_x2_p1.dat (2026-11-27): the 1999 game's art and
+# consts plus the expansions', one SLP per graphic, so it starts from the 1999 game's lists.
+_HD_VALUES: dict[str, object] = {
+    **_AOC_VALUES,
+}
+# A classic graphic's stem: its SLP id, the file DEscape's derived root holds for it.
+_SLP_STEM = re.compile(r"slp_\d+")
+# Set by _select_dataset(): a game whose graphics are SLPs (_game_root.SLP_ART).
+_SLP_ART = False
+
+
 def _select_dataset(dataset: str) -> None:
-    """Swaps every hand-measured const list for its RoR value (_ROR_VALUES)
-    and the RoR holdouts in, for a RoR run."""
-    global _ART_INVARIANT_HOLDOUTS
+    """Swaps every hand-measured const list for its RoR, 1999 or 1997 value
+    (_ROR_VALUES, _AOC_VALUES, _AOE1_VALUES, _HD_VALUES), and RoR's holdouts in, for that dataset's run."""
+    global _ART_INVARIANT_HOLDOUTS, _SLP_ART
     if dataset == _game_root.ROR:
         assert _ROR_VALUES.keys() <= globals().keys(), "a _ROR_VALUES key names no list"
         globals().update(_ROR_VALUES)
         _ART_INVARIANT_HOLDOUTS = _ROR_ART_INVARIANT_HOLDOUTS
+    elif dataset in _game_root.SLP_ART:
+        values = {_game_root.AOC: _AOC_VALUES, _game_root.AOE1: _AOE1_VALUES, _game_root.HD: _HD_VALUES}[dataset]
+        assert values.keys() <= globals().keys(), "an SLP game's values name no list"
+        globals().update(values)
+        _SLP_ART = True
+
+
+def _slp_stems(graphics: list, archives) -> None:
+    """A classic run: renames each graphic whose SLP the archives hold to its slp_<id> stem.
+    Any other keeps its .dat name, which _looks_modern() rejects, so it resolves through its deltas."""
+    for graphic in graphics:
+        if graphic is not None and graphic.slp >= 0 and archives.has("slp", graphic.slp):
+            graphic.file_name = f"slp_{graphic.slp}"
 
 
 # Set by _narrow_to_dat(): a data mod's .dat, not the dataset's own.
@@ -3003,6 +3112,34 @@ def _narrow_to_dat(units: list, graphics: list) -> None:
     _BODY_FRAME_OFFSETS = {name: v for name, v in _BODY_FRAME_OFFSETS.items() if name in names}
 
 
+def _check_particles_and_fish(
+    entries: dict[str, dict[str, object]], particles: dict[int, str], fish_bodies: dict[int, str],
+) -> None:
+    """Refuses a listed particle const or fish that got no particle or body
+    entry. Lenient, a particle const counts only with no entry at all (one
+    drawn as a plain sprite counts nothing), every fish without its underwater
+    body counts (it is drawn wrong), and a lone unused frame offset counts nothing."""
+    if set(particles) != _PARTICLE_CONSTS:
+        _game_root.refuse(
+            f"particle consts emitted {sorted(particles)}, listed {sorted(_PARTICLE_CONSTS)}. "
+            f"Re-verify _PARTICLE_CONSTS against the .dat",
+            "the others are not drawn",
+            kind="not_drawn",
+            subject=tuple(sorted(c for c in _PARTICLE_CONSTS - set(particles) if str(c) not in entries)),
+        )
+
+    missing_fish = sorted(_UNDERWATER_BODY_CONSTS - set(fish_bodies))
+    unused_offsets = sorted(set(_BODY_FRAME_OFFSETS) - set(fish_bodies.values()))
+    if missing_fish or unused_offsets:
+        _game_root.refuse(
+            f"fish body overrides not applied: consts {missing_fish}, frame offsets "
+            f"{unused_offsets} -- re-verify against the .dat",
+            "those fish are not drawn",
+            kind="not_drawn",
+            subject=tuple(missing_fish),
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -3026,16 +3163,22 @@ def main() -> None:
     _game_root.set_lenient(args.lenient)
     _select_dataset(args.dataset)
 
-    from genieutils.datfile import DatFile
-
     dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
-    graphics_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/drs/graphics")
-    particles_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/particles")
-    data = DatFile.parse(str(dat_path))
+    data = _game_root.parse_dat(dat_path)
     graphics = data.graphics
+    if _SLP_ART:
+        try:
+            graphics_dir = _game_root.slp_art(args.aoe2de_root, args.dataset)
+        except FileNotFoundError as exc:
+            raise SystemExit(f"Not found: {exc}") from None
+        particles_dir = None
+        _slp_stems(graphics, graphics_dir)
+    else:
+        graphics_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/drs/graphics")
+        particles_dir = _game_root.folder(args.aoe2de_root, args.dataset, "resources/_common/particles")
     units = data.civs[0].units
     if args.dat is not None:
         _narrow_to_dat(units, graphics)
@@ -3085,25 +3228,7 @@ def main() -> None:
         elif kind == "particle":
             particles[unit_const] = str(entry["file_name"])
 
-    if set(particles) != _PARTICLE_CONSTS:
-        _game_root.refuse(
-            f"particle consts emitted {sorted(particles)}, listed {sorted(_PARTICLE_CONSTS)}. "
-            f"Re-verify _PARTICLE_CONSTS against the .dat",
-            "the others are not drawn",
-            kind="not_drawn",
-            subject=tuple(sorted(_PARTICLE_CONSTS - set(particles))),
-        )
-
-    missing_fish = sorted(_UNDERWATER_BODY_CONSTS - set(fish_bodies))
-    unused_offsets = sorted(set(_BODY_FRAME_OFFSETS) - set(fish_bodies.values()))
-    if missing_fish or unused_offsets:
-        _game_root.refuse(
-            f"fish body overrides not applied: consts {missing_fish}, frame offsets "
-            f"{unused_offsets} -- re-verify against the .dat",
-            "those fish are not drawn",
-            kind="not_drawn",
-            subject=tuple(missing_fish),
-        )
+    _check_particles_and_fish(entries, particles, fish_bodies)
 
     for unit_const, entry in entries.items():
         if "dx" in entry and "pieces" in entry:

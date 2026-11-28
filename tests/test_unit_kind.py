@@ -96,6 +96,18 @@ def test_wall_consts_matches_unit_sprites_rotation_variant_consts() -> None:
     assert unit_kind.wall_consts() - gates == set(unit_sprites._ROTATION_VARIANT_CONSTS)
 
 
+@pytest.mark.parametrize("game", ["aoc", "hd"])
+def test_a_slp_games_hand_kept_walls_and_cliffs_are_its_tables_classes(game) -> None:
+    """The 1999 and HD sets are measured from their own tables: class 27 at 5 angles, class 34."""
+    from descape import game_dataset, object_catalog, unit_sprites
+
+    with game_dataset.activated(game):
+        objects, graphics = object_catalog.dat_objects(), unit_sprites.graphic_map()
+        walls = {c for c, e in objects.items() if e["class"] == 27 and graphics.get(c, {}).get("angle_count") == 5}
+        cliffs = {c for c, e in objects.items() if e["class"] == 34}
+        assert walls == set(unit_sprites.rotation_variant_const_set()) and cliffs == set(unit_sprites.cliff_consts())
+
+
 def test_eye_candy_consts_excludes_trees_resources_and_cliffs() -> None:
     import json
     from pathlib import Path

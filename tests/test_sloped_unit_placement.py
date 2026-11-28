@@ -193,6 +193,7 @@ def test_an_off_centre_sloped_unit_marks_its_own_point_instead(want_fx, want_fy,
     )
 
 
+@pytest.mark.usefixtures("one_elev_step")
 def test_a_flat_map_places_sloped_units_exactly_where_stepped_does() -> None:
     """The strongest oracle Step 2 could have broken, in its unit-bearing
     form: on a flat map every corner is equal under any rule, so

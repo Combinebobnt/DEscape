@@ -356,6 +356,7 @@ def test_a_stepped_marker_lands_on_its_own_tile():
 BLOCKER_1X3 = 2423
 
 
+@pytest.mark.usefixtures("one_elev_step")
 @pytest.mark.parametrize("style", ["iso", "sloped"])
 def test_a_1x3_blocker_marker_covers_all_three_footprint_tiles(style):
     """GH #121: the marker sat on the centre tile of a three-tile barrier. Each
@@ -437,6 +438,7 @@ def test_a_1x1_flat_marker_icon_matches_its_pre_badge_hash(category, w, h):
     assert digest == _FLAT_1X1_ICON_HASHES[(category, w, h)]
 
 
+@pytest.mark.usefixtures("one_elev_step")
 def test_sloped_matches_stepped_on_a_flat_map_with_markers():
     scn = _scenario(elevation=2)
     sloped, _e, _c, _sp = render_sloped.render_terrain_sloped_with_proj(scn, with_sprites=True)

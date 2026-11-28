@@ -1,0 +1,4 @@
+{
+  "_comment": "terrain_id -> {priority, blend_type, overlay_mask} for every enabled terrain. Pure factual data extracted from the game's own terrain table via genieutils-py, not game asset content itself. Regenerate with tools/gen_terrain_blend_map.py.",
+  "terrains": {}
+}

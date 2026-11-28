@@ -367,7 +367,7 @@ class _TriggerPanelListMixin:
             return (f"{kind} type {self._read(entry, type_attribute)}", None)
         options, context = self._summary_setup
         summary = trigger_summary.summarize(kind, entry, definition, presentation, context, options, self._read)
-        return (definition.name.replace("_", " "), summary)
+        return (definition.label, summary)
 
     def _apply_detail(self, item, kind: str, entry) -> None:
         """One entry row's Item and Detail: the sentence painted by the delegate, the raw fields in its tooltip."""

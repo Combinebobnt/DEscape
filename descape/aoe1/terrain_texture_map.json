@@ -1,0 +1,23 @@
+{
+  "_comment": "terrain_id -> AoE2DE terrain texture filename (resources/_common/terrain/textures/2x/). Pure factual id/filename correspondence extracted from the game's own data table via genieutils-py, not game asset content itself -- the .dds files are never bundled here. Regenerate with tools/gen_terrain_texture_map.py.",
+  "mapping": {
+    "0": "slp_15001.png",
+    "1": "slp_15002.png",
+    "10": "slp_15001.png",
+    "11": "slp_15000.png",
+    "12": "slp_15001.png",
+    "13": "slp_15000.png",
+    "14": "slp_15000.png",
+    "15": "slp_15002.png",
+    "16": "slp_15001.png",
+    "18": "slp_15001.png",
+    "19": "slp_15001.png",
+    "2": "slp_15000.png",
+    "20": "slp_15001.png",
+    "21": "slp_15001.png",
+    "22": "slp_15003.png",
+    "4": "slp_15002.png",
+    "5": "slp_15001.png",
+    "6": "slp_15000.png"
+  }
+}

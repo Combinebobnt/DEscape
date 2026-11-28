@@ -111,7 +111,7 @@ def _map_regions(section) -> SectionRegions:
     if offsets["number_of_triggers"] != SECTION_HEADER_SIZE:
         raise TriggerEditsUnavailableError(
             f"Triggers section header is {offsets['number_of_triggers']} bytes, "
-            f"expected {SECTION_HEADER_SIZE} -- structure version changed"
+            f"expected {SECTION_HEADER_SIZE}: the structure version changed"
         )
     exec_order_length = lengths.get("legacy_exec_order", 0)
     return SectionRegions(
@@ -188,8 +188,11 @@ def exec_order_value(loaded: LoadedScenario) -> int | None:
 
     None when the file stores no such byte at all (trigger_version < 4.5, see
     exec_order_write_supported()'s docstring) -- distinct from the flag being
-    a real 0 or 1.
+    a real 0 or 1. A pre-DE file stores none either, but runs in ID order, so 1,
+    as AoE2:DE's importer writes.
     """
+    if getattr(loaded, "source_format", None) is not None and loaded.source_format.legacy:
+        return 1
     section = loaded._scenario.sections.get("Triggers")
     if section is None:
         return None
@@ -922,7 +925,7 @@ class TriggerEditModel:
         if len(self._original_section) != self.regions.section_end:
             raise TriggerEditsUnavailableError(
                 f"Triggers section walks to {self.regions.section_end} bytes but spans "
-                f"{len(self._original_section)} in the file -- refusing to splice"
+                f"{len(self._original_section)} in the file: refusing to splice"
             )
 
         self._blobs: list[bytes | None] = self._slice_blobs(section)
@@ -1128,7 +1131,7 @@ class TriggerEditModel:
         if len(snapshot.triggers) != len(snapshot.blobs):
             raise RuntimeError(
                 f"Snapshot holds {len(snapshot.triggers)} triggers but {len(snapshot.blobs)} "
-                f"blobs -- refusing to restore a record that cannot align"
+                f"blobs: refusing to restore a record that cannot align"
             )
 
         # Trap 5: never hand the record's own `states` object to the live list,
@@ -1170,7 +1173,7 @@ class TriggerEditModel:
             if len(referencing) != len(ref_ids):
                 raise RuntimeError(
                     f"Trigger {trigger.trigger_id} has {len(referencing)} trigger references "
-                    f"but the snapshot recorded {len(ref_ids)} -- refusing to restore"
+                    f"but the snapshot recorded {len(ref_ids)}: refusing to restore"
                 )
             for ce, trigger_id in zip(referencing, ref_ids, strict=True):
                 ce.trigger_id = trigger_id
@@ -1409,7 +1412,7 @@ class TriggerEditModel:
             # _validate_coherence(); same vocabulary, same exception.
             raise RuntimeError(
                 f"The trigger list is incoherent: commit() produced {len(entries)} "
-                f"trigger structs but the model tracks {len(self._blobs)} blobs -- a "
+                f"trigger structs but the model tracks {len(self._blobs)} blobs: a "
                 f"structural edit bypassed structural_edit()"
             )
         # The commit re-slotted every condition. A no-op since 0.9.3 links
@@ -1523,7 +1526,7 @@ class TriggerEditModel:
         if not aligned:
             raise RuntimeError(
                 f"The trigger list changed behind the model's back "
-                f"({len(self._tracked)} tracked, {len(live)} live) -- a structural "
+                f"({len(self._tracked)} tracked, {len(live)} live): a structural "
                 f"edit bypassed structural_edit(), so every blob's index mapping "
                 f"is untrustworthy"
             )

@@ -21,21 +21,22 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import (
-    asset_source,
     autosave,
     debug_log,
     game_dataset,
     games,
     gc_hold,
+    legacy_write,
     perf_trace,
     place_rotation,
     region_clipboard,
-    scenario_format,
+    scenario_compat,
     scenario_library,
     settings,
     terrain_units,
     ui_icons,
     unit_sprites,
+    viewer_game_root,
 )
 from descape.autosave_dialog import RecoverAutosaveDialog
 from descape.data_mod_menu import FROM_PATH
@@ -80,10 +81,11 @@ from descape.viewer_common import (
     HOVER_IDLE_TEXT,
 )
 
-# What File > Open and a drop accept: DE's own, plus the pre-DE .scn/.scx (TASK-429, read-only).
+# What File > Open and a drop accept: DE's own, plus the pre-DE .scn/.scx/.scx2 (TASK-429, read-only).
 SCENARIO_SUFFIXES = scenario_library.SUFFIXES
 OPEN_FILTER = (
-    "All scenarios (*.aoe2scenario *.scn *.scx);;AoE2 Scenario (*.aoe2scenario);;Older AoE2 scenario (*.scn *.scx)"
+    "All scenarios (*.aoe2scenario *.scn *.scx *.scx2);;AoE2 Scenario (*.aoe2scenario);;"
+    "Older scenario (*.scn *.scx *.scx2)"
 )
 
 
@@ -133,33 +135,38 @@ class _ViewerFileMixin:
     # -- game data (GH #67) ------------------------------------------------
 
     def _file_game_dataset(self) -> str:
-        """The open file's own game: its header variant flag, the default game with no document."""
-        return games.default().id if self.scenario is None else games.for_scenario(self.scenario).id
+        """The open file's game (game_dataset.file_game(): its own, or its stand-in's while
+        that game's install is not configured), the default game with no document."""
+        return games.default().id if self.scenario is None else game_dataset.file_game(self.scenario).id
 
     def _shown_game_dataset(self) -> str:
         """Settings > Advanced > Game data's choice, or the file's own game under Auto."""
         choice = settings.get_game_data()
         return self._file_game_dataset() if choice == settings.GAME_DATA_DEFAULT else choice
 
-    def game_data_lock_reason(self) -> str | None:
+    def game_data_lock_reason(self, family: str | None = None) -> str | None:
         """Why the open document may not be written, or None. Shown in the
         status bar while it applies. GH #67: a file is editable only with its
         own game's data shown (Return of Rome included), and never when its
-        game is view-only (game_dataset.lock_reason()). TASK-429: a pre-DE
-        .scn/.scx is read-only first, whatever data is shown."""
+        game is view-only (game_dataset.lock_reason()). TASK-429/520: a pre-DE
+        .scn/.scx is locked first, whatever data is shown, except an edit
+        `family` its band allows (legacy_write.lock_reason(); None never is).
+        TASK-057: a newer version open in compatibility mode before either."""
         if self.scenario is None:
             return None
-        if self._file_is_legacy():
-            return scenario_format.read_only_reason(self.scenario.source_format)
-        return game_dataset.lock_reason(self._file_game_dataset(), self._shown_game_dataset())
+        if compat := scenario_compat.lock_reason(self.scenario):
+            return compat
+        if self._file_is_legacy() and (legacy := legacy_write.lock_reason(self.scenario, family)):
+            return legacy
+        return game_dataset.lock_reason(self._file_game_dataset(), self._shown_game_dataset(), self._file_is_legacy())
 
     def _cross_game_refusal(self, block) -> str:
         """Why a clipboard block copied from the other game's file may not be pasted here, or "".
         Compares the two files' own games, not the shown data: a locked view's copy keeps its file's ids."""
-        # The reverse, a DE block onto a legacy document, is refused by the read-only lock.
+        # The reverse, any block onto a legacy document, is refused in paste_region().
         if getattr(block, "legacy", False) and not self._file_is_legacy():
             return (
-                "Copied from an older-format (.scn/.scx) file, whose terrain and object ids differ "
+                "Copied from an older-format (.scn/.scx/.scx2) file, whose terrain and object ids differ "
                 "from AoE2:DE's, so it can't be pasted into this document."
             )
         copied = getattr(block, "dataset", games.DEFAULT_ID)
@@ -183,17 +190,32 @@ class _ViewerFileMixin:
         fmt = getattr(self.scenario, "source_format", None)
         return bool(fmt is not None and fmt.legacy)
 
+    def terrain_lock_reason(self, family: str = legacy_write.TERRAIN) -> str | None:
+        """Why the open document's terrain, elevation and file may not be written: the
+        lock above, except a compat document whose Settings and Units both read (B2),
+        and a pre-DE one's `family` (TERRAIN, ELEVATION, or ANY for the file)."""
+        if self.scenario is None or scenario_compat.plan_of(self.scenario) is None:
+            return self.game_data_lock_reason(family if self._file_is_legacy() else None)
+        reason = scenario_compat.terrain_lock_reason(self.scenario)
+        return reason or game_dataset.lock_reason(self._file_game_dataset(), self._shown_game_dataset(), self._file_is_legacy())
+
+    def _write_document(self, path, backup: bool):
+        """Save, Save As and autosave's write: a compat document's own writer, else write_scenario()."""
+        if scenario_compat.plan_of(self.scenario) is not None:
+            return scenario_compat.write_compat(self.scenario, path, backup)
+        return write_scenario(self.scenario, path, backup=backup, **self._edit_model_kwargs())
+
     def _refuse_locked_save(self) -> bool:
-        reason = self.game_data_lock_reason()
+        reason = self.terrain_lock_reason(legacy_write.ANY)
         if reason is None:
             return False
         self._log_status(f"Save refused. {reason}", level=debug_log.WARNING)
         QMessageBox.information(self, "Read-only", reason)
         return True
 
-    def _refuse_locked_edit(self) -> bool:
+    def _refuse_locked_edit(self, family: str | None = None) -> bool:
         """True (and says why) when an edit model is asked for on a locked document."""
-        reason = self.game_data_lock_reason()
+        reason = self.game_data_lock_reason(family)
         if reason is not None:
             self._log_status(f"Edit refused. {reason}", level=debug_log.WARNING)
         return reason is not None
@@ -208,7 +230,7 @@ class _ViewerFileMixin:
     def apply_game_data(self) -> None:
         """Redraws the open document in the saved Game data choice, writing nothing
         (Settings' Cancel and Reset, GH #191)."""
-        if game_dataset.set_active(self._shown_game_dataset()):
+        if game_dataset.set_active(viewer_game_root.ready_shown_game(self)):
             self._refresh_game_assets()
         self._after_game_data_change()
 
@@ -256,15 +278,13 @@ class _ViewerFileMixin:
         self._show_game_data_status()
 
     def _show_game_data_status(self) -> None:
-        """The status bar's lock banner, and one line when the active game's own root (Return of Rome's art) is missing."""
+        """The status bar's lock banner, then viewer_game_root.status_lines(): a 1999 file shown
+        with its stand-in's data, a shown game whose own art (Return of Rome's, the 1999 root) is missing."""
         reason = self.game_data_lock_reason()
         self.game_data_banner.setText(reason or "")
         self.game_data_banner.setVisible(reason is not None)
-        install = asset_source.get_install_path()
-        shown = game_dataset.game()
-        if install is not None and shown.root_subpath is not None and not shown.root(install).is_dir():
-            name = shown.display_name
-            self._log_status(f"{name} art is not installed: names and stats are {name}'s, units draw as coloured marks.")
+        for line in viewer_game_root.status_lines(self):
+            self._log_status(line)
 
     def _confirm_discard_changes(self) -> bool:
         """True if it's OK to proceed: no scenario loaded, no unsaved edits,
@@ -284,9 +304,14 @@ class _ViewerFileMixin:
         return reply == QMessageBox.Discard
 
     def _save_as_start_path(self) -> str:
+        if (converted := self._converted_save_path()) is not None:  # GH #315
+            return converted
         if self._untitled:
-            # The game's scenario folder, else home: never TEMPLATE_DIR.
-            return str((scenario_library.default_folder() or Path.home()) / UNTITLED_NAME)
+            # The game's scenario folder, else home: never TEMPLATE_DIR. A recovered pre-DE slot keeps its format.
+            name = UNTITLED_NAME
+            if self._file_is_legacy():
+                name = str(Path(name).with_suffix(legacy_write.save_suffix(self.scenario)))
+            return str((scenario_library.default_folder() or Path.home()) / name)
         src = self.scenario.path
         if _in_subscribed(src):  # the game re-syncs that folder, so start where a save can land
             return str((scenario_library.default_folder() or Path.home()) / src.name)
@@ -295,6 +320,16 @@ class _ViewerFileMixin:
         # unconditionally refuses to write into.
         parent = Path.home() if _in_template_dir(src) else src.parent
         return str(parent / src.name)
+
+    def _save_as_filter(self) -> str:
+        """A pre-DE document saves in its own format only (TASK-520)."""
+        if not self._file_is_legacy():
+            return "AoE2 Scenario (*.aoe2scenario)"
+        return f"{self.scenario.source_format.display_name} scenario (*{legacy_write.save_suffix(self.scenario)})"
+
+    def _save_backs_up(self, path) -> bool:
+        """Settings' choice, forced on in the game profile and for a pre-DE file, whose original DE can't re-make."""
+        return settings.get_backups_enabled() or is_in_game_profile(path) or self._file_is_legacy()
 
     def _open_start_dir(self) -> str:
         """The open document's own folder, else the game's scenario folder, else "" (Qt's default)."""
@@ -403,7 +438,7 @@ class _ViewerFileMixin:
         recovery slot does not mean the document matches its real file;
         clearing either would drop the title's "*" AND make
         _confirm_discard_changes() return True, so the user would close
-        without a prompt and lose the work. It calls write_scenario()
+        without a prompt and lose the work. It calls _write_document()
         directly rather than save() for the same class of reason: save()
         routes an untitled document into a modal Save As dialog.
 
@@ -414,7 +449,7 @@ class _ViewerFileMixin:
         """
         if self.scenario is None or not settings.get_autosave_enabled():
             return
-        if self.game_data_lock_reason() is not None:  # GH #67: a locked document is never written
+        if self.terrain_lock_reason(legacy_write.ANY) is not None:  # GH #67: a locked document is never written
             return
         if not self.edit_history.is_dirty:
             return
@@ -458,7 +493,7 @@ class _ViewerFileMixin:
                 slot.parent.mkdir(parents=True, exist_ok=True)
             # backup=False is mandatory, not a preference: the default would
             # put a .bak/.orig pair beside every rotating slot.
-            write_scenario(self.scenario, slot, backup=False, **self._edit_model_kwargs())
+            self._write_document(slot, backup=False)
         except Exception as e:  # noqa: BLE001 -- GUI boundary, reports below
             # Swallowed to a log line, never a modal. An autosave that pops a
             # QMessageBox mid-edit is worse than one that quietly fails; the
@@ -488,12 +523,7 @@ class _ViewerFileMixin:
         path = str(self.scenario.path)
         autosave_key = self._autosave_doc_key()
         try:
-            result = write_scenario(
-                self.scenario,
-                path,
-                backup=settings.get_backups_enabled() or is_in_game_profile(path),
-                **self._edit_model_kwargs(),
-            )
+            result = self._write_document(path, backup=self._save_backs_up(path))
         except WriteBlockedError as e:
             self._log_status(f"Save blocked: {e}", level=debug_log.WARNING)
             QMessageBox.critical(self, "Save blocked", str(e))
@@ -521,7 +551,7 @@ class _ViewerFileMixin:
             return
         self._commit_focused_field()
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save scenario as", self._save_as_start_path(), "AoE2 Scenario (*.aoe2scenario)"
+            self, "Save scenario as", self._save_as_start_path(), self._save_as_filter()
         )
         if not path:
             return
@@ -532,12 +562,7 @@ class _ViewerFileMixin:
         # "Untitled" label.
         autosave_key = self._autosave_doc_key()
         try:
-            result = write_scenario(
-                self.scenario,
-                path,
-                backup=settings.get_backups_enabled() or is_in_game_profile(path),
-                **self._edit_model_kwargs(),
-            )
+            result = self._write_document(path, backup=self._save_backs_up(path))
         except WriteBlockedError as e:
             self._log_status(f"Save blocked: {e}", level=debug_log.WARNING)
             QMessageBox.critical(self, "Save blocked", str(e))
@@ -550,9 +575,13 @@ class _ViewerFileMixin:
         # matching the usual editor convention (Notepad, VS Code, etc.): the
         # window is now editing that file, not the one it was opened from.
         self.scenario.path = Path(path)
-        self._untitled = False
+        was_untitled, self._untitled = self._untitled, False
         # GH #58: the new path opens with the data mod it was saved under.
         self.data_mod_menu.remember_current()
+        if self._saved_views:
+            settings.set_saved_views(self.scenario.path, self._saved_views)
+        elif was_untitled:  # the target's stored views stay and become this document's (a recovered autosave)
+            self._saved_views = settings.get_saved_views(self.scenario.path)
         # GH #215: a new map or a renamed copy is otherwise missing from Open Recent until reopened.
         settings.add_recent_file(self.scenario.path)
         self._rebuild_recent_files_menu()
@@ -913,9 +942,11 @@ class _ViewerFileMixin:
             self._log_status(f"Resize failed: {type(e).__name__}: {e}", level=debug_log.ERROR)
             QMessageBox.critical(self, "Resize failed", str(e))
             return
+        views = self._saved_views  # an untitled reload starts with none; stored points are not shifted
         self.load_scenario(old.path, untitled=self._untitled, data=result.data, loaded=result.loaded)
         if self.scenario is not result.loaded:
             return  # the load itself failed and already reported why
+        self._saved_views = views
         self.unit_edits = result.unit_edits
         self.trigger_edits = result.trigger_edits
         self.edit_history.saved_at_cursor = None
@@ -1160,7 +1191,7 @@ class _ViewerFileMixin:
                 elif data is not None:
                     self.scenario = load_map_and_units_from_bytes(data, path)
                 else:
-                    self.scenario = load_map_and_units(path)
+                    self.scenario = scenario_compat.load_for_viewer(path, load_map_and_units)
                 parse_elapsed = time.perf_counter() - t_parse0
             except UnsupportedStructureVersion as e:
                 # Named cause instead of the library's raw exception text: a
@@ -1185,8 +1216,9 @@ class _ViewerFileMixin:
             # mislabel whatever was previously open (self.scenario still holds it,
             # untouched, if the try block above returned early).
             self._untitled = untitled
+            self._saved_views = {} if untitled else settings.get_saved_views(path)
             # GH #67: before the first paint, the game data Settings > Advanced picks for this file.
-            switched = game_dataset.set_active(self._shown_game_dataset())
+            switched = game_dataset.set_active(viewer_game_root.ready_shown_game(self))
             # GH #58: and the data mod remembered for it; untitled keeps the session's.
             if self.data_mod_menu.for_document(path, untitled=untitled, remembered=data_mod):
                 switched = True
@@ -1237,6 +1269,8 @@ class _ViewerFileMixin:
             # reset here; see close_scenario()'s own comment on why it
             # survives.
             self._region = None
+            # The Clone Stamp's source is the old document's (Resize Map reloads through here too).
+            self._clone.clear()
             # The keys outlive a mode switch, never a document (TASK-359). Before the disarm and
             # the render, which read _needs_unit_index(); set_source() drops MapView's copy.
             self._selection = []
@@ -1339,6 +1373,9 @@ class _ViewerFileMixin:
                 f"tile_px={tile_px}, style={self._style_log_label}) "
                 f"in {total_elapsed:.2f}s ({generate_part}parse {parse_elapsed:.2f}s, prepare {elapsed:.2f}s)"
             )
+            if (plan := scenario_compat.plan_of(self.scenario)) is not None:
+                areas = "; ".join(f"{area}: {why}" for area, why in plan.reasons.items())
+                self._log_status(f"Compatibility mode ({plan.file_version} read as {plan.base}): {areas}")
             if mod_line := self._mod_art_status():
                 self._log_status(mod_line)
             if (grade := self.map_view.colour_grade) is not None:
@@ -1354,7 +1391,7 @@ class _ViewerFileMixin:
                 self.load_progress.finish("load")  # no paint will come
             if not self.scenario.terrain_write_supported:
                 self._log_status(
-                    f"Warning: {display_name}'s terrain block failed load-time verification -- "
+                    f"Warning: {display_name}'s terrain block failed load-time verification. "
                     "Terrain mode's terrain/elevation tools and Save/Save As are disabled for "
                     "this file (still fully viewable).",
                     level=debug_log.WARNING,
@@ -1369,8 +1406,8 @@ class _ViewerFileMixin:
                 # A possible follow-up: deriving tile coordinates from the terrain
                 # index instead of these library properties.
                 self._log_status(
-                    f"Note: {display_name} is a non-square map ({mm.map_width}x{mm.map_height}) -- "
-                    "non-square maps are not supported and will likely fail to render.",
+                    f"Note: {display_name} is a non-square map ({mm.map_width}x{mm.map_height}). "
+                    "Non-square maps are not supported and will likely fail to render.",
                     level=debug_log.WARNING,
                 )
         except BaseException:
@@ -1392,6 +1429,7 @@ class _ViewerFileMixin:
         self._close_analysis_dialog()
         self._close_find_dialog()
         self._untitled = False
+        self._saved_views = {}
         # Dropped alongside the cache it was warming -- otherwise a closed
         # document keeps ticking, holding the whole scenario alive.
         self._cancel_warms()
@@ -1466,6 +1504,7 @@ class _ViewerFileMixin:
         # rendering copy of the same value.
         self._hover_tile = None
         self._region = None
+        self._clone.clear()
         self._update_tool_enabled()
         self._update_edit_actions()
         self._update_title()

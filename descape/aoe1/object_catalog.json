@@ -1,0 +1,8311 @@
+{
+  "_comment": "Per-object, per-terrain and per-tech integer fields and internal codes from empires2_x2_p1.dat -- no display text, that is resolved at runtime from the user's own install (see descape/object_catalog.py, descape/asset_source.py). Regenerate with tools/gen_object_catalog.py.",
+  "objects": {
+    "0": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Academy",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 0,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5001,
+      "train": [
+        [
+          118,
+          17
+        ]
+      ],
+      "type": 80
+    },
+    "1": {
+      "class": 10,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Alligator",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 41,
+      "resources": {
+        "food": 100
+      },
+      "restriction": 7,
+      "string_id": 5002,
+      "type": 70
+    },
+    "10": {
+      "class": 1,
+      "clearance": [
+        2.0,
+        2.0
+      ],
+      "code": "Artifact_Discovery1",
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 45,
+      "restriction": 4,
+      "string_id": 5003,
+      "type": 70
+    },
+    "100": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Spear",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5150,
+      "type": 60
+    },
+    "101": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Stable",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 25,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5192,
+      "train": [
+        [
+          118,
+          7
+        ]
+      ],
+      "type": 80
+    },
+    "102": {
+      "class": 8,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Mine-Stone",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 38,
+      "resources": {
+        "stone": 250
+      },
+      "restriction": 8,
+      "string_id": 5139,
+      "type": 30
+    },
+    "103": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Storage_Pit1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 28,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5193,
+      "train": [
+        [
+          118,
+          4
+        ]
+      ],
+      "type": 80
+    },
+    "104": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Temple1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 31,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5195,
+      "train": [
+        [
+          118,
+          13
+        ]
+      ],
+      "type": 80
+    },
+    "105": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Storage_Pit2",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 29,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5193,
+      "train": [
+        [
+          118,
+          4
+        ]
+      ],
+      "type": 80
+    },
+    "106": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain-Bones",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5253,
+      "type": 10
+    },
+    "108": {
+      "class": 1,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Artifact_War_Chest",
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 42,
+      "restriction": 7,
+      "string_id": 5007,
+      "type": 70
+    },
+    "109": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Town_Center1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 33,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5255,
+      "train": [
+        [
+          118,
+          14
+        ]
+      ],
+      "type": 80
+    },
+    "11": {
+      "civs": [
+        2,
+        4,
+        5,
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 13,
+      "clearance": [
+        0.45,
+        0.45
+      ],
+      "code": "Soldier-Balista",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 9,
+      "restriction": 7,
+      "string_id": 5173,
+      "train": [
+        [
+          49,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "110": {
+      "civs": [],
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Trade_Wkshop",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 41,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5257,
+      "train": [
+        [
+          118,
+          15
+        ]
+      ],
+      "type": 80
+    },
+    "112": {
+      "class": 11,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Flare",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 5371,
+      "type": 10
+    },
+    "113": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_j1",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5301,
+      "type": 90
+    },
+    "114": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_j2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5302,
+      "type": 90
+    },
+    "115": {
+      "class": 16,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Stump1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5258,
+      "type": 30
+    },
+    "116": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Market2",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 22,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5132,
+      "train": [
+        [
+          118,
+          11
+        ]
+      ],
+      "type": 80
+    },
+    "117": {
+      "class": 27,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Wall_Med",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 45,
+      "interface_kind": 2,
+      "restriction": 10,
+      "string_id": 5298,
+      "train": [
+        [
+          118,
+          10
+        ]
+      ],
+      "type": 80
+    },
+    "12": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Barracks1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 3,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5008,
+      "train": [
+        [
+          118,
+          2
+        ]
+      ],
+      "type": 80
+    },
+    "121": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_j3",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5303,
+      "type": 90
+    },
+    "125": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "class": 18,
+      "clearance": [
+        0.3,
+        0.3
+      ],
+      "code": "Priest",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 1,
+      "restriction": 7,
+      "string_id": 5153,
+      "train": [
+        [
+          104,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "126": {
+      "class": 10,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Lion",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 40,
+      "resources": {
+        "food": 100
+      },
+      "restriction": 1,
+      "string_id": 5127,
+      "type": 70
+    },
+    "129": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_j4",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5304,
+      "type": 90
+    },
+    "13": {
+      "class": 21,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Boat-Fishing1",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 18,
+      "restriction": 3,
+      "string_id": 5009,
+      "train": [
+        [
+          45,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "130": {
+      "class": 16,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Stump2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5259,
+      "type": 30
+    },
+    "131": {
+      "class": 16,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Stump3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5260,
+      "type": 30
+    },
+    "132": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Barracks2",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 4,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5008,
+      "train": [
+        [
+          118,
+          2
+        ]
+      ],
+      "type": 80
+    },
+    "133": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Dock_2",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 7,
+      "interface_kind": 2,
+      "restriction": 6,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5083,
+      "train": [
+        [
+          118,
+          5
+        ]
+      ],
+      "type": 80
+    },
+    "134": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree01",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5261,
+      "type": 90
+    },
+    "135": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree02",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5262,
+      "type": 90
+    },
+    "136": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree03",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5263,
+      "type": 90
+    },
+    "137": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree04",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5264,
+      "type": 90
+    },
+    "138": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree05",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5265,
+      "type": 90
+    },
+    "139": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree06",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5266,
+      "type": 90
+    },
+    "14": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 21,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Boat-Fishing2",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 20,
+      "restriction": 3,
+      "string_id": 5010,
+      "train": [
+        [
+          45,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "140": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree07",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5267,
+      "type": 90
+    },
+    "141": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree08",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5268,
+      "type": 90
+    },
+    "142": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree09",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5269,
+      "type": 90
+    },
+    "143": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree10",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5270,
+      "type": 90
+    },
+    "144": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree11",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5271,
+      "type": 90
+    },
+    "145": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree12",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5272,
+      "type": 90
+    },
+    "146": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree13",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5273,
+      "type": 90
+    },
+    "147": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree14",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5274,
+      "type": 90
+    },
+    "148": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree15",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5275,
+      "type": 90
+    },
+    "149": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree16",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5276,
+      "type": 90
+    },
+    "15": {
+      "class": 2,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Boat-Trade1",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 19,
+      "restriction": 3,
+      "string_id": 5011,
+      "train": [
+        [
+          45,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "150": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree17",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5277,
+      "type": 90
+    },
+    "151": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree18",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5278,
+      "type": 90
+    },
+    "152": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree19",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5279,
+      "type": 90
+    },
+    "153": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree20",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5280,
+      "type": 90
+    },
+    "154": {
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "House1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 16,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5119,
+      "train": [
+        [
+          118,
+          1
+        ]
+      ],
+      "type": 80
+    },
+    "155": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        15
+      ],
+      "class": 27,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Wall_Large",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 48,
+      "interface_kind": 2,
+      "restriction": 10,
+      "string_id": 5297,
+      "train": [
+        [
+          118,
+          10
+        ]
+      ],
+      "type": 80
+    },
+    "157": {
+      "class": 9,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Horse",
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 32,
+      "restriction": 1,
+      "string_id": 5118,
+      "type": 70
+    },
+    "158": {
+      "class": 1,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Artifact_Ruins1_Gaia",
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 43,
+      "restriction": 4,
+      "string_id": 5004,
+      "type": 70
+    },
+    "159": {
+      "class": 1,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Artifact1_Gaia",
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 42,
+      "restriction": 7,
+      "side_terrain": [
+        0,
+        6
+      ],
+      "string_id": 5006,
+      "type": 70
+    },
+    "16": {
+      "class": 2,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Boat-Trade2",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 23,
+      "restriction": 3,
+      "string_id": 5012,
+      "train": [
+        [
+          45,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "161": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_p1",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5305,
+      "type": 90
+    },
+    "162": {
+      "class": 30,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Flag",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "string_id": 5099,
+      "type": 30
+    },
+    "163": {
+      "class": 1,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Artifact_Ruins2_Gaia",
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 44,
+      "restriction": 4,
+      "string_id": 5004,
+      "type": 70
+    },
+    "164": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Cactus1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5024,
+      "type": 10
+    },
+    "165": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Cactus2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5025,
+      "type": 10
+    },
+    "166": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Cactus3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5026,
+      "type": 10
+    },
+    "167": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5109,
+      "type": 10
+    },
+    "168": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5107,
+      "type": 10
+    },
+    "169": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Cactus4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5027,
+      "type": 10
+    },
+    "17": {
+      "class": 20,
+      "clearance": [
+        0.8,
+        0.8
+      ],
+      "code": "Boat-Transport1",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 21,
+      "restriction": 3,
+      "string_id": 5013,
+      "train": [
+        [
+          45,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "170": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5110,
+      "type": 10
+    },
+    "171": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5111,
+      "type": 10
+    },
+    "172": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5112,
+      "type": 10
+    },
+    "173": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump6",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5113,
+      "type": 10
+    },
+    "174": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump7",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5114,
+      "type": 10
+    },
+    "175": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump8",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5115,
+      "type": 10
+    },
+    "176": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump9",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5116,
+      "type": 10
+    },
+    "177": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Grass_Clump10",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5108,
+      "type": 10
+    },
+    "178": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Dessert_Clump1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5080,
+      "type": 10
+    },
+    "179": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Dessert_Clump2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5081,
+      "type": 10
+    },
+    "18": {
+      "civs": [
+        1,
+        2,
+        5,
+        7,
+        9,
+        11,
+        13,
+        14,
+        16
+      ],
+      "class": 20,
+      "clearance": [
+        0.8,
+        0.8
+      ],
+      "code": "Boat-Transport2",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 25,
+      "restriction": 3,
+      "string_id": 5014,
+      "train": [
+        [
+          45,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "180": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Dessert_Clump3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5082,
+      "type": 10
+    },
+    "181": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Bones1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5019,
+      "type": 10
+    },
+    "182": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Bones2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5020,
+      "type": 10
+    },
+    "183": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Bones3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5021,
+      "type": 10
+    },
+    "184": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5231,
+      "type": 10
+    },
+    "185": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5244,
+      "type": 10
+    },
+    "186": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_d1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5226,
+      "type": 10
+    },
+    "187": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Terrain_Crack2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5197,
+      "type": 10
+    },
+    "188": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Terrain_Crack3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5198,
+      "type": 10
+    },
+    "189": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Terrain_Crack4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5199,
+      "type": 10
+    },
+    "19": {
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Boat-War1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 22,
+      "restriction": 3,
+      "string_id": 5015,
+      "train": [
+        [
+          45,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "190": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Terrain_Crack5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5200,
+      "type": 10
+    },
+    "191": {
+      "class": 14,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Terrain_Crack1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5196,
+      "type": 10
+    },
+    "192": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree21",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5281,
+      "type": 90
+    },
+    "193": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree22",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5282,
+      "type": 90
+    },
+    "194": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree23",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5283,
+      "type": 90
+    },
+    "195": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree90",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5287,
+      "type": 90
+    },
+    "197": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree24",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5284,
+      "type": 90
+    },
+    "198": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_p2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5306,
+      "type": 90
+    },
+    "199": {
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Sentry_Tower",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 14,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5160,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 80
+    },
+    "20": {
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Boat-War2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 24,
+      "restriction": 3,
+      "string_id": 5016,
+      "train": [
+        [
+          45,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "203": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_p3",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5307,
+      "type": 90
+    },
+    "204": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Bolt",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5146,
+      "type": 60
+    },
+    "205": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Bolt-Fire",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5147,
+      "type": 60
+    },
+    "206": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Arrow-Fire",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5144,
+      "type": 60
+    },
+    "207": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Arch_1",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5049,
+      "type": 30
+    },
+    "208": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Arch_2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5049,
+      "type": 30
+    },
+    "209": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Axeman",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5051,
+      "type": 30
+    },
+    "21": {
+      "civs": [
+        1,
+        2,
+        4,
+        5,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Boat-War3",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 26,
+      "restriction": 3,
+      "string_id": 5017,
+      "train": [
+        [
+          45,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "210": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_B_Swd",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5052,
+      "type": 30
+    },
+    "211": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Balista",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5053,
+      "type": 30
+    },
+    "212": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Catapult",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5056,
+      "type": 30
+    },
+    "213": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Chariot",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5057,
+      "type": 30
+    },
+    "214": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_H_Cavalry",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5063,
+      "type": 30
+    },
+    "215": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Infantry",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5065,
+      "type": 30
+    },
+    "216": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_L_Swd",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5066,
+      "type": 30
+    },
+    "217": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_L_cavalry",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5067,
+      "type": 30
+    },
+    "218": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Legion",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5068,
+      "type": 30
+    },
+    "219": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Long_Bow",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5069,
+      "type": 30
+    },
+    "22": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Rubble_1x1",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5156,
+      "type": 10
+    },
+    "221": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Phalnx",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5073,
+      "type": 30
+    },
+    "222": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Priest",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5074,
+      "type": 30
+    },
+    "223": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_S_Swd",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5075,
+      "type": 30
+    },
+    "224": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_War_Ele",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5078,
+      "type": 30
+    },
+    "226": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_Forest_p4",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5308,
+      "type": 90
+    },
+    "23": {
+      "class": 11,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Rubble_2x2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5157,
+      "type": 10
+    },
+    "235": {
+      "civs": [],
+      "class": 13,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Hero_Catapult",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 51,
+      "restriction": 7,
+      "string_id": 5317,
+      "train": [
+        [
+          49,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "236": {
+      "civs": [],
+      "class": 0,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Hero_Tower",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 49,
+      "interface_kind": 2,
+      "restriction": 7,
+      "string_id": 5318,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 70
+    },
+    "237": {
+      "civs": [],
+      "class": 36,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Hero_Horse_Archer",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 29,
+      "restriction": 7,
+      "string_id": 5319,
+      "train": [
+        [
+          87,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "238": {
+      "class": 11,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Dock_Destruction",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5166,
+      "type": 20
+    },
+    "24": {
+      "class": 11,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Rubble_3x3",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5158,
+      "type": 10
+    },
+    "242": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Wall_L_Rubble",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5156,
+      "type": 10
+    },
+    "243": {
+      "class": 37,
+      "code": "Doppleganger",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 5163,
+      "type": 25
+    },
+    "244": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Farm",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5088,
+      "type": 30
+    },
+    "246": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missile-Laser",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5147,
+      "type": 60
+    },
+    "247": {
+      "class": 11,
+      "code": "Laser_Trail",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5163,
+      "type": 30
+    },
+    "248": {
+      "class": 6,
+      "clearance": [
+        0.2,
+        0.2
+      ],
+      "code": "Soldier_Nuker",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5191,
+      "type": 70
+    },
+    "249": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missile-Nuke",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5142,
+      "type": 60
+    },
+    "25": {
+      "civs": [
+        1,
+        6,
+        7,
+        9,
+        14
+      ],
+      "class": 26,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-El_Archer",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 47,
+      "restriction": 7,
+      "string_id": 5181,
+      "train": [
+        [
+          87,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "250": {
+      "civs": [
+        1,
+        2,
+        5,
+        7,
+        9,
+        11,
+        13,
+        16
+      ],
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Boat-War4",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 30,
+      "restriction": 3,
+      "string_id": 5018,
+      "train": [
+        [
+          45,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "252": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Lumber",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5070,
+      "type": 30
+    },
+    "253": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Fisher",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5061,
+      "type": 30
+    },
+    "254": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Miner",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5072,
+      "type": 30
+    },
+    "255": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Hunter",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5064,
+      "type": 30
+    },
+    "256": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Builder",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5054,
+      "type": 30
+    },
+    "257": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Farmer",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5060,
+      "type": 30
+    },
+    "258": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Forager",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5062,
+      "type": 30
+    },
+    "26": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnG5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5224,
+      "type": 10
+    },
+    "260": {
+      "class": 5,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Fish-Shore_Jump",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 34,
+      "resources": {
+        "food": 250
+      },
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5095,
+      "type": 30
+    },
+    "261": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Chariot_2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5057,
+      "type": 30
+    },
+    "262": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Gazelle",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 37,
+      "restriction": 1,
+      "string_id": 5103,
+      "type": 30
+    },
+    "263": {
+      "class": 5,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Fish-Shore_Swim",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 34,
+      "resources": {
+        "food": 250
+      },
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5096,
+      "type": 30
+    },
+    "264": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_1",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "265": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "266": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_3",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "267": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_4",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "268": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_5",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "269": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_6",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "27": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnG6",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5225,
+      "type": 10
+    },
+    "270": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_7",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "271": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_8",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "272": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_9",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "273": {
+      "class": 34,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Cliffs_10",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 33,
+      "string_id": 5037,
+      "type": 10
+    },
+    "274": {
+      "class": 6,
+      "clearance": [
+        0.2,
+        0.2
+      ],
+      "code": "Soldier_Laser",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5191,
+      "type": 70
+    },
+    "275": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Catapult_Man",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5148,
+      "type": 60
+    },
+    "276": {
+      "class": 3,
+      "clearance": [
+        2.5,
+        2.5
+      ],
+      "code": "Wonder",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 27,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5334,
+      "train": [
+        [
+          118,
+          18
+        ]
+      ],
+      "type": 80
+    },
+    "277": {
+      "civs": [
+        1,
+        2,
+        5,
+        7,
+        9,
+        11,
+        13
+      ],
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Boat-War5",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 52,
+      "restriction": 3,
+      "string_id": 5336,
+      "train": [
+        [
+          45,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "278": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        12,
+        14,
+        15,
+        16
+      ],
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Guard_Tower2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 49,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5335,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 80
+    },
+    "279": {
+      "civs": [
+        2,
+        4,
+        5,
+        10,
+        12,
+        13,
+        14
+      ],
+      "class": 13,
+      "clearance": [
+        0.45,
+        0.45
+      ],
+      "code": "Soldier-Balista2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 53,
+      "restriction": 7,
+      "string_id": 5337,
+      "train": [
+        [
+          49,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "28": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnG2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5221,
+      "type": 10
+    },
+    "280": {
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        13,
+        15
+      ],
+      "class": 13,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Catapult3",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 51,
+      "restriction": 7,
+      "string_id": 5338,
+      "train": [
+        [
+          49,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "281": {
+      "civs": [
+        6,
+        8,
+        9,
+        10,
+        11,
+        15,
+        16
+      ],
+      "class": 36,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Cavalry4",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 48,
+      "restriction": 7,
+      "string_id": 5339,
+      "train": [
+        [
+          87,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "282": {
+      "civs": [
+        3,
+        4,
+        7,
+        9,
+        12,
+        13
+      ],
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Inf6",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 49,
+      "restriction": 7,
+      "string_id": 5340,
+      "train": [
+        [
+          12,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "283": {
+      "civs": [
+        4,
+        9,
+        10,
+        11,
+        12,
+        16
+      ],
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Cavalry3",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 54,
+      "restriction": 7,
+      "string_id": 5341,
+      "train": [
+        [
+          101,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "29": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Drt1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5202,
+      "type": 10
+    },
+    "291": {
+      "civs": [
+        2,
+        5,
+        6,
+        7,
+        8,
+        11,
+        13,
+        14,
+        16
+      ],
+      "class": 28,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Phal3",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 50,
+      "restriction": 7,
+      "string_id": 5342,
+      "train": [
+        [
+          0,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "292": {
+      "civs": [],
+      "class": 20,
+      "clearance": [
+        0.8,
+        0.8
+      ],
+      "code": "Raft",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 21,
+      "restriction": 3,
+      "string_id": 5072,
+      "train": [
+        [
+          45,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "293": {
+      "class": 4,
+      "clearance": [
+        0.3,
+        0.3
+      ],
+      "code": "Man2",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 0,
+      "restriction": 7,
+      "string_id": 5131,
+      "train": [
+        [
+          109,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "294": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Wall_M_Rubble",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5156,
+      "type": 10
+    },
+    "295": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Wall_S_Rubble",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5156,
+      "type": 10
+    },
+    "296": {
+      "class": 14,
+      "clearance": [
+        0.2,
+        0.2
+      ],
+      "code": "Cliff_Waterfall",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "string_id": 5343,
+      "type": 10
+    },
+    "297": {
+      "civs": [],
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Hero_Juggernaut",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 52,
+      "string_id": 5079,
+      "train": [
+        [
+          45,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "298": {
+      "civs": [],
+      "class": 6,
+      "clearance": [
+        0.3,
+        0.3
+      ],
+      "code": "Hero_Medusa",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 0,
+      "restriction": 7,
+      "string_id": 5028,
+      "train": [
+        [
+          109,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "299": {
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Scout",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 31,
+      "restriction": 7,
+      "string_id": 5190,
+      "train": [
+        [
+          101,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "30": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Drt2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5203,
+      "type": 10
+    },
+    "300": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Aligator",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "302": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Fire",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "resources": {
+        "wood": 10
+      },
+      "string_id": 5092,
+      "type": 20
+    },
+    "303": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_A_Cavalry",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5047,
+      "type": 30
+    },
+    "304": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_d2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5227,
+      "type": 10
+    },
+    "305": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_d3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5228,
+      "type": 10
+    },
+    "306": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_d4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5229,
+      "type": 10
+    },
+    "307": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5230,
+      "type": 10
+    },
+    "308": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5232,
+      "type": 10
+    },
+    "309": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5233,
+      "type": 10
+    },
+    "31": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Drt4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5205,
+      "type": 10
+    },
+    "310": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5233,
+      "type": 10
+    },
+    "311": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g6",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5234,
+      "type": 10
+    },
+    "312": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g7",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5235,
+      "type": 10
+    },
+    "313": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_g8",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 4,
+      "side_terrain": [
+        0
+      ],
+      "string_id": 5236,
+      "type": 10
+    },
+    "314": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5240,
+      "type": 10
+    },
+    "315": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s10",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5241,
+      "type": 10
+    },
+    "316": {
+      "class": 14,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Terrain_Rock_s11",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5242,
+      "type": 10
+    },
+    "317": {
+      "class": 14,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Terrain_Rock_s12",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5243,
+      "type": 10
+    },
+    "318": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5245,
+      "type": 10
+    },
+    "319": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5246,
+      "type": 10
+    },
+    "32": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Drt5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5206,
+      "type": 10
+    },
+    "320": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5247,
+      "type": 10
+    },
+    "321": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s6",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5248,
+      "type": 10
+    },
+    "322": {
+      "class": 14,
+      "clearance": [
+        0.8,
+        0.8
+      ],
+      "code": "Terrain_Rock_s7",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5249,
+      "type": 10
+    },
+    "323": {
+      "class": 14,
+      "clearance": [
+        0.8,
+        0.8
+      ],
+      "code": "Terrain_Rock_s8",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5250,
+      "type": 10
+    },
+    "324": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_s9",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 3,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5251,
+      "type": 10
+    },
+    "326": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Smoke_Battlex1",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5164,
+      "type": 20
+    },
+    "327": {
+      "class": 11,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Smoke_Battlex2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5164,
+      "type": 20
+    },
+    "328": {
+      "class": 11,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Smoke_Battlex3",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5164,
+      "type": 20
+    },
+    "329": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Catapult_Stone_F",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5149,
+      "type": 60
+    },
+    "330": {
+      "class": 30,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Flag_B",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "string_id": 5100,
+      "type": 30
+    },
+    "331": {
+      "class": 11,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "RubbleSmokex3",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5159,
+      "type": 10
+    },
+    "332": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_m1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5237,
+      "type": 10
+    },
+    "333": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_m2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "resources": {
+        "stone": 2
+      },
+      "restriction": 3,
+      "string_id": 5238,
+      "type": 10
+    },
+    "334": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Rock_m3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "resources": {
+        "stone": 2
+      },
+      "restriction": 3,
+      "string_id": 5239,
+      "type": 10
+    },
+    "335": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Elephant",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5059,
+      "type": 30
+    },
+    "336": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Elarch",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5059,
+      "type": 30
+    },
+    "337": {
+      "class": 13,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Space_Ship",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 70
+    },
+    "338": {
+      "civs": [
+        1,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        14,
+        15
+      ],
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Camel",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 57,
+      "restriction": 7,
+      "string_id": 5351,
+      "train": [
+        [
+          101,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "339": {
+      "civs": [
+        1,
+        3,
+        6,
+        7,
+        8,
+        10,
+        13,
+        15
+      ],
+      "class": 35,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Hvy_Chariot",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 59,
+      "restriction": 7,
+      "string_id": 5353,
+      "train": [
+        [
+          101,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "34": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Catapult_Stone",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5148,
+      "type": 60
+    },
+    "340": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnG1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5220,
+      "type": 10
+    },
+    "341": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Scout",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5076,
+      "type": 30
+    },
+    "342": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Cat2",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5055,
+      "type": 30
+    },
+    "343": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Dead_Tree",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5201,
+      "type": 10
+    },
+    "344": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Drt3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5204,
+      "type": 10
+    },
+    "345": {
+      "civs": [
+        6,
+        7,
+        9,
+        14,
+        15,
+        16
+      ],
+      "class": 24,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Armor_Elephant",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 58,
+      "restriction": 7,
+      "string_id": 5354,
+      "train": [
+        [
+          101,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "346": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missile-Warboat_6",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5149,
+      "type": 60
+    },
+    "347": {
+      "civs": [
+        1,
+        2,
+        3,
+        5,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 39,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Slinger",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 56,
+      "restriction": 7,
+      "string_id": 5350,
+      "train": [
+        [
+          12,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "348": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Grs1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5208,
+      "type": 10
+    },
+    "349": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Grs2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5209,
+      "type": 10
+    },
+    "35": {
+      "class": 13,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Catapult1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 14,
+      "restriction": 7,
+      "string_id": 5174,
+      "train": [
+        [
+          49,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "350": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Grs3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5210,
+      "type": 10
+    },
+    "351": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Grs4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5211,
+      "type": 10
+    },
+    "352": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Grs5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5212,
+      "type": 10
+    },
+    "353": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Grs6",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5213,
+      "type": 10
+    },
+    "354": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnD1",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5214,
+      "type": 10
+    },
+    "355": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnD2",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5215,
+      "type": 10
+    },
+    "356": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnD3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5216,
+      "type": 10
+    },
+    "357": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnD4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5217,
+      "type": 10
+    },
+    "358": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnD5",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5218,
+      "type": 10
+    },
+    "359": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnD6",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5219,
+      "type": 10
+    },
+    "36": {
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10,
+        13,
+        15
+      ],
+      "class": 13,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Catapult2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 15,
+      "restriction": 7,
+      "string_id": 5175,
+      "train": [
+        [
+          49,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "360": {
+      "civs": [
+        3,
+        4,
+        6,
+        8,
+        10,
+        14,
+        15
+      ],
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Boat-War6",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 60,
+      "restriction": 3,
+      "string_id": 5352,
+      "train": [
+        [
+          45,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "361": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missile-Sling_Bullet",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5148,
+      "type": 60
+    },
+    "362": {
+      "class": 10,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Alligator_King",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 41,
+      "resources": {
+        "food": 100
+      },
+      "restriction": 7,
+      "string_id": 5355,
+      "type": 70
+    },
+    "363": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_slinger",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 30
+    },
+    "365": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree91",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5288,
+      "type": 90
+    },
+    "366": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree92",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5289,
+      "type": 90
+    },
+    "367": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree93",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 40
+      },
+      "restriction": 4,
+      "string_id": 5290,
+      "type": 90
+    },
+    "368": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Boat_Stone",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5145,
+      "type": 60
+    },
+    "369": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Lion",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 40,
+      "restriction": 1,
+      "string_id": 5127,
+      "type": 30
+    },
+    "37": {
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Cavalry1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 11,
+      "restriction": 7,
+      "string_id": 5176,
+      "train": [
+        [
+          101,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "370": {
+      "class": 5,
+      "clearance": [
+        3.0,
+        3.0
+      ],
+      "code": "Fish_Whale",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 34,
+      "resources": {
+        "food": 250
+      },
+      "restriction": 3,
+      "string_id": 5093,
+      "type": 30
+    },
+    "372": {
+      "class": 6,
+      "clearance": [
+        0.45,
+        0.45
+      ],
+      "code": "Winsett's_Z",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 65535,
+      "type": 70
+    },
+    "373": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Z_Rocket",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 60
+    },
+    "374": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_camel",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 30
+    },
+    "375": {
+      "civs": [],
+      "class": 24,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Hero_Hannibal",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 12,
+      "restriction": 7,
+      "string_id": 5356,
+      "train": [
+        [
+          101,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "376": {
+      "civs": [],
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Hero_Caesar",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 54,
+      "restriction": 7,
+      "string_id": 5357,
+      "train": [
+        [
+          101,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "377": {
+      "civs": [],
+      "class": 22,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Hero_Cleopatra",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 52,
+      "restriction": 3,
+      "string_id": 5360,
+      "train": [
+        [
+          45,
+          5
+        ]
+      ],
+      "type": 70
+    },
+    "378": {
+      "civs": [],
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Hero_Mark_Antony",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 4,
+      "restriction": 7,
+      "string_id": 5359,
+      "train": [
+        [
+          12,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "379": {
+      "civs": [],
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Hero_Scipio",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 54,
+      "restriction": 7,
+      "string_id": 5358,
+      "train": [
+        [
+          101,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "38": {
+      "civs": [
+        2,
+        4,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16
+      ],
+      "class": 12,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Cavalry2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 13,
+      "restriction": 7,
+      "string_id": 5177,
+      "train": [
+        [
+          101,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "380": {
+      "civs": [],
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Hero_Zenobia's_Tower",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 49,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5361,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 80
+    },
+    "383": {
+      "civs": [],
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Mirror_Tower",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 49,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5364,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 80
+    },
+    "384": {
+      "class": 9,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Gazelle_King",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 37,
+      "resources": {
+        "food": 400
+      },
+      "restriction": 1,
+      "string_id": 5365,
+      "type": 70
+    },
+    "385": {
+      "class": 14,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Terrain_Beach_Rock",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5367,
+      "type": 30
+    },
+    "386": {
+      "class": 6,
+      "clearance": [
+        0.2,
+        0.2
+      ],
+      "code": "Soldier_Mech",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5366,
+      "type": 70
+    },
+    "387": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Mech",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5064,
+      "type": 20
+    },
+    "388": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missile-mech_gun",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 5147,
+      "type": 60
+    },
+    "389": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_H_Chariot",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 30
+    },
+    "39": {
+      "civs": [
+        3,
+        4,
+        6,
+        8,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16
+      ],
+      "class": 36,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Cavalry3_Arch",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 29,
+      "restriction": 7,
+      "string_id": 5178,
+      "train": [
+        [
+          87,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "390": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Armored_Elephant",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 30
+    },
+    "391": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_pine_10",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5305,
+      "type": 30
+    },
+    "392": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_pine_9",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5305,
+      "type": 30
+    },
+    "393": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree_pine_imp",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5269,
+      "type": 30
+    },
+    "394": {
+      "civs": [],
+      "class": 6,
+      "clearance": [
+        0.3,
+        0.3
+      ],
+      "code": "Saint_Francis",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 1,
+      "restriction": 7,
+      "string_id": 5368,
+      "train": [
+        [
+          104,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "395": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Lightning_Bolt",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "no_graphic": true,
+      "string_id": 5147,
+      "type": 60
+    },
+    "396": {
+      "class": 38,
+      "code": "Dragon",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5151,
+      "type": 40
+    },
+    "397": {
+      "class": 6,
+      "clearance": [
+        0.45,
+        0.45
+      ],
+      "code": "Winsett's_Mom's_Z",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5369,
+      "type": 70
+    },
+    "398": {
+      "class": 6,
+      "clearance": [
+        0.2,
+        0.2
+      ],
+      "code": "Winsett's_baby",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": -1,
+      "restriction": 7,
+      "string_id": 5370,
+      "type": 70
+    },
+    "399": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_baby_z",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 0,
+      "type": 30
+    },
+    "4": {
+      "class": 0,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Archer1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 6,
+      "restriction": 7,
+      "string_id": 5170,
+      "train": [
+        [
+          87,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "40": {
+      "civs": [
+        1,
+        3,
+        4,
+        6,
+        7,
+        8,
+        10,
+        13,
+        15
+      ],
+      "class": 35,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Chariot1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 10,
+      "restriction": 7,
+      "string_id": 5179,
+      "train": [
+        [
+          101,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "41": {
+      "civs": [
+        1,
+        3,
+        4,
+        6,
+        7,
+        8,
+        10,
+        15
+      ],
+      "class": 23,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Chariot2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 28,
+      "restriction": 7,
+      "string_id": 5180,
+      "train": [
+        [
+          87,
+          3
+        ]
+      ],
+      "type": 70
+    },
+    "43": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Man",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5071,
+      "type": 30
+    },
+    "45": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Dock_1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 6,
+      "interface_kind": 2,
+      "restriction": 6,
+      "side_terrain": [
+        2
+      ],
+      "string_id": 5083,
+      "train": [
+        [
+          118,
+          5
+        ]
+      ],
+      "type": 80
+    },
+    "46": {
+      "civs": [
+        1,
+        6,
+        7,
+        8,
+        9,
+        14,
+        15,
+        16
+      ],
+      "class": 24,
+      "clearance": [
+        0.48,
+        0.48
+      ],
+      "code": "Soldier-Elephant",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 12,
+      "restriction": 7,
+      "string_id": 5182,
+      "train": [
+        [
+          101,
+          4
+        ]
+      ],
+      "type": 70
+    },
+    "47": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_Drt6",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5207,
+      "type": 10
+    },
+    "48": {
+      "class": 10,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Elephant",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 33,
+      "resources": {
+        "food": 300
+      },
+      "restriction": 1,
+      "string_id": 5085,
+      "type": 70
+    },
+    "49": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Siege_Workshop",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 9,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5162,
+      "train": [
+        [
+          118,
+          16
+        ]
+      ],
+      "type": 80
+    },
+    "5": {
+      "civs": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 0,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Archer2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 7,
+      "restriction": 7,
+      "string_id": 5171,
+      "train": [
+        [
+          87,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "50": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Farm",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 10,
+      "interface_kind": 2,
+      "resources": {
+        "food": 15
+      },
+      "restriction": 9,
+      "string_id": 5088,
+      "train": [
+        [
+          118,
+          8
+        ]
+      ],
+      "type": 80
+    },
+    "52": {
+      "class": 5,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Fish-tuna",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 34,
+      "resources": {
+        "food": 250
+      },
+      "restriction": 3,
+      "string_id": 5097,
+      "type": 20
+    },
+    "53": {
+      "class": 5,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Fish-Salmon",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 34,
+      "resources": {
+        "food": 250
+      },
+      "restriction": 3,
+      "string_id": 5094,
+      "type": 20
+    },
+    "54": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnG3",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5222,
+      "type": 10
+    },
+    "55": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Terrain_Path_StnG4",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "restriction": 4,
+      "string_id": 5223,
+      "type": 10
+    },
+    "56": {
+      "class": 15,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Tree94",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": 35,
+      "resources": {
+        "wood": 75
+      },
+      "restriction": 4,
+      "string_id": 5291,
+      "type": 90
+    },
+    "59": {
+      "class": 7,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Forage-Fruit",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 36,
+      "resources": {
+        "food": 150
+      },
+      "restriction": 8,
+      "string_id": 5101,
+      "type": 10
+    },
+    "6": {
+      "civs": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        11,
+        15,
+        16
+      ],
+      "class": 0,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Archer3",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 8,
+      "restriction": 7,
+      "string_id": 5172,
+      "train": [
+        [
+          87,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "61": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Smoke",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5163,
+      "type": 20
+    },
+    "65": {
+      "class": 9,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Gazelle",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 37,
+      "resources": {
+        "food": 150
+      },
+      "restriction": 1,
+      "string_id": 5103,
+      "type": 70
+    },
+    "66": {
+      "class": 32,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Mine-Gold",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": 39,
+      "resources": {
+        "gold": 400
+      },
+      "restriction": 8,
+      "string_id": 5134,
+      "type": 30
+    },
+    "68": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Granary",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 11,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5106,
+      "train": [
+        [
+          118,
+          3
+        ]
+      ],
+      "type": 80
+    },
+    "69": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        14,
+        15,
+        16
+      ],
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Guard_Tower",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 13,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5117,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 80
+    },
+    "70": {
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "House",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 15,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5119,
+      "train": [
+        [
+          118,
+          1
+        ]
+      ],
+      "type": 80
+    },
+    "71": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Town_Center2",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 36,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5255,
+      "train": [
+        [
+          118,
+          14
+        ]
+      ],
+      "type": 80
+    },
+    "72": {
+      "class": 27,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Wall_Small",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 42,
+      "interface_kind": 2,
+      "restriction": 10,
+      "string_id": 5299,
+      "train": [
+        [
+          118,
+          10
+        ]
+      ],
+      "type": 80
+    },
+    "73": {
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Inf1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 2,
+      "restriction": 7,
+      "string_id": 5183,
+      "train": [
+        [
+          12,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "74": {
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Inf2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 3,
+      "restriction": 7,
+      "string_id": 5184,
+      "train": [
+        [
+          12,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "75": {
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Inf3",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 4,
+      "restriction": 7,
+      "string_id": 5185,
+      "train": [
+        [
+          12,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "76": {
+      "civs": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Inf4",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 5,
+      "restriction": 7,
+      "string_id": 5186,
+      "train": [
+        [
+          12,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "77": {
+      "civs": [
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        12,
+        13,
+        14
+      ],
+      "class": 6,
+      "clearance": [
+        0.35,
+        0.35
+      ],
+      "code": "Soldier-Inf5",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 27,
+      "restriction": 7,
+      "string_id": 5187,
+      "train": [
+        [
+          12,
+          2
+        ]
+      ],
+      "type": 70
+    },
+    "79": {
+      "class": 3,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Watch_Tower",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 26,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5300,
+      "train": [
+        [
+          118,
+          9
+        ]
+      ],
+      "type": 80
+    },
+    "80": {
+      "class": 14,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Shallows",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5161,
+      "type": 30
+    },
+    "82": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Government_Center",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 19,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5105,
+      "train": [
+        [
+          118,
+          12
+        ]
+      ],
+      "type": 80
+    },
+    "83": {
+      "class": 4,
+      "clearance": [
+        0.3,
+        0.3
+      ],
+      "code": "Man",
+      "combat_level": 3,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 0,
+      "restriction": 7,
+      "string_id": 5131,
+      "train": [
+        [
+          109,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "84": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Market1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 21,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5132,
+      "train": [
+        [
+          118,
+          11
+        ]
+      ],
+      "type": 80
+    },
+    "85": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Dead_Alligator",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5048,
+      "type": 30
+    },
+    "86": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Stable1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": true,
+      "icon": 24,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5192,
+      "train": [
+        [
+          118,
+          7
+        ]
+      ],
+      "type": 80
+    },
+    "87": {
+      "class": 3,
+      "clearance": [
+        1.5,
+        1.5
+      ],
+      "code": "Range1",
+      "combat_level": 2,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 1,
+      "interface_kind": 2,
+      "restriction": 4,
+      "string_id": 5154,
+      "train": [
+        [
+          118,
+          6
+        ]
+      ],
+      "type": 80
+    },
+    "89": {
+      "class": 10,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Lion_King",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 40,
+      "resources": {
+        "food": 100
+      },
+      "restriction": 1,
+      "string_id": 5128,
+      "type": 70
+    },
+    "9": {
+      "class": 11,
+      "clearance": [
+        0.5,
+        0.5
+      ],
+      "code": "Missle-Arrow",
+      "hero_mode": 0,
+      "hidden": true,
+      "icon": -1,
+      "string_id": 5143,
+      "type": 60
+    },
+    "90": {
+      "class": 10,
+      "clearance": [
+        1.0,
+        1.0
+      ],
+      "code": "Elephant_King",
+      "combat_level": 1,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 33,
+      "resources": {
+        "food": 300
+      },
+      "restriction": 1,
+      "string_id": 5086,
+      "type": 70
+    },
+    "93": {
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 28,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Phal1",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 16,
+      "restriction": 7,
+      "string_id": 5188,
+      "train": [
+        [
+          0,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "94": {
+      "civs": [
+        2,
+        5,
+        6,
+        7,
+        8,
+        11,
+        13,
+        14,
+        15,
+        16
+      ],
+      "class": 28,
+      "clearance": [
+        0.4,
+        0.4
+      ],
+      "code": "Soldier-Phal2",
+      "combat_level": 4,
+      "hero_mode": null,
+      "hidden": false,
+      "icon": 17,
+      "restriction": 7,
+      "string_id": 5189,
+      "train": [
+        [
+          0,
+          1
+        ]
+      ],
+      "type": 70
+    },
+    "95": {
+      "class": 10,
+      "code": "Pigeon",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "string_id": 5151,
+      "type": 40
+    },
+    "96": {
+      "class": 10,
+      "code": "Pigeon_Big",
+      "hero_mode": 0,
+      "hidden": false,
+      "icon": -1,
+      "string_id": 5152,
+      "type": 40
+    }
+  },
+  "techs": {
+    "0": {
+      "civ": null,
+      "code": "Dock",
+      "gives": [
+        13,
+        15
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "1": {
+      "civ": null,
+      "code": "Light Transport",
+      "gives": [
+        17
+      ],
+      "icon": 21,
+      "string_id": 7001
+    },
+    "10": {
+      "civ": null,
+      "code": "Granary",
+      "icon": 69,
+      "string_id": 0
+    },
+    "100": {
+      "civ": null,
+      "code": "Stone Age",
+      "gives": [
+        70,
+        83
+      ],
+      "icon": 70,
+      "string_id": 0
+    },
+    "101": {
+      "age": 2,
+      "civ": null,
+      "code": "Tool Age",
+      "gives": [
+        154
+      ],
+      "icon": 65,
+      "research": [
+        [
+          109,
+          6
+        ]
+      ],
+      "string_id": 7063
+    },
+    "102": {
+      "age": 3,
+      "civ": null,
+      "code": "Bronze Age",
+      "gives": [
+        71,
+        86,
+        105,
+        116,
+        132,
+        133
+      ],
+      "icon": 66,
+      "research": [
+        [
+          109,
+          6
+        ]
+      ],
+      "string_id": 7064
+    },
+    "103": {
+      "age": 4,
+      "civ": null,
+      "code": "Iron Age",
+      "gives": [
+        293
+      ],
+      "icon": 67,
+      "research": [
+        [
+          109,
+          6
+        ]
+      ],
+      "string_id": 7065
+    },
+    "105": {
+      "civ": null,
+      "code": "Granary, Storage Pit, Barracks",
+      "icon": 0,
+      "string_id": 0
+    },
+    "106": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Balistics",
+      "icon": 53,
+      "research": [
+        [
+          82,
+          7
+        ]
+      ],
+      "string_id": 7023
+    },
+    "107": {
+      "age": 3,
+      "civ": null,
+      "code": "Wood Working",
+      "icon": 76,
+      "research": [
+        [
+          84,
+          1
+        ]
+      ],
+      "string_id": 7068
+    },
+    "108": {
+      "age": 3,
+      "civ": null,
+      "code": "Gold Mining",
+      "icon": 74,
+      "research": [
+        [
+          84,
+          3
+        ]
+      ],
+      "string_id": 7069
+    },
+    "109": {
+      "age": 3,
+      "civ": null,
+      "code": "Stone Mining",
+      "icon": 17,
+      "research": [
+        [
+          84,
+          2
+        ]
+      ],
+      "string_id": 7070
+    },
+    "11": {
+      "age": 3,
+      "civ": null,
+      "code": "Stone Wall",
+      "gives": [
+        72
+      ],
+      "icon": 29,
+      "research": [
+        [
+          68,
+          6
+        ]
+      ],
+      "string_id": 7010
+    },
+    "110": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "code": "Craftmanship",
+      "icon": 73,
+      "research": [
+        [
+          84,
+          1
+        ]
+      ],
+      "string_id": 7071
+    },
+    "111": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        11,
+        12,
+        13,
+        15
+      ],
+      "code": "Siege Craft",
+      "icon": 60,
+      "research": [
+        [
+          84,
+          2
+        ]
+      ],
+      "string_id": 7072
+    },
+    "112": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Architecture",
+      "icon": 75,
+      "research": [
+        [
+          82,
+          3
+        ]
+      ],
+      "string_id": 7073
+    },
+    "113": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        11,
+        13,
+        14,
+        16
+      ],
+      "code": "Aristocracy",
+      "icon": 71,
+      "research": [
+        [
+          82,
+          6
+        ]
+      ],
+      "string_id": 7074
+    },
+    "114": {
+      "age": 4,
+      "civ": null,
+      "code": "Writing",
+      "icon": 4,
+      "research": [
+        [
+          82,
+          2
+        ]
+      ],
+      "string_id": 7075
+    },
+    "115": {
+      "civ": null,
+      "code": "shadow gb->tc",
+      "gives": [
+        109
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "116": {
+      "civ": null,
+      "code": "shadow gb->wonder",
+      "gives": [
+        276
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "117": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Iron Shield",
+      "icon": 58,
+      "research": [
+        [
+          103,
+          10
+        ]
+      ],
+      "string_id": 7078
+    },
+    "118": {
+      "civ": null,
+      "code": "Naval Ram",
+      "gives": [
+        360
+      ],
+      "icon": 0,
+      "string_id": 7093
+    },
+    "119": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14
+      ],
+      "code": "Medicine",
+      "icon": 97,
+      "research": [
+        [
+          104,
+          5
+        ]
+      ],
+      "string_id": 7094
+    },
+    "12": {
+      "age": 4,
+      "civ": null,
+      "code": "Sentry Tower",
+      "gives": [
+        199
+      ],
+      "icon": 49,
+      "research": [
+        [
+          68,
+          7
+        ]
+      ],
+      "string_id": 7011
+    },
+    "120": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        3,
+        4,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14
+      ],
+      "code": "Martyrdom",
+      "icon": 95,
+      "research": [
+        [
+          104,
+          10
+        ]
+      ],
+      "string_id": 7095
+    },
+    "121": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16
+      ],
+      "code": "Logistics",
+      "icon": 96,
+      "research": [
+        [
+          82,
+          4
+        ]
+      ],
+      "string_id": 7090
+    },
+    "122": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        5,
+        6,
+        7,
+        9,
+        10,
+        13,
+        14,
+        16
+      ],
+      "code": "Tower Shield",
+      "icon": 98,
+      "research": [
+        [
+          103,
+          10
+        ]
+      ],
+      "string_id": 7096
+    },
+    "123": {
+      "civ": null,
+      "code": "Slinger",
+      "gives": [
+        347
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "124": {
+      "civ": null,
+      "code": "Camel",
+      "gives": [
+        338
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "125": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        6,
+        7,
+        9,
+        14,
+        15,
+        16
+      ],
+      "code": "Armored Elephants",
+      "gives": [
+        345
+      ],
+      "icon": 99,
+      "research": [
+        [
+          101,
+          9
+        ]
+      ],
+      "string_id": 7092
+    },
+    "126": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        3,
+        6,
+        7,
+        8,
+        10,
+        13,
+        15
+      ],
+      "code": "Heavy Chariots",
+      "gives": [
+        339
+      ],
+      "icon": 100,
+      "research": [
+        [
+          101,
+          7
+        ]
+      ],
+      "string_id": 7091
+    },
+    "13": {
+      "age": 4,
+      "civ": null,
+      "code": "Medium Wall",
+      "gives": [
+        117
+      ],
+      "icon": 31,
+      "research": [
+        [
+          68,
+          6
+        ]
+      ],
+      "string_id": 7012
+    },
+    "14": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        15
+      ],
+      "code": "Fortifications",
+      "gives": [
+        155
+      ],
+      "icon": 35,
+      "research": [
+        [
+          68,
+          6
+        ]
+      ],
+      "string_id": 7013
+    },
+    "15": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        14,
+        15,
+        16
+      ],
+      "code": "Guard Tower",
+      "gives": [
+        69
+      ],
+      "icon": 77,
+      "research": [
+        [
+          68,
+          7
+        ]
+      ],
+      "string_id": 7014
+    },
+    "16": {
+      "age": 3,
+      "civ": null,
+      "code": "Watch Tower",
+      "gives": [
+        79
+      ],
+      "icon": 34,
+      "research": [
+        [
+          68,
+          7
+        ]
+      ],
+      "string_id": 7015
+    },
+    "17": {
+      "civ": null,
+      "code": "Temple",
+      "gives": [
+        125
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "18": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        7,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15
+      ],
+      "code": "Afterlife",
+      "icon": 10,
+      "research": [
+        [
+          104,
+          6
+        ]
+      ],
+      "string_id": 7020
+    },
+    "19": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        3,
+        4,
+        7,
+        9,
+        10,
+        12,
+        13
+      ],
+      "code": "Monotheism",
+      "icon": 63,
+      "research": [
+        [
+          104,
+          7
+        ]
+      ],
+      "string_id": 7018
+    },
+    "2": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        8,
+        12,
+        14,
+        15,
+        16
+      ],
+      "code": "Catapult Tower",
+      "gives": [
+        278
+      ],
+      "icon": 89,
+      "research": [
+        [
+          68,
+          7
+        ]
+      ],
+      "string_id": 7079
+    },
+    "20": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        7,
+        9,
+        10,
+        12,
+        13,
+        15
+      ],
+      "code": "Fanaticism",
+      "icon": 8,
+      "research": [
+        [
+          104,
+          8
+        ]
+      ],
+      "string_id": 7022
+    },
+    "21": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14
+      ],
+      "code": "Mysticism",
+      "icon": 15,
+      "research": [
+        [
+          104,
+          3
+        ]
+      ],
+      "string_id": 7019
+    },
+    "22": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        6,
+        7,
+        9,
+        10,
+        12,
+        15
+      ],
+      "code": "Astrology",
+      "icon": 62,
+      "research": [
+        [
+          104,
+          2
+        ]
+      ],
+      "string_id": 7016
+    },
+    "23": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        3,
+        4,
+        7,
+        9,
+        10,
+        12,
+        13,
+        14,
+        15
+      ],
+      "code": "Jihad",
+      "icon": 13,
+      "research": [
+        [
+          104,
+          9
+        ]
+      ],
+      "string_id": 7021
+    },
+    "24": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ],
+      "code": "Polytheism",
+      "icon": 64,
+      "research": [
+        [
+          104,
+          4
+        ]
+      ],
+      "string_id": 7017
+    },
+    "25": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        5,
+        7,
+        9,
+        11,
+        13
+      ],
+      "code": "Juggernaught",
+      "gives": [
+        277
+      ],
+      "icon": 83,
+      "research": [
+        [
+          45,
+          10
+        ]
+      ],
+      "string_id": 7080
+    },
+    "26": {
+      "civ": null,
+      "code": "Market",
+      "gives": [
+        50
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "27": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        4,
+        5,
+        10,
+        12,
+        13,
+        14
+      ],
+      "code": "Helepolis",
+      "gives": [
+        279
+      ],
+      "icon": 84,
+      "research": [
+        [
+          49,
+          7
+        ]
+      ],
+      "string_id": 7081
+    },
+    "28": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "code": "Wheel",
+      "icon": 14,
+      "research": [
+        [
+          84,
+          4
+        ]
+      ],
+      "string_id": 7025
+    },
+    "3": {
+      "civ": null,
+      "code": "Small War Ship",
+      "gives": [
+        19
+      ],
+      "icon": 24,
+      "string_id": 7003
+    },
+    "30": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        11,
+        12,
+        13,
+        14,
+        16
+      ],
+      "code": "Coinage",
+      "icon": 16,
+      "research": [
+        [
+          84,
+          3
+        ]
+      ],
+      "string_id": 7027
+    },
+    "31": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        16
+      ],
+      "code": "Plow",
+      "icon": 32,
+      "research": [
+        [
+          84,
+          6
+        ]
+      ],
+      "string_id": 7028
+    },
+    "32": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Artisanship",
+      "icon": 72,
+      "research": [
+        [
+          84,
+          1
+        ]
+      ],
+      "string_id": 7029
+    },
+    "33": {
+      "civ": null,
+      "code": "Government",
+      "icon": 69,
+      "string_id": 0
+    },
+    "34": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13,
+        14,
+        15
+      ],
+      "code": "Nobility",
+      "icon": 3,
+      "research": [
+        [
+          82,
+          1
+        ]
+      ],
+      "string_id": 7030
+    },
+    "35": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        13,
+        14
+      ],
+      "code": "Engineering",
+      "icon": 5,
+      "research": [
+        [
+          82,
+          9
+        ]
+      ],
+      "string_id": 7031
+    },
+    "36": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        13,
+        15
+      ],
+      "code": "Massive Catapult",
+      "gives": [
+        280
+      ],
+      "icon": 82,
+      "research": [
+        [
+          49,
+          6
+        ]
+      ],
+      "string_id": 7082
+    },
+    "37": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        14,
+        15,
+        16
+      ],
+      "code": "Alchemy",
+      "icon": 9,
+      "research": [
+        [
+          82,
+          8
+        ]
+      ],
+      "string_id": 7033
+    },
+    "38": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        6,
+        8,
+        9,
+        10,
+        11,
+        15,
+        16
+      ],
+      "code": "Advanced Horse Archer",
+      "gives": [
+        281
+      ],
+      "icon": 79,
+      "research": [
+        [
+          87,
+          9
+        ]
+      ],
+      "string_id": 7083
+    },
+    "39": {
+      "civ": null,
+      "code": "Storage Pit",
+      "icon": 69,
+      "string_id": 0
+    },
+    "4": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Fishing Ship",
+      "gives": [
+        14
+      ],
+      "icon": 20,
+      "research": [
+        [
+          45,
+          6
+        ]
+      ],
+      "string_id": 7004
+    },
+    "40": {
+      "age": 3,
+      "civ": null,
+      "code": "Leather Armor - Soldiers",
+      "icon": 37,
+      "research": [
+        [
+          103,
+          7
+        ]
+      ],
+      "string_id": 7035
+    },
+    "41": {
+      "age": 3,
+      "civ": null,
+      "code": "Leather Armor - Archers",
+      "icon": 38,
+      "research": [
+        [
+          103,
+          8
+        ]
+      ],
+      "string_id": 7036
+    },
+    "42": {
+      "age": 3,
+      "civ": null,
+      "code": "Leather Armor Mounted",
+      "icon": 39,
+      "research": [
+        [
+          103,
+          9
+        ]
+      ],
+      "string_id": 7037
+    },
+    "43": {
+      "age": 4,
+      "civ": null,
+      "code": "Scale Armor - Soldiers",
+      "icon": 40,
+      "research": [
+        [
+          103,
+          7
+        ]
+      ],
+      "string_id": 7038
+    },
+    "44": {
+      "age": 4,
+      "civ": null,
+      "code": "Scale Armor - Archers",
+      "icon": 41,
+      "research": [
+        [
+          103,
+          8
+        ]
+      ],
+      "string_id": 7039
+    },
+    "45": {
+      "age": 4,
+      "civ": null,
+      "code": "Scale Armor - Cavalry",
+      "icon": 42,
+      "research": [
+        [
+          103,
+          9
+        ]
+      ],
+      "string_id": 7040
+    },
+    "46": {
+      "age": 3,
+      "civ": null,
+      "code": "Tool Working",
+      "icon": 69,
+      "research": [
+        [
+          103,
+          6
+        ]
+      ],
+      "string_id": 7041
+    },
+    "47": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        2,
+        3,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Bronze Shield",
+      "icon": 19,
+      "research": [
+        [
+          103,
+          10
+        ]
+      ],
+      "string_id": 7056
+    },
+    "48": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        5,
+        6,
+        8,
+        9,
+        10,
+        11,
+        13,
+        15,
+        16
+      ],
+      "code": "Chain Mail - Soldiers",
+      "icon": 43,
+      "research": [
+        [
+          103,
+          7
+        ]
+      ],
+      "string_id": 7042
+    },
+    "49": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        5,
+        6,
+        8,
+        9,
+        10,
+        11,
+        13,
+        15,
+        16
+      ],
+      "code": "Chain Mail - Archers",
+      "icon": 44,
+      "research": [
+        [
+          103,
+          8
+        ]
+      ],
+      "string_id": 7043
+    },
+    "5": {
+      "age": 4,
+      "civ": null,
+      "code": "Medium War Ship",
+      "gives": [
+        20
+      ],
+      "icon": 24,
+      "research": [
+        [
+          45,
+          9
+        ]
+      ],
+      "string_id": 7005
+    },
+    "50": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        5,
+        6,
+        8,
+        9,
+        10,
+        11,
+        13,
+        15,
+        16
+      ],
+      "code": "Chain Mail - Cavalry",
+      "icon": 28,
+      "research": [
+        [
+          103,
+          9
+        ]
+      ],
+      "string_id": 7044
+    },
+    "51": {
+      "age": 4,
+      "civ": null,
+      "code": "Metal Working",
+      "icon": 33,
+      "research": [
+        [
+          103,
+          6
+        ]
+      ],
+      "string_id": 7045
+    },
+    "52": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        4,
+        5,
+        6,
+        9,
+        10,
+        11,
+        12,
+        13,
+        16
+      ],
+      "code": "Metalurgy",
+      "icon": 36,
+      "research": [
+        [
+          103,
+          6
+        ]
+      ],
+      "string_id": 7046
+    },
+    "53": {
+      "civ": null,
+      "code": "Siege Workshop",
+      "gives": [
+        35
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "54": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        8,
+        9,
+        10,
+        13,
+        15
+      ],
+      "code": "Heavy Catapult",
+      "gives": [
+        36
+      ],
+      "icon": 59,
+      "research": [
+        [
+          49,
+          6
+        ]
+      ],
+      "string_id": 7047
+    },
+    "55": {
+      "civ": null,
+      "code": "Archery Range",
+      "gives": [
+        4
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "56": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Improved bow",
+      "gives": [
+        5
+      ],
+      "icon": 51,
+      "research": [
+        [
+          87,
+          7
+        ]
+      ],
+      "string_id": 7048
+    },
+    "57": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        11,
+        15,
+        16
+      ],
+      "code": "Composit bow",
+      "gives": [
+        6
+      ],
+      "icon": 52,
+      "research": [
+        [
+          87,
+          7
+        ]
+      ],
+      "string_id": 7049
+    },
+    "58": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        4,
+        5,
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Balista",
+      "gives": [
+        11
+      ],
+      "icon": 53,
+      "research": [
+        [
+          49,
+          7
+        ]
+      ],
+      "string_id": 7050
+    },
+    "59": {
+      "civ": null,
+      "code": "Chariot Archer",
+      "gives": [
+        41
+      ],
+      "icon": 54,
+      "string_id": 7051
+    },
+    "6": {
+      "age": 4,
+      "civ": null,
+      "code": "Merchant Ship",
+      "gives": [
+        16
+      ],
+      "icon": 23,
+      "research": [
+        [
+          45,
+          7
+        ]
+      ],
+      "string_id": 7006
+    },
+    "60": {
+      "civ": null,
+      "code": "Horse Archer",
+      "gives": [
+        39
+      ],
+      "icon": 55,
+      "string_id": 7052
+    },
+    "61": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        6,
+        7,
+        9,
+        14
+      ],
+      "code": "Elephant Archer",
+      "gives": [
+        25
+      ],
+      "icon": 56,
+      "research": [
+        [
+          87,
+          8
+        ]
+      ],
+      "string_id": 7053
+    },
+    "62": {
+      "civ": null,
+      "code": "Barracks",
+      "gives": [
+        73
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "63": {
+      "age": 3,
+      "civ": null,
+      "code": "Axe",
+      "gives": [
+        74
+      ],
+      "icon": 45,
+      "research": [
+        [
+          12,
+          6
+        ]
+      ],
+      "string_id": 7054
+    },
+    "64": {
+      "age": 4,
+      "civ": null,
+      "code": "Short Sword",
+      "gives": [
+        75
+      ],
+      "icon": 46,
+      "research": [
+        [
+          12,
+          7
+        ]
+      ],
+      "string_id": 7055
+    },
+    "65": {
+      "age": 4,
+      "civ": null,
+      "civs": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Broad Sword",
+      "gives": [
+        76
+      ],
+      "icon": 47,
+      "research": [
+        [
+          12,
+          7
+        ]
+      ],
+      "string_id": 7067
+    },
+    "66": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        12,
+        13,
+        14
+      ],
+      "code": "Long Sword",
+      "gives": [
+        77
+      ],
+      "icon": 48,
+      "research": [
+        [
+          12,
+          7
+        ]
+      ],
+      "string_id": 7057
+    },
+    "67": {
+      "civ": null,
+      "code": "Stable",
+      "gives": [
+        299
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "68": {
+      "civ": null,
+      "code": "Chariot",
+      "gives": [
+        40
+      ],
+      "icon": 54,
+      "string_id": 7058
+    },
+    "69": {
+      "civ": null,
+      "code": "Cavalry",
+      "gives": [
+        37
+      ],
+      "icon": 55,
+      "string_id": 7059
+    },
+    "7": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        4,
+        5,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Trireme",
+      "gives": [
+        21
+      ],
+      "icon": 26,
+      "research": [
+        [
+          45,
+          9
+        ]
+      ],
+      "string_id": 7007
+    },
+    "70": {
+      "civ": null,
+      "code": "War Elephant",
+      "gives": [
+        46
+      ],
+      "icon": 56,
+      "string_id": 7060
+    },
+    "71": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        4,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16
+      ],
+      "code": "Heavy Cavalry",
+      "gives": [
+        38
+      ],
+      "icon": 57,
+      "research": [
+        [
+          101,
+          8
+        ]
+      ],
+      "string_id": 7061
+    },
+    "72": {
+      "civ": null,
+      "code": "Academy",
+      "gives": [
+        93
+      ],
+      "icon": 69,
+      "string_id": 0
+    },
+    "73": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        5,
+        6,
+        7,
+        8,
+        11,
+        13,
+        14,
+        15,
+        16
+      ],
+      "code": "Phalanx",
+      "gives": [
+        94
+      ],
+      "icon": 61,
+      "research": [
+        [
+          0,
+          6
+        ]
+      ],
+      "string_id": 7062
+    },
+    "74": {
+      "civ": null,
+      "code": "A01, B01, F01, I01 ->Tool Age",
+      "icon": 0,
+      "string_id": 0
+    },
+    "75": {
+      "civ": null,
+      "code": "D01, H01, J01 -> Bronze Age",
+      "icon": 0,
+      "string_id": 0
+    },
+    "76": {
+      "civ": null,
+      "code": "B3, C1,D1 -> Iron Age",
+      "icon": 0,
+      "string_id": 0
+    },
+    "77": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        3,
+        4,
+        7,
+        9,
+        12,
+        13
+      ],
+      "code": "Legion",
+      "gives": [
+        282
+      ],
+      "icon": 80,
+      "research": [
+        [
+          12,
+          7
+        ]
+      ],
+      "string_id": 7084
+    },
+    "78": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        4,
+        9,
+        10,
+        11,
+        12,
+        16
+      ],
+      "code": "Cataphracts",
+      "gives": [
+        283
+      ],
+      "icon": 85,
+      "research": [
+        [
+          101,
+          8
+        ]
+      ],
+      "string_id": 7085
+    },
+    "79": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        2,
+        5,
+        6,
+        7,
+        8,
+        11,
+        13,
+        14,
+        16
+      ],
+      "code": "Centurion",
+      "gives": [
+        291
+      ],
+      "icon": 81,
+      "research": [
+        [
+          0,
+          6
+        ]
+      ],
+      "string_id": 7086
+    },
+    "8": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        5,
+        7,
+        9,
+        11,
+        13,
+        14,
+        16
+      ],
+      "code": "Heavy Transport",
+      "gives": [
+        18
+      ],
+      "icon": 25,
+      "research": [
+        [
+          45,
+          8
+        ]
+      ],
+      "string_id": 7008
+    },
+    "80": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        14,
+        16
+      ],
+      "code": "Irrigation",
+      "icon": 91,
+      "research": [
+        [
+          84,
+          6
+        ]
+      ],
+      "string_id": 7024
+    },
+    "81": {
+      "age": 3,
+      "civ": null,
+      "code": "Domestication",
+      "icon": 90,
+      "research": [
+        [
+          84,
+          6
+        ]
+      ],
+      "string_id": 7026
+    },
+    "88": {
+      "civ": null,
+      "code": "TC -> Granary",
+      "gives": [
+        68
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "89": {
+      "civ": null,
+      "code": "TC -> Storage Pit",
+      "gives": [
+        103
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "9": {
+      "age": 5,
+      "civ": null,
+      "civs": [
+        1,
+        2,
+        5,
+        7,
+        9,
+        11,
+        13,
+        16
+      ],
+      "code": "Trireme with Catapult",
+      "gives": [
+        250
+      ],
+      "icon": 27,
+      "research": [
+        [
+          45,
+          10
+        ]
+      ],
+      "string_id": 7009
+    },
+    "90": {
+      "civ": null,
+      "code": "TC -> Dock",
+      "gives": [
+        45
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "91": {
+      "civ": null,
+      "code": "TC -> Barracks",
+      "gives": [
+        12
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "92": {
+      "civ": null,
+      "code": "Stable+Bronze Age->Academy",
+      "gives": [
+        0
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "93": {
+      "civ": null,
+      "code": "Market+Bronze Age->Govt",
+      "gives": [
+        82
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "94": {
+      "civ": null,
+      "code": "Granary+Tool Age->Market",
+      "gives": [
+        84
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "95": {
+      "civ": null,
+      "code": "Barracks+Tool Age->Range",
+      "gives": [
+        87
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "96": {
+      "civ": null,
+      "code": "Range+Bronze Age->Siege Wkshp",
+      "gives": [
+        49
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "97": {
+      "civ": null,
+      "code": "Barracks+Tool Age->Stable",
+      "gives": [
+        101
+      ],
+      "icon": 0,
+      "string_id": 0
+    },
+    "98": {
+      "civ": null,
+      "code": "Market+Bronze Age->Temple",
+      "gives": [
+        104
+      ],
+      "icon": 0,
+      "string_id": 0
+    }
+  },
+  "terrain_restrictions": {
+    "1": [
+      0,
+      5,
+      6,
+      10,
+      11,
+      13,
+      18,
+      19,
+      20,
+      21
+    ],
+    "10": [
+      0,
+      2,
+      5,
+      6,
+      10,
+      11,
+      13,
+      18,
+      19,
+      20,
+      21
+    ],
+    "2": [
+      2
+    ],
+    "3": [
+      1,
+      4,
+      22
+    ],
+    "4": [
+      0,
+      5,
+      6,
+      10,
+      11,
+      13,
+      18,
+      19,
+      20,
+      21
+    ],
+    "6": [
+      1,
+      2,
+      4,
+      22
+    ],
+    "7": [
+      0,
+      2,
+      4,
+      5,
+      6,
+      10,
+      11,
+      13,
+      18,
+      19,
+      20,
+      21
+    ],
+    "8": [
+      0,
+      6
+    ],
+    "9": [
+      0,
+      5,
+      6,
+      10,
+      13,
+      18,
+      19,
+      20,
+      21
+    ]
+  },
+  "terrains": {
+    "0": {
+      "code": "Grass",
+      "hidden": false,
+      "string_id": -1
+    },
+    "1": {
+      "code": "Water",
+      "hidden": false,
+      "string_id": -1
+    },
+    "10": {
+      "code": "Forest",
+      "hidden": false,
+      "string_id": -1
+    },
+    "11": {
+      "code": "Dirt",
+      "hidden": false,
+      "string_id": -1
+    },
+    "12": {
+      "code": "Grass 2",
+      "hidden": false,
+      "string_id": -1
+    },
+    "13": {
+      "code": "Desert Palm",
+      "hidden": false,
+      "string_id": -1
+    },
+    "14": {
+      "code": "Desert Impas",
+      "hidden": false,
+      "string_id": -1
+    },
+    "15": {
+      "code": "Water Impass",
+      "hidden": false,
+      "string_id": -1
+    },
+    "16": {
+      "code": "Grass Impass",
+      "hidden": false,
+      "string_id": -1
+    },
+    "17": {
+      "code": "Fog",
+      "hidden": false,
+      "string_id": -1
+    },
+    "18": {
+      "code": "Forest Edge",
+      "hidden": false,
+      "string_id": -1
+    },
+    "19": {
+      "code": "Pine Forest",
+      "hidden": false,
+      "string_id": -1
+    },
+    "2": {
+      "code": "Beach",
+      "hidden": false,
+      "string_id": -1
+    },
+    "20": {
+      "code": "Jungle",
+      "hidden": false,
+      "string_id": -1
+    },
+    "21": {
+      "code": "Pine Edge",
+      "hidden": false,
+      "string_id": -1
+    },
+    "22": {
+      "code": "Water Dark",
+      "hidden": false,
+      "string_id": -1
+    },
+    "3": {
+      "code": "Thin River",
+      "hidden": false,
+      "string_id": -1
+    },
+    "4": {
+      "code": "Shallows",
+      "hidden": false,
+      "string_id": -1
+    },
+    "5": {
+      "code": "Jungle Edge",
+      "hidden": false,
+      "string_id": -1
+    },
+    "6": {
+      "code": "Desert",
+      "hidden": false,
+      "string_id": -1
+    },
+    "7": {
+      "code": "Crop",
+      "hidden": false,
+      "string_id": -1
+    },
+    "8": {
+      "code": "Rows",
+      "hidden": false,
+      "string_id": -1
+    },
+    "9": {
+      "code": "Wheat",
+      "hidden": false,
+      "string_id": -1
+    }
+  }
+}

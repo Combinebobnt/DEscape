@@ -131,14 +131,16 @@ def test_every_control_on_a_tab_writes_only_its_keys_and_cancel_restores_them(ti
 @pytest.mark.parametrize("title", settings_snapshot.TABS)
 def test_a_reset_page_still_edits_and_cancel_undoes_both(title, dialog_window) -> None:
     """Reset rebuilds the page (Tools refreshes in place); the old page's widgets are
-    deleted, and the new ones must still write their keys and come back on Cancel."""
+    deleted, and the new ones must still write their keys and come back on Cancel. Twice,
+    since a second reset is the one that touches anything kept from the deleted page."""
     from PyQt5.QtCore import QCoreApplication, QEvent
 
     dialog, _window = dialog_window
     opened = _config()
     _page(dialog, title)
-    dialog._reset_tab()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    for _ in range(2):
+        dialog._reset_tab()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     changed = _driven_keys(dialog, title, opened)
     assert changed <= set(DIALOG_TAB_KEYS[title]), changed - set(DIALOG_TAB_KEYS[title])
     assert _driven_keys(dialog, title, _config()), f"the rebuilt {title} page wrote nothing"
@@ -166,6 +168,7 @@ _SETTER_KEYS: dict[str, tuple[str, ...]] = {
     "set_preload_zoom_levels": ("preload_zoom_levels",),
     "set_graphics_quality": ("graphics_quality", "potato_mode"),
     "set_elev_step_pct": ("elev_step_pct", "elev_step_divisor"),
+    "set_sloped_elev_step_pct": ("sloped_elev_step_pct",),
     "set_pan_speed": ("pan_speed",),
     "set_wall_opacity_pct": ("wall_opacity_pct",),
     "set_overlay_color": ("overlay_colors",),
@@ -198,7 +201,10 @@ _SETTER_KEYS: dict[str, tuple[str, ...]] = {
     "set_gaia_only_catalog_mode": ("gaia_only_catalog_mode",),
 }
 # The dialog's whole modules, and the window methods it calls that write settings.
-_MODULES = ("descape/settings_dialog.py", "descape/settings_dialog_apply.py", "descape/tool_defaults_page.py")
+_MODULES = (
+    "descape/settings_dialog.py", "descape/settings_dialog_apply.py", "descape/settings_elev_rows.py",
+    "descape/tool_defaults_page.py",
+)
 _WINDOW_METHODS = {
     "descape/viewer_file.py": ("set_game_data", "apply_game_data"),
     "descape/viewer_view.py": ("set_wall_opacity_pct",),

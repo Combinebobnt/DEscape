@@ -204,8 +204,10 @@ _CLIFF_RUN = {(3, 1): ((10, 11), 0.0), (1, 3): ((7, 8), 90.0)}
 
 @pytest.fixture(params=[game.id for game in games.GAMES])
 def cliff_game(request, tool):
-    """Each registered game's dataset active, skipped where its root has no resources."""
+    """Each registered game's dataset active, skipped where its root has no resources or its art no walker."""
     game = games.get(request.param)
+    if game.art not in unit_sprites.WALKED_ART:
+        pytest.skip(f"no walker for {game.display_name}'s {game.art} art yet")
     if not (game.root(asset_source.get_install_path()) / "resources").is_dir():
         pytest.skip(f"the install has no {game.display_name} resources")
     with game_dataset.activated(game.id):

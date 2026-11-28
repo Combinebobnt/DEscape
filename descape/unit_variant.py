@@ -36,7 +36,8 @@ _GRAPHIC_MAP_PATH = Path(__file__).resolve().parent / "unit_graphic_map.json"
 # checked for it), so set_variant() and placement keep its frames.
 _FRAME_FOLLOWS_TYPES = games.PerGame(
     "unit_variant: the .dat types whose stored frame equals a variant's rotation",
-    {"aoe2": frozenset({10}), "ror": frozenset()},
+    # aoc and hd: not measured, neither game's editor is run here; view-only.
+    {"aoe2": frozenset({10}), "ror": frozenset(), "aoc": frozenset(), "hd": frozenset()},
 )
 
 

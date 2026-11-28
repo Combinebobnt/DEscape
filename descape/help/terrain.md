@@ -11,9 +11,12 @@ The panel on the left lists every terrain by category, each with a swatch of its
 ## The tools
 
 - **Draw** paints the picked terrain under the brush. Drag to paint a trail.
+- **Spray Can** sprays a random scatter of the picked terrain under the brush. Hold the button to spray; holding still fills it in, and a quick pass leaves it sparse. Right-drag sprays the same way.
 - **Paint Can** fills the connected area of matching terrain with one click. Clicking an area that already has the picked terrain clears its layered terrain.
 - **Draw Line** paints a straight line as you drag. Hold Shift to snap it to one of 16 directions.
 - **Draw Rectangle** paints a rectangle, Filled or Outline. Hold Shift to make it a square.
+- **Replace Brush** paints the picked terrain under the brush, but only over tiles that match the one you press on, and leaves every other tile alone: paint Dirt over a meadow's Grass without touching the Forest or Water running through it. The tile under the cursor at the press is the one matched, even where an outline brush leaves it unpainted. It matches as Paint Can does, by the tile's own terrain and not by how blending draws it. Right-drag does the same.
+- **Clone Stamp** copies one part of the map onto another. Ctrl+click the tile to copy from, then drag where the copy should go: the brush paints the terrain, layered terrain and height found at the same offset from the cursor, and a dashed outline shows the tiles it is copying. The offset stays for every later drag until the next Ctrl+click. Each drag copies the map as it was when you pressed, so a copy that overlaps its own source never copies what it just painted. Where the source runs off the map, nothing is painted. Objects are not copied: **Edit > Copy Region** and **Edit > Paste Region** carry those. Right-drag does the same.
 - **Elevate** raises the ground under the brush by one level. Right-drag, or Shift+drag, lowers it.
 - **Set Elevation** sets the ground under the brush to the Level on the Tool Options row, 0 to 15.
 - **Cliff**, **Eraser** and **Select** are described below.
@@ -23,19 +26,22 @@ Pan and Ruler work in every mode; see [Keyboard and Mouse](keyboard-and-mouse.md
 
 Draw Line and Draw Rectangle show the shape while you drag and paint it when you let go. Right-click or Esc cancels the drag.
 
-When you change a tile's height, the tiles around it rise or fall with it, so no step between neighbours is more than one level. Raising with an outline brush fills holes up to two tiles wide. Elevate, Set Elevation and pasting elevation work on square maps only.
+When you change a tile's height, the tiles around it rise or fall with it, so no step between neighbours is more than one level. Raising with an outline brush fills holes up to two tiles wide. Elevate, Set Elevation, pasting elevation and cloning elevation work on square maps only.
 
 ## Tool options
 
 The controls on the Tool Options row keep what you set until you close DEscape, Trees and Eye candy included. **Settings > Tools** sets what they start at ([Settings](settings.md)).
 
-- **Target** (Draw, Paint Can, Draw Line, Draw Rectangle) picks which terrain a tool writes. Terrain paints the base terrain and clears any layered terrain on the tile. Layer paints the layered terrain drawn over the base, like the in-game Layering Mode. Clear layer removes it. Target is hidden for a file that stores no layered terrain.
-- **Auto beach** (Draw, Draw Line, Draw Rectangle) lays a beach shoreline between water and the terrain your stroke paints. Pick the beach terrain (Auto matches the land's climate) and its width, 1 to 3 tiles. Painting a beach, bridge or non-navigable shore lays none.
-- **Trees** and **Eye candy** (with Target on Terrain) place the matching GAIA trees on forest terrain, and the grass tufts and underbrush a terrain carries, like the in-game Eye Candy option. Painting another terrain over the tile removes them.
+- **Target** (Draw, Spray Can, Paint Can, Draw Line, Draw Rectangle, Replace Brush) picks which terrain a tool writes. Terrain paints the base terrain and clears any layered terrain on the tile. Layer paints the layered terrain drawn over the base, like the in-game Layering Mode. Clear layer removes it. Target is hidden for a file that stores no layered terrain. For Paint Can and the Replace Brush it also sets what matches: on Terrain a tile matches by its base terrain alone, on Layer and Clear layer by its base and layered terrain together.
+- **Auto beach** (Draw, Draw Line, Draw Rectangle) lays a beach shoreline between water and the terrain your stroke paints. Pick the beach terrain (Auto matches the land's climate) and its width, 1 to 3 tiles. Painting a beach, bridge or non-navigable shore lays none. The Replace Brush has no Auto beach: a shoreline would paint tiles that don't match.
+- **Trees** and **Eye candy** (with Target on Terrain, and for the Clone Stamp with its Terrain ticked) place the matching GAIA trees on forest terrain, and the grass tufts and underbrush a terrain carries, like the in-game Eye Candy option. Painting another terrain over the tile removes them.
+- **Flow** and **Hardness** (Spray Can) set how fast a held spray fills in, and how much of the brush, from its centre out, sprays at full strength; the rest fades towards the edge, which still fills in if you hold long enough. Each stroke scatters differently.
+- **Flood** (Replace Brush) is Global or Contiguous. Global replaces every matching tile the brush passes over. Contiguous replaces only the matching tiles connected to the one you pressed on, so a patch of the same terrain cut off by another stays as it is even under the brush.
+- **Terrain** and **Elevation** (Clone Stamp) choose what a drag copies: the terrain with its layered terrain, the height, or both. With Elevation, the ground around the copy rises or falls just enough that no step between neighbours is more than one level, so a copied hill keeps its shape. Elevation works on square maps only, and not in compatibility mode, where the Clone Stamp copies terrain only. If the map already holds a step of more than one level at the source or beside the copy, the copy can keep it and the Status Log says so; **Tools > Map Analysis…** lists such steps ([Map Tools](map-tools.md)).
 
 ### The brush
 
-Draw, Elevate, Set Elevation, Draw Line, the Eraser and Draw Rectangle's Outline paint through a brush. Size runs from 1 to 9 tiles. Shape is Square, Circle, Rounded square, Square outline, Circle outline, Plus, or one of two lines along the tile axes (diagonal in the isometric views). An outline shape adds a Thickness.
+Draw, the Spray Can, the Replace Brush, the Clone Stamp, Elevate, Set Elevation, Draw Line, the Eraser and Draw Rectangle's Outline paint through a brush. Size runs from 1 to 9 tiles. Shape is Square, Circle, Rounded square, Square outline, Circle outline, Plus, or one of two lines along the tile axes (diagonal in the isometric views). An outline shape adds a Thickness.
 
 The mouse wheel's brush size binding and the Increase Tool Value and Decrease Tool Value commands step the size. Where a tool has no brush, those two commands step Level instead. [Keyboard and Mouse](keyboard-and-mouse.md) shows their current keys.
 
@@ -66,11 +72,11 @@ A region you have just pasted stays live until your next edit:
 - **Edit > Rotate Selection** turns it a quarter turn, and so does the mouse wheel's rotate binding.
 - **Edit > Flip Selection** mirrors it across its own edges: **Flip West ↔ North** or **Flip West ↔ South** swaps those two corners, and the region keeps its place and shape.
 
-Walls, gates, bridges (except the wooden ones and the DE bridge pieces), chains, longhouses, blockers and unit facings turn with the block (a bridge's end pieces stay at its ends), and pasted walls join the walls they land beside; the paste plus every move and turn of it stay one undo step.
+Walls, gates, bridges (except the DE bridge's 1x1 pieces), chains, longhouses, blockers and unit facings turn with the block (a bridge's end pieces stay at its ends), and pasted walls join the walls they land beside; the paste plus every move and turn of it stay one undo step.
 
 A selected region that you did not just paste is flipped or turned in place: **Edit > Flip Selection** mirrors it, and **Edit > Rotate Selection** (any of its turn entries) turns it a quarter turn, as long as no units are selected in Units mode. Its terrain, its elevation and the units standing on it move together, and the units stay the same units, so triggers that name them still work. A region that is not square turns about its own centre: the tiles it no longer covers keep what they had, and the selection follows the turned rectangle. A run of flips and turns is one undo step; press Enter to keep it, or Esc to put the region back as it was. The turn is refused if part of the region would leave the map, on a map that is not square, or where the file's terrain can't be edited. The mouse wheel's rotate binding still turns only a just-pasted region.
 
-Copied regions are kept in **Edit > Clipboard History…**, and **Edit > Scatter Units in Region…** fills a region with objects; both are in [Map Tools](map-tools.md).
+Copied regions are kept in **Edit > Clipboard History…** (saved for good with **Edit > Save as Prefab…**), and **Edit > Scatter Units in Region…** fills a region with objects; both are in [Map Tools](map-tools.md).
 
 ## Not in DEscape yet
 

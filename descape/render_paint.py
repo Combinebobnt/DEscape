@@ -129,6 +129,13 @@ def native_tier_max() -> int:
     return NATIVE_TIER_MAX[settings.get_graphics_quality()]
 
 
+def elev_step_pct_for(style: str) -> int:
+    """The persisted elev_step stop `style` renders at: Sloped has its own (GH #288),
+    Stepped and Flat with Isometric View share Stepped's. Read through the module at
+    call time, since tests and tools monkeypatch the settings getters."""
+    return settings.get_sloped_elev_step_pct() if style == "sloped" else settings.get_elev_step_pct()
+
+
 def _crop_offset(x: int, y: int, texture_size: int, tile_px: int) -> tuple[int, int]:
     """Crop origin into a cached terrain texture array for tile (x, y), chosen
     so same-terrain neighboring tiles sample *contiguous* texture regions

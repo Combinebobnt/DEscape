@@ -50,6 +50,34 @@ def new_maps_are_1_58(monkeypatch):
     monkeypatch.setattr(scenario_new, "blank_template_path_for", lambda game: V158_DONOR if real(game) == default else real(game))
 
 
+# GH #317: a refused cross-version block from real data, never a relabelled version.
+FOREIGN_REFUSAL = (
+    "Copied from a 1.59 scenario; this one is 1.58: 1 condition set Allow In Fog, which 1.58 does not store."
+)
+FOREIGN_CONVERT_HINT = f"{FOREIGN_REFUSAL} File > Convert to Version 1.59 upgrades this one."
+_KEEP_ALIVE: list = []  # the library's scenario store is weak
+
+
+def _foreign_block(window, kind: str, allow_in_fog: int = 1):
+    """A block copied from the library's 1.59 default: one Object Visible
+    condition holding `allow_in_fog`, which 1.58 cannot store unless it is
+    unset. The window's document is reactivated after, as switching back to
+    it would."""
+    from descape import library_compat, scenario_io, trigger_clipboard
+
+    loaded = scenario_io.load_map_and_units(library_compat.VERSIONS_DIR / "v1.59" / "default.aoe2scenario")
+    _KEEP_ALIVE.append(loaded)
+    manager = scenario_io.parse_triggers(loaded)
+    manager.add_trigger("Source").new_condition.object_visible_multiplayer(source_player=1)
+    vars(manager.triggers[0].conditions[0])["allow_in_fog"] = allow_in_fog
+    if kind == "triggers":
+        block = trigger_clipboard.copy_block(manager, [0], doc_id="other", scenario_version="1.59")
+    else:
+        block = trigger_clipboard.copy_entries(manager, 0, [("condition", 0)], doc_id="other", scenario_version="1.59")
+    scenario_io.reactivate(window.scenario)
+    return block
+
+
 def _row_buttons(layout) -> list:
     return [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget() is not None]
 
@@ -109,7 +137,6 @@ def test_a_clipboard_from_another_scenario_version_is_refused_out_loud(monkeypat
     """GH #3: Paste stays enabled, and Ctrl+V or the button logs why it
     refused, changing nothing. QMessageBox.warning is patched: unpatched it
     blocks forever offscreen."""
-    import dataclasses
 
     from PyQt5.QtCore import Qt
     from PyQt5.QtTest import QTest
@@ -125,9 +152,9 @@ def test_a_clipboard_from_another_scenario_version_is_refused_out_loud(monkeypat
         panel = window.trigger_panel
         _ctrl_select(panel, 0)
         window.copy_triggers()
-        window._trigger_clipboard = dataclasses.replace(window._trigger_clipboard, scenario_version="1.56")
+        window._trigger_clipboard = _foreign_block(window, "triggers")
         window._sync_trigger_clipboard_state()
-        expected = "Copied from a 1.56 scenario; this one is 1.58."
+        expected = FOREIGN_CONVERT_HINT
         assert panel.trigger_paste_button.isEnabled()
         assert window.paste_action.isEnabled()
         assert panel.trigger_paste_button.toolTip() == expected
@@ -261,20 +288,19 @@ def test_a_paste_from_a_1_58_file_into_a_new_map_pastes_and_saves(tmp_path: Path
 
 @pytest.mark.parametrize("kind", ["triggers", "entries"])
 def test_a_1_59_block_in_a_1_58_document_is_refused_naming_the_conversion(kind: str) -> None:
-    """GH #307: only 1.58 into 1.59 pastes. The other way is refused, and the
+    """A 1.59 block that would lose a value is refused (GH #317), and the
     refusal names File > Convert, which is enabled on this 1.58 fixture."""
-    import dataclasses
 
     window = _triggers_window()
     try:
         panel = window.trigger_panel
-        expected = "Copied from a 1.59 scenario; this one is 1.58. File > Convert to Version 1.59 upgrades this one."
+        expected = FOREIGN_CONVERT_HINT
         assert window.convert_version_action.isEnabled()
         records = _record_count(window)
         if kind == "triggers":
             _ctrl_select(panel, 0)
             window.copy_triggers()
-            window._trigger_clipboard = dataclasses.replace(window._trigger_clipboard, scenario_version="1.59")
+            window._trigger_clipboard = _foreign_block(window, "triggers")
             window._sync_trigger_clipboard_state()
             assert panel.trigger_paste_button.toolTip() == expected
             window.status_log.clear()
@@ -285,7 +311,7 @@ def test_a_1_59_block_in_a_1_58_document_is_refused_naming_the_conversion(kind: 
             panel.select_trigger(3)
             _select_entries(panel, ("effect", 0))
             window.copy_entries_to_clipboard()
-            window._entry_clipboard = dataclasses.replace(window._entry_clipboard, scenario_version="1.59")
+            window._entry_clipboard = _foreign_block(window, "entries")
             window._sync_entry_clipboard_state()
             paste = _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste")
             assert paste.isEnabled() and paste.toolTip() == expected
@@ -603,7 +629,6 @@ def _texts(menu) -> list[str]:
 
 
 def test_gh137_the_trigger_menu_offers_cut_copy_paste_first() -> None:
-    import dataclasses
 
     window = _triggers_window()
     try:
@@ -631,10 +656,10 @@ def test_gh137_the_trigger_menu_offers_cut_copy_paste_first() -> None:
             "Paste the copied triggers below this one, or below a collapsed section's end"
         )
 
-        window._trigger_clipboard = dataclasses.replace(window._trigger_clipboard, scenario_version="1.56")
+        window._trigger_clipboard = _foreign_block(window, "triggers")
         window._sync_trigger_clipboard_state()
         paste = _action(panel.trigger_context_menu(panel._item_for_index[1]), "Paste")
-        assert paste.toolTip() == "Copied from a 1.56 scenario; this one is 1.58."
+        assert paste.toolTip() == FOREIGN_CONVERT_HINT
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -1115,7 +1140,6 @@ def test_gh137_cut_entries_is_one_record_and_pastes_into_another_trigger() -> No
 
 
 def test_gh137_a_refused_entry_paste_says_why_and_records_nothing() -> None:
-    import dataclasses
 
     window = _triggers_window()
     try:
@@ -1123,9 +1147,9 @@ def test_gh137_a_refused_entry_paste_says_why_and_records_nothing() -> None:
         panel.select_trigger(3)
         _select_entries(panel, ("effect", 0))
         window.copy_entries_to_clipboard()
-        window._entry_clipboard = dataclasses.replace(window._entry_clipboard, scenario_version="1.56")
+        window._entry_clipboard = _foreign_block(window, "entries")
         window._sync_entry_clipboard_state()
-        expected = "Copied from a 1.56 scenario; this one is 1.58."
+        expected = FOREIGN_CONVERT_HINT
         paste = _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste")
         assert paste.isEnabled() and paste.toolTip() == expected
         records = _record_count(window)
@@ -1200,7 +1224,6 @@ def test_gh137_a_failed_entry_cut_leaves_the_clipboard_alone(monkeypatch) -> Non
 
 
 def test_gh137_a_repopulate_pushes_the_entry_paste_refusal() -> None:
-    import dataclasses
 
     window = _triggers_window()
     try:
@@ -1208,12 +1231,12 @@ def test_gh137_a_repopulate_pushes_the_entry_paste_refusal() -> None:
         panel.select_trigger(3)
         _select_entries(panel, ("effect", 0))
         window.copy_entries_to_clipboard()
-        window._entry_clipboard = dataclasses.replace(window._entry_clipboard, scenario_version="1.56")
+        window._entry_clipboard = _foreign_block(window, "entries")
         window.mode_combo.setCurrentText("Terrain")
         window.mode_combo.setCurrentText("Triggers")
         panel.select_trigger(3)
         paste = _action(panel.entry_context_menu(panel._entry_item_for("effect", 0)), "Paste")
-        assert paste.toolTip() == "Copied from a 1.56 scenario; this one is 1.58."
+        assert paste.toolTip() == FOREIGN_CONVERT_HINT
     finally:
         window.edit_history.mark_saved()
         window.close()
@@ -1346,5 +1369,20 @@ def test_gh137_edit_cut_copy_paste_stay_off_while_the_type_picker_is_up(opener: 
         assert window.cut_action.isEnabled() and window.paste_action.isEnabled(), "closing the picker re-gates them"
     finally:
         QTest.keyRelease(window, Qt.Key_Control)
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_a_clean_1_59_block_pastes_into_a_1_58_document() -> None:
+    """GH #317: allow_in_fog left unset drops silently, so the paste goes through."""
+    window = _triggers_window()
+    try:
+        panel = window.trigger_panel
+        window._trigger_clipboard = _foreign_block(window, "triggers", allow_in_fog=-1)
+        window._sync_trigger_clipboard_state()
+        assert panel.trigger_paste_button.toolTip() != FOREIGN_CONVERT_HINT
+        window.trigger_structural_edit("paste", [])
+        assert len(panel._manager().triggers) == 5
+    finally:
         window.edit_history.mark_saved()
         window.close()

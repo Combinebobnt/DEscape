@@ -1,4 +1,4 @@
-"""Which game's data DEscape reads: Age of Empires II or Return of Rome (GH #67).
+"""Which game's data DEscape reads: Age of Empires II, Return of Rome or the 1999 game (GH #67).
 
 Each game is a descriptor in descape/games.py; this module holds the active
 content stack and resolves tables, install files and strings through it
@@ -11,8 +11,9 @@ under descape/ror/, and RoR art lives under the install's modes/Pompeii/,
 which mirrors the install's own layout and falls back to it file by file.
 
 One process-wide ContentStack, AoE2 with no data mod by default, replaced
-whole on every change. The viewer sets the game from the open file's own
-(games.for_scenario()) or the Settings > Advanced > Game data choice, and
+whole on every change. The viewer sets the game from the open file's
+(file_game(): its own, or its stand-in's while its own install is not
+configured()) or the Settings > Advanced > Game data choice, and
 lock_reason() says when that shows a document view-only. table_path()
 picks a generated table's copy, resource_path() an install file's, and
 cache() keys a loader's cache by the stack's tables_key. A change runs
@@ -40,9 +41,11 @@ from descape import games
 if TYPE_CHECKING:
     from descape.dat_derive import DeriveWarning
 
-# The two games' ids, as plain strings for set_active() callers.
+# The games' ids, as plain strings for set_active() callers.
 AOE2 = "aoe2"
 ROR = "ror"
+AOC = "aoc"
+HD = "hd"
 
 TABLES_DIR = Path(__file__).resolve().parent
 # Tables not derived from any .dat: every dataset reads the one copy.
@@ -114,8 +117,7 @@ class ContentStack:
         """Every strings file for lang, existing or not, in merge order: the
         bottom fallback's first, the game's own, then the data mod's. A later
         file wins on a shared key."""
-        folder = STRINGS_DIR_TEMPLATE.format(lang=lang)
-        own = [of.root(install) / folder / name for of in reversed(games.chain(self.game)) for name in of.strings_files]
+        own = [folder / name for of in reversed(games.chain(self.game)) for folder, name in _strings_files(of, install, lang)]
         return own + self.mod_strings_paths(lang)
 
     def mod_strings_paths(self, lang: str) -> list[Path]:
@@ -254,17 +256,90 @@ def from_variant(variant) -> str:
     return games.for_variant(variant).id
 
 
-def lock_reason(file_game: str, shown_game: str) -> str | None:
+def configured(game: games.Game) -> bool:
+    """Whether `game`'s own install is set and validates, so its own data can
+    show its files. Always True for a game with no Game.stand_in. Cached until
+    asset_source.clear_install_caches(), since a draw reads it per player."""
+    return game.stand_in is None or _install_validates(game.install)
+
+
+@lru_cache(maxsize=8)
+def _install_validates(install: str) -> bool:
+    # A game on the DE install has no stand_in; another install counts once it validates and its root build has not failed.
+    if install == games.AOE2DE_INSTALL:
+        return True
+    from descape import legacy_content
+
+    folder = install_folder(install)
+    builder = legacy_content.recipe(install)
+    return folder is not None and builder.validate_install(folder)[0] and builder.build_failed(folder) is None
+
+
+def install_folder(install: str) -> Path | None:
+    """The folder configured for a Game.install value (games.IMPLEMENTED_INSTALLS), or None."""
+    from descape import asset_source, legacy_content
+
+    if install == games.AOE2DE_INSTALL:
+        return asset_source.get_de_install_path()
+    return legacy_content.recipe(install).install_path()
+
+
+def install_root(of: games.Game) -> Path | None:
+    """The content root `of`'s files resolve under (asset_source.get_install_path()
+    for the active game): its install, or for a Game.derived_root game the root
+    built from it, None while that is not built. Never builds."""
+    folder = install_folder(of.install)
+    if not of.derived_root:
+        return folder
+    from descape import legacy_content
+
+    return legacy_content.recipe(of.install).built_root(folder)
+
+
+def missing_install_reason(of: games.Game) -> str:
+    """Why `of`'s own install does not show anything: none set, or (a derived root) its build failed this session."""
+    from descape import legacy_content
+
+    folder = install_folder(of.install)
+    if of.derived_root and folder is not None and legacy_content.recipe(of.install).build_failed(folder):
+        return "could not be unpacked from its install (the status log has why)"
+    return "has no install set (Settings > Advanced > Game data)"
+
+
+def effective_game(file_game: games.Game | str) -> games.Game:
+    """The game whose data shows a file of `file_game`: its own while
+    configured(), else its Game.stand_in's, so a file of an unconfigured game
+    draws, names and locks exactly as its stand-in's own file."""
+    own = games.get(file_game) if isinstance(file_game, str) else file_game
+    return own if configured(own) else games.get(own.stand_in)
+
+
+def file_game(loaded) -> games.Game:
+    """effective_game() of a loaded scenario's own game (games.for_scenario()):
+    which game's data shows it under Auto, and the game its ids, lock and clipboard stamp belong to."""
+    return effective_game(games.for_scenario(loaded))
+
+
+def lock_reason(file_game: str, shown_game: str, legacy: bool = False) -> str | None:
     """Why a document of `file_game` shown with `shown_game`'s data may not be
     written, or None (docs/GAME_DATA.md, "View-only games and the lock"). A
-    game that is not writable is view-only whatever data shows it; otherwise
-    a file is editable only with its own game's data shown (GH #67)."""
+    game that is not writable is view-only whatever data shows it, except a
+    `legacy` (pre-DE) document, whose band's edit families
+    (legacy_write.lock_reason()) decide instead; otherwise a file is editable
+    only with its own game's data shown (GH #67)."""
     own, shown = games.get(file_game), games.get(shown_game)
-    if not own.writable:
+    if not own.writable and not legacy:
         return f"Read-only: DEscape opens {own.display_name} files view-only."
-    if shown.id != own.id:
+    if shown.id != own.id and not configured(shown):
+        # Under D4 a 1999 file is its stand-in's here, so naming the file's game would mislabel it.
         return (
-            f"Read-only: showing {shown.display_name} game data for a "
+            f"Read-only: {shown.display_name} game data {missing_install_reason(shown)}, "
+            "so units draw as marks. Set Game data to Auto to edit this file."
+        )
+    if shown.id != own.id:
+        article = "an" if own.display_name[0] in "AEIOU" else "a"
+        return (
+            f"Read-only: showing {shown.display_name} game data for {article} "
             f"{own.display_name} file. Set Settings > Advanced > Game data to Auto to edit it."
         )
     return None
@@ -339,13 +414,28 @@ def has_own_strings(lang: str, game: games.Game | None = None) -> bool:
 
 @lru_cache(maxsize=8)
 def _ships_strings(install: Path, game: games.Game, lang: str) -> bool:
-    folder = game.root(install) / STRINGS_DIR_TEMPLATE.format(lang=lang)
-    return any((folder / name).is_file() for name in game.strings_files)
+    return any((folder / name).is_file() for folder, name in _strings_files(game, install, lang))
+
+
+def _strings_files(of: games.Game, install: Path, lang: str) -> list[tuple[Path, str]]:
+    """(folder, name) of each of `of`'s strings files for lang under `install`,
+    existing or not. Game.strings_any_language takes the first language folder
+    the root has when lang's lacks the file (the 1999 game's names are one language)."""
+    folder = of.root(install) / STRINGS_DIR_TEMPLATE.format(lang=lang)
+    found = []
+    for name in of.strings_files:
+        if of.strings_any_language and not (folder / name).is_file():
+            other = sorted(of.root(install).glob(f"resources/*/strings/key-value/{name}"))
+            found.append((other[0].parent if other else folder, name))
+        else:
+            found.append((folder, name))
+    return found
 
 
 def clear_caches() -> None:
     """Drops what the resolver remembers of the install; asset_source.clear_install_caches() calls it."""
     _ships_strings.cache_clear()
+    _install_validates.cache_clear()
 
 
 # Every cache()'s per-key dict, so forget() can reach them.

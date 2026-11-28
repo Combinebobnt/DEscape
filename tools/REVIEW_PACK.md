@@ -14,6 +14,7 @@ and renders off-engine.
 ```sh
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject no-apex-wedge
+.venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --inject one-flank
 .venv/bin/python3 tools/gen_review_pack.py --pack shadow_band --replica 1   # 2nd clean copy
 .venv/bin/python3 tools/gen_review_pack.py --check      # deterministic, writes nothing
 .venv/bin/python3 tools/gen_review_pack.py --check --pack ground_texture   # needs examples/ + install
@@ -28,6 +29,7 @@ and renders off-engine.
 .venv/bin/python3 tools/gen_review_pack.py --check --pack unit_state   # needs examples/ + install
 .venv/bin/python3 tools/gen_instruction_box_review_pack.py --check   # needs examples/ + install, drives Qt
 .venv/bin/python3 tools/gen_ground_zoom_review_pack.py --check   # needs examples/ + install
+.venv/bin/python3 tools/gen_waterfall_review_pack.py --check   # needs examples/ + install
 ```
 
 A pack whose subject is a widget over the map rather than scene content cannot
@@ -173,23 +175,35 @@ Three rules the pilot learned the hard way:
   Its size is the real defect's size, not a number this tool picked.
   Since the GH #15 back-out (2026-10-04) the tip pass and the side-split wedge
   are gone, so `no-tip` and `notch-inject` are gone with them: their defects
-  are the clean render now. The shadow_band pack has only its coarse inject
-  until a localized one is designed against the line-style render.
+  are the clean render now. Their replacement is `one-flank`, the backed-out
+  side split applied to every caster. On the straight-run frames it is an
+  *inverted* control: the clean render carries the 1px cross-line at each
+  apex and `one-flank` removes exactly that, its contact mask matching the
+  side-split commit's own render (`e91730a`) pixel for pixel. So `straight_run_edge` asks which of
+  two neutral answers holds rather than for a pass or fail. Elsewhere it is an
+  ordinary localized defect, under the coarse inject on every frame. The
+  corner checks have no matching control since the back-out.
 - **A localized inject must break a feature the frame measurably has.** The
   ground_texture pack's first localized inject gave one grass cell its
   neighbour's crop. The reviewer missed it, and so did a side-by-side search
   that knew where it was: grass has nothing to dislocate, and its clean vs injected luma
   correlated +0.09 over that cell. A whole-tile offset is no better on a
   tile-periodic texture: 64 texels is exactly five furrows of the farmland
-  texture, so the offset lands in phase (+1.00). `one-cell-shift` slides one
-  farmland cell half a furrow across the furrows instead (-0.52), and
-  `--check` asserts that anticorrelation, so a texture change that puts the
-  shift back in phase fails loudly.
+  texture, so the offset lands in phase (+1.00). A later `one-cell-shift`
+  slid one farmland cell half a furrow across the furrows (correlation
+  -0.52), and the reviewer still read the frame as unbroken.
 - **A direction question needs a frame with a measured direction.** Grass
   scored a structure-tensor coherence of 0.09 clean and 0.09 with every other
   cell turned 90 degrees, so "are the cells turned" came back `CANNOT-TELL`.
-  The furrowed farmland frame scores 0.60 clean against 0.27 turned, and
-  `--check` holds both sides of that gap.
+  The furrowed farmland frame scored 0.60 clean against 0.27 turned, yet its
+  reviewer read the turned cells as shifted, not turned, and a closer
+  farmland frame lost the direction altogether (0.18 clean at 128 px).
+- **When no frame makes a localized defect visible, pin it in a test and say
+  so.** The ground_texture pack now carries only coarse injects and no
+  direction check: cell orientation is pinned by
+  `tests/test_texture_continuity.py`, and a whole-texture shift by its coarse
+  injects. Its verdicts cover breaks, speckle and the overhead joins, not a
+  single misplaced cell.
 - **Measure each inject's reach; do not argue it from geometry.** `--check`
   prints, per inject, every frame it touched and by how much. The pilot's
   pre-registration asserted from the geometry that neither inject could reach

@@ -33,7 +33,7 @@ import gen_review_pack as grp
 import gen_seam_eyeball as seam_eyeball
 import numpy as np
 
-from descape import asset_source, grid_overlay, render_cache, render_iso, render_paint, render_sloped
+from descape import asset_source, grid_overlay, iso_geometry, render_cache, render_iso, render_paint, render_sloped
 from descape.scenario_io import BLANK_TEMPLATE_PATH, load_map_and_units
 from testkit import review_pack as rp
 from testkit.render_family import set_render_global
@@ -129,8 +129,10 @@ def _cache(scn, style: str):
     if style == "stepped":
         elevations, proj = render_iso.elevations_and_proj(scn)
         return render_cache.IsoChunkCache(scn, elevations, proj, tile_px, sprites=True)
-    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn)
-    return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True)
+    # Stepped's default pct, explicit: Sloped's own setting (GH #288) must not move a recorded crop.
+    pct = iso_geometry.ELEV_STEP_DEFAULT_PCT
+    elevations, corner_rise, proj = render_sloped.sloped_elevations_and_proj(scn, elev_step_pct=pct)
+    return render_cache.SlopedChunkCache(scn, elevations, corner_rise, proj, tile_px, sprites=True, elev_step_pct=pct)
 
 
 def _box(cache, style: str, tiles, pad):

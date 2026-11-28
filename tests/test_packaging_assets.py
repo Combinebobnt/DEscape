@@ -34,6 +34,7 @@ def test_app_icon_is_256x256_rgba_png() -> None:
 def test_frozen_exe_icon_is_windows_only(monkeypatch, platform):
     hooks = ModuleType("PyInstaller.utils.hooks")
     hooks.collect_data_files = lambda *args, **kwargs: []
+    hooks.collect_submodules = lambda *args, **kwargs: []
     monkeypatch.setitem(sys.modules, "PyInstaller.utils.hooks", hooks)
     monkeypatch.setattr(sys, "path", sys.path.copy())
     monkeypatch.setattr(sys, "platform", platform)

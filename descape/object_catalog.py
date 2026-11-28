@@ -226,19 +226,20 @@ _EDITOR_UNLISTED = frozenset({1261})
 
 _EDITOR_LISTED_BY_GAME = games.PerGame(
     "object_catalog: dat-hidden ids the game's editor lists, by category",
-    {"aoe2": _EDITOR_LISTED_DAT_ONLY, "ror": _ROR_EDITOR_LISTED_DAT_ONLY},
+    # aoc and hd, here and in the three below: not measured, neither game's editor is run here; view-only.
+    {"aoe2": _EDITOR_LISTED_DAT_ONLY, "ror": _ROR_EDITOR_LISTED_DAT_ONLY, "aoc": {}, "hd": {}},
 )
 _EDITOR_HIDDEN_BY_GAME = games.PerGame(
     "object_catalog: unhidden ids the game's editor lists for no one, offered as editor-hidden",
-    {"aoe2": _EDITOR_UNLISTED, "ror": frozenset()},
+    {"aoe2": _EDITOR_UNLISTED, "ror": frozenset(), "aoc": frozenset(), "hd": frozenset()},
 )
 _EDITOR_LEFT_OUT_BY_GAME = games.PerGame(
     "object_catalog: unhidden ids the game's editor leaves out, left out of objects()",
-    {"aoe2": frozenset(), "ror": _ROR_EDITOR_UNLISTED},
+    {"aoe2": frozenset(), "ror": _ROR_EDITOR_UNLISTED, "aoc": frozenset(), "hd": frozenset()},
 )
 _SHARED_HIDDEN_BY_GAME = games.PerGame(
     "object_catalog: editor-hidden objects shared with the fallback game, offered as hidden",
-    {"aoe2": dict, "ror": _ror_shared_hidden},
+    {"aoe2": dict, "ror": _ror_shared_hidden, "aoc": dict, "hd": dict},
 )
 
 

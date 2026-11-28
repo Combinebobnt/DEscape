@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from descape import edge_ticks, grid_overlay, iso_geometry, settings, terrain_style, view_layers
 
@@ -218,6 +219,48 @@ def test_a_snapped_write_survives_a_fresh_read_from_disk(tmp_path: Path, monkeyp
     monkeypatch.setattr(settings, "_elev_step_pct", None)
     assert settings.get_elev_step_pct() == 50
     assert "elev_step_pct: 50" in (tmp_path / "config.yaml").read_text()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("", iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT),
+        ("sloped_elev_step_pct: 9999\n", iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT),
+        ("sloped_elev_step_pct: tall\n", iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT),
+        ("sloped_elev_step_pct: 0\n", iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT),
+        ("sloped_elev_step_pct: 48\n", 50),
+        ("sloped_elev_step_pct: 10\n", settings.ELEV_STEP_PCT_MIN),
+        # Stepped's key, its legacy divisor included, never feeds Sloped's.
+        ("elev_step_pct: 25\nelev_step_divisor: 4\n", iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT),
+    ],
+)
+def test_sloped_elev_step_pct_reads_its_own_key(tmp_path: Path, text: str, expected: int) -> None:
+    _write_config(tmp_path, text)
+    assert settings.get_sloped_elev_step_pct() == expected
+
+
+def test_sloped_elev_step_pct_leaves_steppeds_default_alone(tmp_path: Path) -> None:
+    _write_config(tmp_path, "sloped_elev_step_pct: 175\n")
+    assert settings.get_elev_step_pct() == iso_geometry.ELEV_STEP_DEFAULT_PCT
+
+
+@pytest.mark.parametrize("which", ["stepped", "sloped"])
+def test_each_elev_step_setter_persists_only_its_own_key(tmp_path: Path, monkeypatch, which: str) -> None:
+    """A snapped write reaches the file under its own key, and a fresh read of
+    the other key still sees its default, in both directions."""
+    setter, own_key, other_key = {
+        "stepped": (settings.set_elev_step_pct, "elev_step_pct", "sloped_elev_step_pct"),
+        "sloped": (settings.set_sloped_elev_step_pct, "sloped_elev_step_pct", "elev_step_pct"),
+    }[which]
+    setter(160)
+    on_disk = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert on_disk[own_key] == 150 and other_key not in on_disk
+    monkeypatch.setattr(settings, "_elev_step_pct", None)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", None)
+    stepped, sloped = settings.get_elev_step_pct(), settings.get_sloped_elev_step_pct()
+    assert (stepped, sloped) == (
+        (150, iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT) if which == "stepped" else (iso_geometry.ELEV_STEP_DEFAULT_PCT, 150)
+    )
 
 
 def test_get_window_size_falls_back_below_minimum(tmp_path: Path) -> None:

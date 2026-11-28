@@ -364,7 +364,7 @@ def test_a_data_locked_document_refuses(before_path, monkeypatch) -> None:
 
     window = _window(before_path)
     try:
-        monkeypatch.setattr(window, "game_data_lock_reason", lambda: "Shown with the other game's data.")
+        monkeypatch.setattr(window, "game_data_lock_reason", lambda family=None: "Shown with the other game's data.")
         window._update_tool_enabled()
         window.mode_combo.setCurrentText("Players")
         window._repopulate_players()
@@ -385,7 +385,7 @@ def test_the_swap_gates_are_the_file_gates_closed_whole_by_the_data_lock(before_
         assert window._swap_gates() == player_swap.file_gates(window.scenario)
         monkeypatch.setattr(options_model, "diplomacy_write_supported", lambda *_: False)
         assert not window._swap_gates().diplomacy, "read where file_gates() reads it, not a second copy"
-        monkeypatch.setattr(window, "game_data_lock_reason", lambda: "Shown with the other game's data.")
+        monkeypatch.setattr(window, "game_data_lock_reason", lambda family=None: "Shown with the other game's data.")
         assert window._swap_gates() == player_swap.SwapGates(), "GH #67 closes every gate, units included"
     finally:
         _close(window)

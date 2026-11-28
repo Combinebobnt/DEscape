@@ -33,6 +33,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from PyQt5 import sip
 from PyQt5.QtCore import QObject, QProcess, QTimer
 from PyQt5.QtWidgets import QAction, QActionGroup, QMenu
 
@@ -153,7 +154,7 @@ class DataModMenu(QObject):
             return f"Data mods change {takes} data; this document shows {shown.display_name}'s"
         if mod.status_path in self._failed:
             return self._failed[mod.status_path]
-        install = asset_source.get_install_path()
+        install = asset_source.get_de_install_path()
         if install is None:
             return "Set the game's install folder in Settings first: a data mod's tables are read against it"
         if not data_mods.genieutils_available() and self._cached(mod, install) is None:
@@ -175,7 +176,7 @@ class DataModMenu(QObject):
             self._stop_job()
             self._swap(None, None)
             return
-        install = asset_source.get_install_path()
+        install = asset_source.get_de_install_path()
         tables = self._cached(mod, install)
         if tables is not None:
             self._stop_job()
@@ -195,7 +196,7 @@ class DataModMenu(QObject):
         self._pending = None
         self._apply_timer.stop()
         mod = None if remembered is None or not game_dataset.game().data_mods else self._resolve(remembered)
-        install = asset_source.get_install_path()
+        install = asset_source.get_de_install_path()
         tables = None if mod is None else self._cached(mod, install)
         # Before any job starts: a job that fails at once falls back to what is in effect.
         changed = self._set_effective(tables, mod if tables is not None else None)
@@ -290,12 +291,14 @@ class DataModMenu(QObject):
 
     def shutdown(self) -> None:
         """Window close: no parse outlives the window, and no swap lands after it."""
-        job = self._job
         self._stop_job()
         self._pending = None
         self._apply_timer.stop()
-        if job is not None:
-            job.process.waitForFinished(2000)
+        # A replaced job too: killed but unseen, its QProcess would end inside its destructor (TASK-700).
+        for process in self.findChildren(QProcess):
+            if process.state() != QProcess.NotRunning:
+                process.kill()
+                process.waitForFinished(2000)
 
     def _on_error(self, job: _Job, error) -> None:
         # FailedToStart emits no finished(); every other error is followed by one.
@@ -306,6 +309,8 @@ class DataModMenu(QObject):
             job.process.deleteLater()
 
     def _on_output(self, job: _Job) -> None:
+        if sip.isdeleted(job.process):
+            return  # emitted by a still-running process's destructor: its window is going
         lines = (job.partial + bytes(job.process.readAllStandardOutput())).split(b"\n")
         job.partial = lines.pop()
         if job is not self._job:
@@ -318,6 +323,8 @@ class DataModMenu(QObject):
                 self._window.load_progress.step("data_mod", percent, f"Parsing {job.mod.title}: {caption}")
 
     def _on_finished(self, job: _Job, code: int, status) -> None:
+        if sip.isdeleted(job.process):
+            return  # as in _on_output(); a raise here is a qFatal abort
         job.process.deleteLater()
         if job is not self._job:
             return  # stopped or replaced

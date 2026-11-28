@@ -372,7 +372,7 @@ def rotation_spy(monkeypatch):
         calls["sprite_pieces_for"].append((unit_const, rotation))
         return []
 
-    def fake_icon_for(unit_const, rotation, team_index, footprint_w, footprint_h, seed=None, art=None):
+    def fake_icon_for(unit_const, rotation, team_index, footprint_w, footprint_h, seed=None, art=None, clip=(0, 0, 0, 0)):
         calls["icon_for"].append((unit_const, rotation))
         return
 

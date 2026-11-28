@@ -54,6 +54,40 @@ class _MapViewHighlightMixin:
         drag's own run is the ghost, pushed by the stroke handler instead."""
         self._on_cliff_preview = fn
 
+    def set_clone_hooks(
+        self, on_source: Callable[[tuple[int, int]], None], marker_query: Callable[[tuple[int, int] | None], tuple]
+    ) -> None:
+        """GH #285: `on_source(tile)` takes a Ctrl+press's tile as the Clone
+        Stamp's source; `marker_query(hover)` names the tiles its next dab
+        samples from, () for none."""
+        self._on_clone_source = on_source
+        self._clone_marker_query = marker_query
+
+    def refresh_clone_marker(self, hover: tuple[int, int] | None, hide: bool = False) -> None:
+        """Redraws the Clone Stamp's dashed source outline for `hover`. Hidden with
+        `hide`, off the Clone Stamp, with no map or with nothing to outline."""
+        tiles = () if hide or self._tool != "clone" or self._map_width is None else self._clone_marker_query(hover)
+        path = QPainterPath()
+        for tx, ty in tiles:
+            polygon = self._tile_polygon(tx, ty, coarse=True)
+            if polygon is not None:
+                path.addPolygon(polygon)
+                path.closeSubpath()
+        item = self._clone_marker_item
+        if path.isEmpty():
+            if item is not None:
+                item.hide()
+            return
+        # The brush outline's colour, dashed, no fill and no pulse: "copying from here", not a second brush.
+        pen = QPen(self._highlight_outline_pen)
+        pen.setDashPattern([4.0, 3.0])
+        if item is None:
+            item = self._clone_marker_item = self.scene().addPath(path, pen)
+        else:
+            item.setPath(path)
+            item.setPen(pen)
+        item.show()
+
     def stroke_button(self):
         """The mouse button holding the open stroke, None between strokes."""
         return self._stroke_button
@@ -289,6 +323,9 @@ class _MapViewHighlightMixin:
         approximate outline is fine here since this path only ever feeds
         display, never a pick -- unlike _update_pan_highlight below, which
         stays exact."""
+        if self._tool == "clone":
+            # Every hover and drag move, ahead of the memo: the marker follows the cursor by the offset.
+            self.refresh_clone_marker((tile_x, tile_y))
         if self._tool == "cliff" and self._cliff_footprint is not None:
             # The Cliff tool's own footprint, whichever tile the cursor is on:
             # a per-move repaint or a revisited tile cannot put the diamond back.
@@ -500,6 +537,9 @@ class _MapViewHighlightMixin:
         # exact same tile with the same brush afterwards would match the
         # stale key and skip rebuilding the (now-removed) scene items.
         self._highlight_key = None
+        if self._clone_marker_item is not None:
+            # No hover: the anchor before the first press, else nothing.
+            self.refresh_clone_marker(None)
         if self._highlight_outline_item is not None:
             self.scene().removeItem(self._highlight_outline_item)
             self.scene().removeItem(self._highlight_fill_item)

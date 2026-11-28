@@ -385,6 +385,7 @@ def test_a_warm_installs_a_sloped_finer_level(sprite_install, mixed_scenario) ->
     assert lvl.heights is lvl.corner_rise is not cache.corner_rise
 
 
+@pytest.mark.usefixtures("one_elev_step")
 def test_sloped_warms_a_level_the_visible_one_left_unbuilt(sprite_install, mixed_scenario) -> None:
     """Sloped's ladder is Stepped's (TASK-031.60 coarser, TASK-146 finer), so
     a non-visible level has a warm job until it is built, and a warm installs

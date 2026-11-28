@@ -23,6 +23,7 @@ from descape import (
     placement_rules,
     region_clipboard,
     region_transform,
+    scenario_compat,
     terrain_target,
     unit_kind,
     unit_pick,
@@ -99,7 +100,7 @@ def _units_text(count: int, carried: int) -> str:
 _REFLECTIONS = frozenset({"mx", "my", "d", "a"})
 
 # Paste's status line when the file's units cannot be edited (Paste Region and Paste Units).
-_PASTE_UNITS_SKIPPED = "Units were skipped -- units are read-only for this file"
+_PASTE_UNITS_SKIPPED = "Units were skipped: units are read-only for this file"
 
 
 class _PasteOutcome(NamedTuple):
@@ -221,7 +222,7 @@ class _ViewerRegionMixin:
         """Copy Region: snapshots the committed selection's terrain,
         elevation and units, and pushes it onto the clipboard history as the
         new active entry. No undo record -- nothing is mutated."""
-        if self.scenario is None or self._region is None:
+        if self.scenario is None or self._region is None or self._refuse_compat_copy():
             return
         tx0, ty0, tx1, ty1 = self._region
         with perf_trace.phase("region_copy"):
@@ -235,13 +236,22 @@ class _ViewerRegionMixin:
             f"(entry {len(self._clipboard_history.entries)} of {clipboard_history.MAX_ENTRIES})"
         )
 
-    def _push_clipboard(self, block) -> None:
+    def _refuse_compat_copy(self) -> bool:
+        """TASK-057: nothing copies out of a compatibility-mode document. True (and says why) when refused."""
+        reason = scenario_compat.lock_reason(self.scenario)
+        if reason is not None:
+            self._log_status(f"Copy refused. {reason}", level=debug_log.WARNING)
+        return reason is not None
+
+    def _push_clipboard(self, block, *, label: str | None = None, restamp: bool = True) -> None:
         """Makes `block` the new active clipboard entry: the shared tail of
-        Copy Region and Copy Units."""
-        block = self._with_file_game(block)
+        Copy Region, Copy Units and a used prefab, which passes its name and
+        restamp=False so its own game stamp still decides Paste's refusal."""
+        if restamp:
+            block = self._with_file_game(block)
         with perf_trace.phase("thumbnail"):
             thumbnail = clipboard_history.thumbnail_rgb(block)
-        self._clipboard_history.push(block, thumbnail, clipboard_history.default_label(block))
+        self._clipboard_history.push(block, thumbnail, label or clipboard_history.default_label(block))
         # Every history mutation clears the move state, with no exceptions to
         # remember: a move replays its OWN snapshot, so leaving it armed would
         # still be correct, but dragging after the user has shifted clipboard
@@ -256,7 +266,7 @@ class _ViewerRegionMixin:
         Units-mode selection. No undo record: nothing is mutated. False when
         there was nothing to copy. Cut Units passes `cut`: the entry keeps
         the units' ids for a paste into this document (TASK-341)."""
-        if self.scenario is None:
+        if self.scenario is None or self._refuse_compat_copy():
             return False
         if entries is None:
             entries = self._selected_unit_entries()
@@ -282,7 +292,7 @@ class _ViewerRegionMixin:
             for e in self._clipboard_history.entries
         ]
 
-    def _show_clipboard_history(self) -> None:
+    def _show_clipboard_history(self, tab: str | None = None) -> None:
         if self._clipboard_dialog is None:
             self._clipboard_dialog = ClipboardHistoryDialog(
                 self,
@@ -290,8 +300,12 @@ class _ViewerRegionMixin:
                 on_delete=self._on_clipboard_delete,
                 on_clear=self._on_clipboard_clear,
                 on_rename=self._on_clipboard_rename,
+                **self._prefab_dialog_callbacks(),
             )
+        if tab is not None:
+            self._clipboard_dialog.show_tab(tab)
         self._refresh_clipboard_dialog()
+        self._refresh_prefab_rows()  # here, never per Copy: a Copy does not rescan the folder
         self._clipboard_dialog.show()
         self._clipboard_dialog.raise_()
         self._clipboard_dialog.activateWindow()
@@ -433,7 +447,10 @@ class _ViewerRegionMixin:
         block = self._clipboard_history.active_block
         if self.scenario is None or block is None:
             return
-        if refusal := self._cross_game_refusal(block):
+        refusal = self._cross_game_refusal(block)
+        if not refusal and self._file_is_legacy():  # no family: region paste stays out of every band
+            refusal = self.game_data_lock_reason()
+        if refusal:
             self._log_status(f"Paste refused: {refusal}", level=debug_log.WARNING)
             return
         # A coalesced move still pending would leave _hover_tile one tile behind the cursor.
@@ -446,7 +463,7 @@ class _ViewerRegionMixin:
         elif self._region is not None:
             tx0, ty0 = self._region[0], self._region[1]
         else:
-            self._log_status("Paste Region: no target tile -- hover the map or select a region first")
+            self._log_status("Paste Region: no target tile, hover the map or select a region first")
             return
 
         do_terrain = self.paste_terrain_check.isChecked()
@@ -1085,8 +1102,9 @@ class _ViewerRegionMixin:
     def _write_lift_units(model, state, plan) -> None:
         """Each image onto its member, through the guarded setters only and in
         this order: a gate's or object's orientation sibling (set_unit_const()), the
-        position, then a facing (set_rotation()) or a wall's shape index
-        (set_wall_variant()). Everything else about the unit stays."""
+        position, then a facing (set_rotation()), a wall's shape index
+        (set_wall_variant()) or a DE bridge piece's frame (set_variant(), on
+        the new const). Everything else about the unit stays."""
         for image in plan.images:
             _player_id, unit = state.members[image.key]
             if image.unit_const != unit.unit_const:
@@ -1096,8 +1114,12 @@ class _ViewerRegionMixin:
                 kind, value = image.rotation_write
                 if kind == region_transform.WRITE_ANGLE:
                     model.set_rotation(unit, value)
-                else:
+                elif kind == region_transform.WRITE_WALL:
                     model.set_wall_variant(unit, int(value))
+                elif kind == region_transform.WRITE_VARIANT:
+                    model.set_variant(unit, value)
+                else:
+                    raise ValueError(f"unknown rotation write {kind!r}")
 
     def _write_lift_units_or_restore(self, model, state, plan, label: str) -> None:
         """_write_lift_units() inside an open unit edit. On a raise the edit is
@@ -1340,7 +1362,7 @@ class _ViewerRegionMixin:
         if self.scenario is None or self._busy:
             return
         mm = self.scenario.map_manager
-        if not (0 <= x < mm.map_width and 0 <= y < mm.map_height):
+        if not (0 <= x < mm.map_width and 0 <= y < mm.map_height) or self._refuse_legacy_terrain():
             return
         terrain_id = self.terrain_panel.terrain_id()
         name = name_for_terrain_id(terrain_id)
@@ -1380,7 +1402,7 @@ class _ViewerRegionMixin:
                     f"This area is already {name}. Filling it clears the layered terrain on "
                     f"{len(region)} tiles. Continue?"
                 )
-            elif self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked():
+            elif any(self._terrain_unit_boxes()):
                 # Skipped when neither box is on: a terrain-only fill has no per-tile unit cost.
                 question = (
                     f"This fill covers {len(region)} tiles and can place a large number of "
@@ -1609,7 +1631,7 @@ class _ViewerRegionMixin:
             )
             self._log_status(
                 f"Mirror refused: {len(plan.elevation_violations)} elevation seam "
-                f"violation(s) would exceed the +/-1 limit (e.g. {sample}) -- pick a "
+                f"violation(s) would exceed the +/-1 limit (e.g. {sample}). Pick a "
                 f"different mode, or flatten the source region's edges first"
             )
             return None
@@ -1706,7 +1728,7 @@ class _ViewerRegionMixin:
             )
         return (
             "Mirror refused: " + "; ".join(reasons)
-            + " -- pick a different mode, or move the offending objects off the seam"
+            + ". Pick a different mode, or move the offending objects off the seam"
         )
 
     def _apply_mirror_units(self, unit_plan):

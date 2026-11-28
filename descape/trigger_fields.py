@@ -279,10 +279,18 @@ TRIGGER_FIELDS: tuple[FieldSpec, ...] = (
 )
 
 
+_LEGACY_TRIGGER_ATTRIBUTES = frozenset(
+    ("name", "description", "description_stid", "enabled", "looping", "display_as_objective", "description_order")
+)
+
+
 @cache
 def trigger_specs(scenario_version: str) -> tuple[FieldSpec, ...]:
     """TRIGGER_FIELDS minus any field the library's own link does not support
-    at `scenario_version` (execute_on_load before 1.55)."""
+    at `scenario_version` (execute_on_load before 1.55). A "legacy-X" key
+    (LoadedScenario.vocabulary_version) gets only what a pre-DE trigger stores."""
+    if scenario_version.startswith(library_compat.LEGACY_VOCABULARY_PREFIX):
+        return tuple(spec for spec in TRIGGER_FIELDS if spec.attribute in _LEGACY_TRIGGER_ATTRIBUTES)
     # Checked first: Support.supports() calls float(v). An unparseable version shows every field.
     if scenario_io._version_key(scenario_version) is None:
         return TRIGGER_FIELDS

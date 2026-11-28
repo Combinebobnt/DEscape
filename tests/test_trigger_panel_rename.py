@@ -344,7 +344,7 @@ def test_a_locked_document_refuses_the_rename_at_commit(monkeypatch, opened_by: 
         editor = _name_editor(panel)
         assert editor is not None
         _type_into(editor, "Refused")
-        monkeypatch.setattr(window, "_refuse_locked_edit", lambda: True)
+        monkeypatch.setattr(window, "_refuse_locked_edit", lambda family=None: True)
         _editor_key(editor, Qt.Key_Return)
         assert _record_count(window) == before
         assert _names(window)[0] == name

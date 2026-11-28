@@ -182,7 +182,8 @@ DRAPED_SPRITE_CONSTS: frozenset[int] = frozenset({1893, 1897})
 _ROR_DRAPED_SPRITE_CONSTS: frozenset[int] = frozenset({50, 1187, 1893, 1897})
 _DRAPED_BY_GAME = games.PerGame(
     "render: consts whose foundation terrain drapes under their sprite",
-    {"aoe2": DRAPED_SPRITE_CONSTS, "ror": _ROR_DRAPED_SPRITE_CONSTS},
+    # The 1999 game and HD Edition: empty, their Farm 50 has no sprite to drape under.
+    {"aoe2": DRAPED_SPRITE_CONSTS, "ror": _ROR_DRAPED_SPRITE_CONSTS, "aoc": frozenset(), "hd": frozenset()},
 )
 
 

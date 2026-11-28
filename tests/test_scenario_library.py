@@ -80,6 +80,7 @@ def _library_tree(tmp_path: Path) -> tuple[Path, Path]:
     _touch(own / "Offline.aoe2scenario", b"x" * 10)
     _touch(own / "notes.txt")
     _touch(own / "Old.scx", b"x" * 3)
+    _touch(own / "UserPatch.scx2", b"x" * 4)
     caps = _scenario_dir(profile, "7656", caps=True)
     _touch(caps / "Steam.aoe2scenario", b"x" * 20)
     mods = profile / "7656" / "mods"
@@ -101,6 +102,7 @@ def test_discover_lists_every_root_with_its_source(tmp_path):
     assert got == {
         "Offline.aoe2scenario": ("Profile 0", False, 10),
         "Old.scx": ("Profile 0", False, 3),
+        "UserPatch.scx2": ("Profile 0", False, 4),
         "Steam.aoe2scenario": ("Profile 7656", False, 20),
         "Sub.aoe2scenario": ("Sub Mod (subscribed mod)", True, 0),
         "Local.aoe2scenario": ("Mine (local mod)", False, 0),

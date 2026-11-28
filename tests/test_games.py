@@ -8,6 +8,7 @@ import ast
 import importlib.util
 import json
 import shutil
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,7 +38,17 @@ def _registry_problems() -> list[str]:
         problems.append(f"{default.id}: the default game's tables_dir must be {game_dataset.TABLES_DIR}")
     claimed: dict[int, str] = {}
     sections: dict[str, str] = {}
+    labels: dict[str, str] = {}
     for game in games.GAMES:
+        for label in sorted(game.formats):
+            if label in labels:
+                problems.append(f"{game.id}: format {label!r} is already {labels[label]}'s")
+            labels.setdefault(label, game.id)
+        if game.stand_in is not None:
+            if game.stand_in not in ids:
+                problems.append(f"{game.id}: stand_in {game.stand_in!r} is no registered game")
+            elif games.get(game.stand_in).stand_in is not None:
+                problems.append(f"{game.id}: stand_in {game.stand_in!r} has a stand_in of its own")
         for variant in sorted(game.variants or ()):
             if variant in claimed:
                 problems.append(f"{game.id}: variant {variant} is already {claimed[variant]}'s")
@@ -52,7 +63,7 @@ def _registry_problems() -> list[str]:
                 sections[game.stamp_key] = game.id
             if default.tables_dir not in game.tables_dir.parents:
                 problems.append(f"{game.id}: tables_dir must sit under {default.tables_dir}")
-        if game.install != games.AOE2DE_INSTALL:
+        if game.install not in games.IMPLEMENTED_INSTALLS:
             problems.append(f"{game.id}: install {game.install!r} is not implemented")
         try:
             games.chain(game)
@@ -81,11 +92,13 @@ def test_the_registry_check_names_every_kind_of_problem(tmp_path):
         variants=games.ROR.variants,
         blank_template="blank_fake.aoe2scenario",
         reader="scx",
-        art="slp",
+        art="smx",
         install="hd",
         stamp_key=None,
+        formats=games.AOC.formats,
+        stand_in="nowhere",
     )
-    second = fake_game.fake(tmp_path, id="second", variants=None, stamp_key=games.ROR.stamp_key)
+    second = fake_game.fake(tmp_path, id="second", variants=None, stamp_key=games.ROR.stamp_key, stand_in="aoc")
     with fake_game.registered(broken), fake_game.registered(second):
         problems = _registry_problems()
     for expected in (
@@ -99,7 +112,10 @@ def test_the_registry_check_names_every_kind_of_problem(tmp_path):
         "generated tables missing",
         "fake: no template blank_fake.aoe2scenario",
         "fake: reader 'scx' is not implemented",
-        "fake: art 'slp' is not implemented",
+        "fake: art 'smx' is not implemented",
+        "fake: format 'scn-aok' is already aoc's",
+        "fake: stand_in 'nowhere' is no registered game",
+        "second: stand_in 'aoc' has a stand_in of its own",
     ):
         assert any(expected in problem for problem in problems), (expected, problems)
     assert not _registry_problems(), "both fake games are gone again"
@@ -107,7 +123,7 @@ def test_the_registry_check_names_every_kind_of_problem(tmp_path):
 
 def test_the_persisted_ids_and_their_order():
     # config.yaml and the stamp file carry these ids, and the order is the Settings and New Map order.
-    assert games.ids() == (game_dataset.AOE2, game_dataset.ROR) == ("aoe2", "ror")
+    assert games.ids() == (game_dataset.AOE2, game_dataset.ROR, game_dataset.AOC, game_dataset.HD) == ("aoe2", "ror", "aoc", "hd")
     assert games.default() is games.AOE2 and game_dataset.game() is games.AOE2
 
 
@@ -116,7 +132,7 @@ def test_register_refuses_a_duplicate_and_unregister_an_unknown_game():
         games.register(games.ROR)
     with pytest.raises(ValueError, match="unknown game dataset"):
         games.unregister("aoe3")
-    assert games.GAMES == [games.AOE2, games.ROR]
+    assert games.GAMES == [games.AOE2, games.ROR, games.AOC, games.HD]
 
 
 def test_a_fallback_cycle_is_an_error_not_a_hang(tmp_path):
@@ -137,12 +153,68 @@ def test_a_scenarios_own_game_does_not_follow_the_active_one():
     assert game_dataset.game() is games.ROR
 
 
+def test_aoc_claims_band_1_23_and_no_game_claims_hd_editions_header_3_files():
+    """H3 (TASK-431): 1.23 is mostly UserPatch .scx2, so aoc's; a header-3 HD file stays AoE2:DE's."""
+    from descape import scenario_format
+
+    import conftest
+
+    assert games.for_scenario(conftest.legacy_loaded(game=scenario_format.UP)) is games.AOC
+    assert games.for_format(scenario_format.HD_DE) is None
+    hd3 = b"1.21" + struct.pack("<Ii", 4, 3) + b"\x00" * 8
+    assert scenario_format.detect_format(hd3).game == scenario_format.HD_DE
+    assert games.for_scenario(SimpleNamespace(source_format=scenario_format.detect_format(hd3))) is games.AOE2
+
+
+def test_hd_data_picked_by_hand_locks_a_header_3_hd_file():
+    """H4: a header-3 HD file is AoE2's (writable), so showing it with hd data locks it by the data rule."""
+    from descape import scenario_format
+
+    hd3 = b"1.21" + struct.pack("<Ii", 4, 3) + b"\x00" * 8
+    loaded = SimpleNamespace(source_format=scenario_format.detect_format(hd3))
+    assert not loaded.source_format.legacy and game_dataset.file_game(loaded) is games.AOE2
+    assert game_dataset.lock_reason(games.AOE2.id, games.HD.id, legacy=False) is not None
+    assert game_dataset.lock_reason(games.AOE2.id, games.AOE2.id, legacy=False) is None
+
+
+@pytest.mark.parametrize("own_id", ["aoc", "hd"])
+def test_a_1999_or_hd_file_without_its_install_is_its_stand_ins_file(own_id):
+    """D4 and H5: with no install of its own, an AoK/AoC or header-2 HD file draws, names and
+    locks exactly as an AoE2 file, as before its game existed."""
+    from descape import render_units, scenario_format
+
+    import conftest
+
+    assert games.AOC.formats == {scenario_format.AOK, scenario_format.AOC, scenario_format.UP}, "games.py spells the labels out"
+    assert games.HD.formats == {scenario_format.HD} and games.HD.hand_pick_formats == {scenario_format.HD_DE}
+    own = games.get(own_id)
+    legacy = conftest.legacy_loaded(game=scenario_format.HD if own is games.HD else scenario_format.AOC)
+    assert games.for_scenario(legacy) is own and not game_dataset.configured(own)
+    assert game_dataset.file_game(legacy) is games.AOE2 and game_dataset.effective_game(own_id) is games.AOE2
+    assert game_dataset.lock_reason(game_dataset.file_game(legacy).id, game_dataset.active()) is None
+    assert render_units.player_art_for(legacy, 1) == legacy.player_art[1]
+    from descape import viewer_file
+
+    class _Shown(viewer_file._ViewerFileMixin):
+        scenario = legacy
+
+    assert _Shown()._shown_game_dataset() == "aoe2", "Auto shows the stand-in's data"
+    assert game_dataset.file_game(SimpleNamespace(game_variant=2)) is games.ROR, "a game without stand_in is its own"
+
+
+def test_a_game_whose_art_has_no_walker_draws_marks(monkeypatch, fake_install):
+    assert unit_sprites._graphics_dir() is not None, "with an install, a walked art has a folder"
+    monkeypatch.setattr(game_dataset, "game", lambda: games.AOC)
+    assert games.AOC.art not in unit_sprites.WALKED_ART and unit_sprites._graphics_dir() is None
+
+
 def test_the_generators_game_roots_match_the_registry(tmp_path):
     """tools/_game_root.py imports nothing from descape (its bytes key every cached data mod), so it keeps its own table."""
     assert games.ids() == _game_root.DATASETS
     for game in games.GAMES:
         assert _game_root.game_root(tmp_path, game.id) == game.root(tmp_path)
         assert _game_root.dat_path(tmp_path, game.id) == tmp_path / regen.dat_subpath(game)
+        assert tuple(map(Path, game.dat_subpaths)) == _game_root.dat_subpaths(game.id)
 
 
 def test_the_descriptors_agree_with_the_paths_and_behaviour_they_drive():
@@ -166,8 +238,9 @@ def test_a_game_registered_later_shows_everywhere(tmp_path, monkeypatch):
     shutil.copytree(games.ROR.tables_dir, tables)
     game = fake_game.fake(tables, blank_template=games.AOE2.blank_template)
     choices_before, new_map_before = settings.game_data_choices(), settings.new_map_game_data()
+    datasets_before = game_dataset.DATASETS
     with fake_game.registered(game):
-        assert game_dataset.DATASETS == ("aoe2", "ror", "fake")
+        assert (*datasets_before, "fake") == game_dataset.DATASETS
         assert game_dataset.DISPLAY_NAMES["fake"] == "Fake Game"
         assert game_dataset.from_variant(fake_game.FAKE_VARIANT) == "fake"
         assert settings.game_data_choices() == [*choices_before, ("fake", "Fake Game")]
@@ -197,7 +270,7 @@ def test_a_game_registered_later_shows_everywhere(tmp_path, monkeypatch):
         assert game_dataset.resource_dirs("resources/x") == [own, base]
 
     assert game_dataset.active() == game_dataset.AOE2, "registered() leaves no fake game active"
-    assert game_dataset.DATASETS == ("aoe2", "ror") and settings.game_data_choices() == choices_before
+    assert datasets_before == game_dataset.DATASETS and settings.game_data_choices() == choices_before
     with pytest.raises(ValueError, match="unknown game dataset"):
         game_dataset.set_active("fake")
     with pytest.raises(ValueError, match="game_data must be one of"):
@@ -280,6 +353,33 @@ def test_every_per_game_table_has_every_registered_game():
     assert not _per_game_problems()
 
 
+# Editor-listing entries left empty because the game's own editor was never measured (TASK-430 D10).
+_NOT_MEASURED = {
+    ("unit_variant: the .dat types whose stored frame equals a variant's rotation", "aoc"),
+    ("unit_kind: the objects a game's editor lists for GAIA only", "aoc"),
+    ("object_catalog: dat-hidden ids the game's editor lists, by category", "aoc"),
+    ("object_catalog: unhidden ids the game's editor lists for no one, offered as editor-hidden", "aoc"),
+    ("object_catalog: unhidden ids the game's editor leaves out, left out of objects()", "aoc"),
+    ("object_catalog: editor-hidden objects shared with the fallback game, offered as hidden", "aoc"),
+    ("unit_variant: the .dat types whose stored frame equals a variant's rotation", "hd"),
+    ("unit_kind: the objects a game's editor lists for GAIA only", "hd"),
+    ("object_catalog: dat-hidden ids the game's editor lists, by category", "hd"),
+    ("object_catalog: unhidden ids the game's editor lists for no one, offered as editor-hidden", "hd"),
+    ("object_catalog: unhidden ids the game's editor leaves out, left out of objects()", "hd"),
+    ("object_catalog: editor-hidden objects shared with the fallback game, offered as hidden", "hd"),
+}
+
+
+def test_an_unmeasured_editor_table_belongs_to_a_view_only_game():
+    """Making such a game writable measures these first: an empty entry would place and list wrongly."""
+    fake_game.import_every_module()
+    by_what = {table.what: table for table in games.TABLES}
+    for what, game_id in sorted(_NOT_MEASURED):
+        value = by_what[what][game_id]
+        assert not (value() if callable(value) else value), (what, game_id)
+        assert not games.get(game_id).writable, f"{game_id} is writable: measure {what!r} first"
+
+
 def test_the_per_game_check_lists_what_a_new_game_must_measure(tmp_path):
     fake_game.import_every_module()
     games.register(fake_game.fake(tmp_path))
@@ -329,23 +429,31 @@ def test_a_data_mod_switch_keeps_a_pick_of_a_const_the_mod_left_alone(tmp_path):
 # ----------------------------------------------------------------- no branching on which game
 
 # Names of a game id constant: game_dataset.AOE2/ROR, games.DEFAULT_ID, and the games.AOE2/ROR descriptors.
-_GAME_CONSTANT_NAMES = frozenset({"AOE2", "ROR", "DEFAULT_ID"})
+_GAME_CONSTANT_NAMES = frozenset({"AOE2", "ROR", "AOC", "HD", "DEFAULT_ID"})
 _GAME_ACCESSORS = frozenset({"game", "for_scenario", "for_variant", "get"})
 
 
-def _names_a_game(node: ast.expr) -> bool:
-    """A game id literal or constant, or a tuple, list or set holding one."""
+def _names_a_game(node: ast.expr, own: frozenset[str] = frozenset()) -> bool:
+    """A game id literal or constant, or a tuple, list or set holding one. `own`: the module's
+    own top-level names, which shadow a game constant (scenario_format.AOC is a format label)."""
     if isinstance(node, ast.Tuple | ast.List | ast.Set):
-        return any(_names_a_game(element) for element in node.elts)
+        return any(_names_a_game(element, own) for element in node.elts)
     if isinstance(node, ast.Constant):
         return node.value in games.ids()
     if isinstance(node, ast.Name):
-        return node.id in _GAME_CONSTANT_NAMES
+        return node.id in _GAME_CONSTANT_NAMES and node.id not in own
     if isinstance(node, ast.Attribute):
         if node.attr == "id":
-            return _names_a_game(node.value)
+            return _names_a_game(node.value, own)
         return isinstance(node.value, ast.Name) and node.value.id in ("game_dataset", "games") and node.attr in _GAME_CONSTANT_NAMES
     return False
+
+
+def _accessor_value(node: ast.expr) -> bool:
+    """A call to, or an attribute of, game_dataset or games: an alias that may hold a game."""
+    while isinstance(node, ast.Call | ast.Attribute):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return isinstance(node, ast.Name) and node.id in ("game_dataset", "games")
 
 
 def _is_constant(node: ast.expr) -> bool:
@@ -374,6 +482,14 @@ def _game_branches(source: str) -> list[int]:
     .id with a constant. Comparing two game-valued variables or calls stays allowed."""
     lines = []
     tree = ast.parse(source)
+    # A top-level name the module binds to a non-game value (scenario_format.AOC, a format label) is its own.
+    own = frozenset(
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign) and not _names_a_game(node.value) and not _accessor_value(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    )
     per_game_values = {
         id(arg)
         for node in ast.walk(tree)
@@ -382,15 +498,15 @@ def _game_branches(source: str) -> list[int]:
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict) and id(node) not in per_game_values and any(
-            key is not None and _names_a_game(key) for key in node.keys
+            key is not None and _names_a_game(key, own) for key in node.keys
         ):
             lines.append(node.lineno)  # a dict keyed by game: a PerGame table the completeness test cannot see
-        if isinstance(node, ast.MatchValue) and _names_a_game(node.value):
+        if isinstance(node, ast.MatchValue) and _names_a_game(node.value, own):
             lines.append(node.lineno)
         if not isinstance(node, ast.Compare):
             continue
         operands = [node.left, *node.comparators]
-        names_a_game = any(_names_a_game(operand) for operand in operands)
+        names_a_game = any(_names_a_game(operand, own) for operand in operands)
         if names_a_game or (any(_accessor_id(operand) for operand in operands) and any(_is_constant(operand) for operand in operands)):
             lines.append(node.lineno)
     return lines
@@ -404,7 +520,11 @@ def test_the_game_branch_lint_tells_a_branch_from_a_comparison_of_two_games():
         "game_dataset.game().id != games.DEFAULT_ID",
         "games.get(x).id in OTHER_GAMES",
         'kind not in ["aoe2"]',
+        'ROR = game_dataset.ROR\nif game_dataset.active() == ROR:\n    pass',
+        'AOC = "aoc"\nNAMES = {AOC: 1}',
         "HOSTS = {game_dataset.AOE2: 1, game_dataset.ROR: 2}",
+        "kind is AOC",
+        "kind is games.AOC",
         'match game_dataset.active():\n    case "ror":\n        pass',
     ]
     allowed = [
@@ -415,6 +535,7 @@ def test_the_game_branch_lint_tells_a_branch_from_a_comparison_of_two_games():
         "entry.id == wanted.id",
         'game_dataset.game().id == own_id',
         'section == "objects"',
+        'AOC = "scn-aoc"\nNAMES = {AOC: "The Conquerors"}',
     ]
     assert [source for source in flagged if not _game_branches(source)] == []
     assert [source for source in allowed if _game_branches(source)] == []
@@ -436,7 +557,10 @@ def test_no_descape_module_branches_on_which_game():
 
 # Each _game_root dataset's values in the two generators that swap in hand-measured lists:
 # None is the module's own (the default game), else the name of its dict of replacements.
-_GENERATOR_VALUES = {_game_root.AOE2: None, _game_root.ROR: "_ROR_VALUES"}
+_GENERATOR_VALUES = {
+    _game_root.AOE2: None, _game_root.ROR: "_ROR_VALUES", _game_root.AOC: "_AOC_VALUES", _game_root.AOE1: "_AOE1_VALUES",
+    _game_root.HD: "_HD_VALUES",
+}
 _SELECTING_GENERATORS = ("gen_unit_graphic_map.py", "gen_unit_render_data.py")
 
 
@@ -451,7 +575,7 @@ def _private_generator(name: str, monkeypatch):
 def test_the_generators_have_values_for_every_game_root(monkeypatch):
     """A game added to tools/_game_root.py also needs its hand-measured values in each
     generator and a _select_dataset() branch for them, then a _GENERATOR_VALUES entry."""
-    assert set(_GENERATOR_VALUES) == set(_game_root.DATASETS)
+    assert set(_GENERATOR_VALUES) == set(_game_root.DATASETS + _game_root.PENDING)
     for name in _SELECTING_GENERATORS:
         for dataset, values_name in _GENERATOR_VALUES.items():
             module = _private_generator(name, monkeypatch)
@@ -468,3 +592,34 @@ def test_the_generators_have_values_for_every_game_root(monkeypatch):
             holdouts = values_name.replace("_VALUES", "_ART_INVARIANT_HOLDOUTS")
             if hasattr(module, holdouts):
                 assert module._ART_INVARIANT_HOLDOUTS is getattr(module, holdouts), (name, dataset)
+
+
+def test_parse_dat_picks_its_reader_by_the_version_string(tmp_path, monkeypatch):
+    """A 1999 .dat goes to tools/_dat57.py, every other to genieutils-py, sniffed from a partial inflate."""
+    import sys
+    import zlib
+
+    from genieutils.datfile import DatFile
+
+    def deflated(name: str, head: bytes) -> Path:
+        packer = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+        path = tmp_path / name
+        path.write_bytes(packer.compress(head + b"\0" * 8000) + packer.flush())
+        return path
+
+    old, new = deflated("old.dat", b"VER 5.7\0"), deflated("new.dat", b"VER 8.8\0")
+    assert (_game_root.dat_version(old), _game_root.dat_version(new)) == ("VER 5.7", "VER 8.8")
+    monkeypatch.setitem(sys.modules, "_dat57", SimpleNamespace(parse=lambda path: ("dat57", Path(path).name)))
+    monkeypatch.setattr(DatFile, "parse", staticmethod(lambda path: ("genieutils", Path(path).name)))
+    assert _game_root.parse_dat(old) == ("dat57", "old.dat")
+    assert _game_root.parse_dat(new) == ("genieutils", "new.dat")
+
+
+def test_the_aoc_dat_falls_back_to_the_unpatched_conquerors_file(tmp_path):
+    first, second = (tmp_path / subpath for subpath in _game_root.dat_subpaths(_game_root.AOC))
+    assert _game_root.dat_path(tmp_path, _game_root.AOC) == first, "neither there: the first, for the error"
+    second.parent.mkdir(parents=True)
+    second.write_bytes(b"")
+    assert _game_root.dat_path(tmp_path, _game_root.AOC) == second
+    first.write_bytes(b"")
+    assert _game_root.dat_path(tmp_path, _game_root.AOC) == first

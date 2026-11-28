@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from descape import cliff_connectivity
-from descape.scenario_format import ScenarioFormat
+from descape.scenario_format import AOC, ScenarioFormat
 
 import conftest
 
@@ -566,7 +566,7 @@ def test_scan_skips_pre_de_files_and_counts_both_kinds_of_skip(tmp_path, monkeyp
 
     def as_legacy(path):
         loaded = real_load(path)
-        loaded.source_format = ScenarioFormat("1.21", 2, "1.22", "aoc", True)  # what a header-2 load sets
+        loaded.source_format = ScenarioFormat("1.21", 2, "1.22", AOC, True)  # what a header-2 load sets
         return loaded
 
     skipped: Counter[str] = Counter()

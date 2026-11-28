@@ -111,7 +111,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 
-from descape import render_iso, render_sloped
+from descape import render_iso, render_paint, render_sloped
 from descape.batch_api import set_terrain
 from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import tile_screen_origin
@@ -480,16 +480,18 @@ def generate(base_path: Path, out_dir: Path, write_renders: bool) -> list[dict]:
 
         if write_renders:
             reloaded = load_map_and_units(out_path)
-            img, _elevations, proj = render_iso.render_terrain_iso_with_proj(reloaded, with_units=False)
+            # One pct for both renders, so the Stepped crop math below fits Sloped too (GH #288).
+            pct = render_paint.elev_step_pct_for("stepped")
+            img, _elevations, proj = render_iso.render_terrain_iso_with_proj(reloaded, with_units=False, elev_step_pct=pct)
             # Sloped's own proj is geometrically identical to Stepped's for
-            # the same map/tile_px (corner_headroom_px doesn't affect canvas
+            # the same map/tile_px/pct (corner_headroom_px doesn't affect canvas
             # sizing -- see IsoProjection's own comment), so the same
             # _crop_bbox_px() call below is valid for both without separate
             # crop math. Phase 6 (Sloped)'s reference render, for Track C6's
             # side-by-side against the in-game screenshots this script's own
             # generated reference doc hands off.
             sloped_img, _sloped_elevations, _sloped_corner_rise, _sloped_proj = (
-                render_sloped.render_terrain_sloped_with_proj(reloaded, with_units=False)
+                render_sloped.render_terrain_sloped_with_proj(reloaded, with_units=False, elev_step_pct=pct)
             )
             renders_dir = out_dir / "renders"
             renders_dir.mkdir(parents=True, exist_ok=True)

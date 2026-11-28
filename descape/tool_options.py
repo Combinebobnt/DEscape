@@ -63,9 +63,11 @@ class ToolOption:
 GROUPS: tuple[tuple[str, str], ...] = (
     ("brush", "Brush"),
     ("terrain", "Terrain painting"),
+    ("spray", "Spray Can"),
     ("elevation", "Set Elevation"),
     ("rect", "Draw Rectangle"),
     ("paste", "Paste Region"),
+    ("clone", "Clone Stamp"),
     ("placement", "Placement"),
     ("eyedropper", "Eyedropper"),
     ("cliff", "Cliff"),
@@ -107,6 +109,10 @@ OPTIONS: tuple[ToolOption, ...] = (
     ToolOption("beach_width", "Beach width", "terrain", INT, 1, minimum=1, maximum=3),
     ToolOption("paint_trees", "Trees", "terrain", BOOL, True),
     ToolOption("paint_eye_candy", "Eye candy", "terrain", BOOL, False),
+    # terrain_replace's FLOOD_GLOBAL/FLOOD_CONTIGUOUS, as literals: this module is a leaf (a test pins them equal).
+    ToolOption("replace_flood", "Replace Brush flood", "terrain", CHOICE, "global", choices=("global", "contiguous")),
+    ToolOption("spray_flow", "Flow (%)", "spray", INT, 10, minimum=1, maximum=100),
+    ToolOption("spray_hardness", "Hardness (%)", "spray", INT, 40, minimum=0, maximum=100),
     ToolOption(
         "elevation_level", "Elevation level", "elevation", INT, 0, minimum=0, maximum=iso_geometry.MAX_ELEVATION,
     ),
@@ -114,6 +120,8 @@ OPTIONS: tuple[ToolOption, ...] = (
     ToolOption("paste_terrain", "Paste terrain", "paste", BOOL, True),
     ToolOption("paste_elevation", "Paste elevation", "paste", BOOL, True),
     ToolOption("paste_units", "Paste units", "paste", BOOL, True),
+    ToolOption("clone_terrain", "Clone terrain", "clone", BOOL, True),
+    ToolOption("clone_elevation", "Clone elevation", "clone", BOOL, True),
     ToolOption("free_placement", "Free placement", "placement", BOOL, False),
     ToolOption("off_grid", "Off-grid", "placement", BOOL, False),
     ToolOption("place_random", "Random facing/variant (Place Unit)", "placement", BOOL, False),

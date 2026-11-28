@@ -359,6 +359,7 @@ _REQUIRED_ATTRIBUTES = {
 def test_every_shipped_vocabulary_lists_the_pinned_attributes() -> None:
     missing = []
     seen = set()
+    # DE vocabularies only: a pre-DE effect stores no operation or object_attributes at all.
     for version in library_compat.vocabulary_versions():
         effects = library_compat.load_vocabulary(version).effects
         for effect_id, required in _REQUIRED_ATTRIBUTES.items():

@@ -39,13 +39,17 @@ VIEWER_MODULES: tuple[str, ...] = (
     "descape.viewer_options",
     "descape.viewer_tool_state",
     "descape.viewer_strokes",
+    "descape.viewer_clone_stamp",
     "descape.viewer_region",
     "descape.viewer_render",
     "descape.viewer_triggers",
+    "descape.viewer_legacy_convert",
+    "descape.viewer_game_launch",
     "descape.viewer_file",
     "descape.viewer_find",
     "descape.viewer_info",
     "descape.viewer_objectives",
+    "descape.viewer_prefabs",
 )
 
 VIEWER = ModuleFamily("viewer", lambda: VIEWER_MODULES)

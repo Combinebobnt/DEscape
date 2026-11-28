@@ -252,6 +252,23 @@ def test_min_map_tiles_loads_blank_and_square(donor) -> None:
     assert all(t.terrain_id == 0 and t.elevation == 0 and t.layer == -1 for t in mm.terrain)
 
 
+def test_min_tiles_override_lowers_the_floor_for_probe_tools_only(donor) -> None:
+    """The probe tools' keyword generates and reloads a map below the
+    floor; without it the floor still refuses."""
+    import random
+
+    scenario = load_blank_scenario(8, donor, min_tiles=8)
+    mm = scenario.map_manager
+    assert mm.map_width == mm.map_height == 8
+    assert scenario.terrain_write_supported
+    planted = load_blank_scenario(16, donor, terrain_id=FOREST_OAK, trees=True, rng=random.Random(0), min_tiles=16)
+    assert planted.map_manager.map_width == 16 and planted.unit_manager.units[0]
+    with pytest.raises(MapSizeError):
+        blank_body(donor, 7, min_tiles=8)
+    with pytest.raises(MapSizeError):
+        blank_body(donor, MIN_MAP_TILES - 1)
+
+
 def test_blank_terrain_struct_replaces_only_terrain_and_elevation() -> None:
     assert blank_terrain_struct() == BLANK_TERRAIN_STRUCT
     assert blank_terrain_struct(2, 3) == bytes((2, 3)) + BLANK_TERRAIN_STRUCT[2:]

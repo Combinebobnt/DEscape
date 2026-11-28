@@ -62,16 +62,36 @@ def test_a_load_prefetches_the_maps_terrain_ids_before_building_the_cache(record
 
 
 def test_a_re_render_adds_the_farm_overlays_terrain_only_while_that_layer_draws(recorded):
+    """TASK-693: a viewport poll fired inside the toggle's processEvents() warms the levels, and its
+    prefetch must already leave the farm terrain out. A 0 ms poll makes that fire every time."""
     events, window = recorded
+    window.map_view._viewport_poll_timer.setInterval(0)
     window.scenario.map_manager.terrain[5].terrain_id = _OTHER_TERRAIN
     next(unit for units in window.scenario.unit_manager.units for unit in units).unit_const = _FARM
     events.clear()
     window._render_current(reset_view=False)
-    assert events[:2] == [("prefetch", {0, _OTHER_TERRAIN, _FARM_TERRAIN}), ("cache",)], events
+    # The render's own prefetch is the one right before the cache; a poll's can come first.
+    built = events.index(("cache",))
+    assert built > 0 and events[built - 1] == ("prefetch", {0, _OTHER_TERRAIN, _FARM_TERRAIN}), events
     events.clear()
     window._on_layer_toggled("farm_overlay", False)
     window._render_current(reset_view=False)
-    assert events[0] == ("prefetch", {0, _OTHER_TERRAIN}), events
+    built = events.index(("cache",))
+    assert built > 0 and events[built - 1] == ("prefetch", {0, _OTHER_TERRAIN}), events
+    assert all(event == ("prefetch", {0, _OTHER_TERRAIN}) for event in events if event[0] == "prefetch"), events
+
+
+def test_a_sprites_toggle_drops_the_farm_terrain_before_a_poll_can_warm(recorded):
+    """TASK-693: the farm overlay draws only with sprites on, and Show Sprites does not re-render."""
+    events, window = recorded
+    window.map_view._viewport_poll_timer.setInterval(0)
+    next(unit for units in window.scenario.unit_manager.units for unit in units).unit_const = _FARM
+    window._render_current(reset_view=False)
+    assert _FARM_TERRAIN in window._texture_ids
+    events.clear()
+    window._on_sprites_toggled(False)
+    prefetched = [ids for kind, *rest in events if kind == "prefetch" for ids in rest]
+    assert prefetched and all(_FARM_TERRAIN not in ids for ids in prefetched), events
 
 
 def test_top_down_flat_prefetches_the_farm_overlays_terrain_too(recorded):

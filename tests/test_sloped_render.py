@@ -31,7 +31,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from descape import asset_source, render_paint, render_sloped
+from descape import asset_source, render_paint, render_sloped, settings
 from descape import iso_geometry as ig
 from descape.render import render_scenario
 from descape.render_iso import render_terrain_iso
@@ -45,14 +45,18 @@ def _load() -> object:
     return load_map_and_units(str(BLANK_TEMPLATE_PATH))
 
 
+@pytest.mark.parametrize("pct", settings.ELEV_STEP_PCT_STOPS)
 @pytest.mark.parametrize("with_units", [False, True])
-def test_flat_map_byte_identical_to_stepped(with_units):
+def test_flat_map_byte_identical_to_stepped(with_units, pct):
+    """The oracle compares the two compositors at ONE projection, so it passes
+    the pct explicitly: each style reads its own setting (GH #288), and two
+    different pcts would give two different canvases for a trivial reason."""
     scenario = _load()
     mm = scenario.map_manager
     for tile in mm.terrain:
         tile.elevation = 2
-    sloped = render_terrain_sloped(scenario, with_units=with_units)
-    stepped = render_terrain_iso(scenario, with_units=with_units)
+    sloped = render_terrain_sloped(scenario, with_units=with_units, elev_step_pct=pct)
+    stepped = render_terrain_iso(scenario, with_units=with_units, elev_step_pct=pct)
     assert sloped.shape == stepped.shape
     assert np.array_equal(sloped, stepped)
 

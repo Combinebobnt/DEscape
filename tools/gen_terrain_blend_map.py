@@ -15,7 +15,10 @@ itself. Three fields per enabled terrain:
 This script FAILS rather than writing a file if two enabled terrains share a
 priority or a blend_type leaves 0..7: the blend order and the mode lookup
 both assume those hold, so a game update that breaks either must be
-re-measured, not papered over.
+re-measured, not papered over. The 1999 and HD Edition tables (--dataset
+aoc, hd) are the exceptions to unique priorities: their own data repeats some, and
+terrain_blend.influences() breaks such a tie by terrain id. The 1997 .dat
+(--dataset aoe1) stores no blend fields, so its table is empty.
 
 Needs genieutils-py (`pip install -r requirements-dev.txt`) and a real AoE2DE
 install, only for regenerating this file if the game updates its terrain table.
@@ -38,21 +41,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 BLEND_TYPES = 8
 
 
-def _blend_table(terrains: list) -> tuple[dict[str, dict], list[str]]:
+def _blend_table(terrains: list, shared_priorities: bool = False) -> tuple[dict[str, dict], list[str]]:
     """({terrain id: entry} for every enabled terrain, violations). Lenient,
     each offending terrain is left out with a warning instead (a duplicate
-    priority drops the later terrain), so violations is empty."""
+    priority drops the later terrain), so violations is empty.
+    shared_priorities: the 1999 and HD Edition tables, whose own data repeats priorities."""
     table: dict[str, dict] = {}
     violations: list[str] = []
     owner_of_priority: dict[int, int] = {}
     for i, t in enumerate(terrains):
-        if not t.enabled:
+        # The 1997 .dat stores no blend fields (None): its terrains meet with hard edges.
+        if not t.enabled or t.blend_priority is None:
             continue
         priority, blend_type = int(t.blend_priority), int(t.blend_type)
         found = []
         if not 0 <= blend_type < BLEND_TYPES:
             found.append(f"  id={i} name={t.name!r}: blend_type {blend_type} outside 0..{BLEND_TYPES - 1}")
-        if priority in owner_of_priority:
+        if priority in owner_of_priority and not shared_priorities:
             found.append(f"  id={i} name={t.name!r}: blend_priority {priority} already used by id={owner_of_priority[priority]}")
         if found and _game_root.lenient():
             for line in found:
@@ -64,7 +69,7 @@ def _blend_table(terrains: list) -> tuple[dict[str, dict], list[str]]:
                 )
             continue
         violations += found
-        owner_of_priority[priority] = i
+        owner_of_priority.setdefault(priority, i)
         table[str(i)] = {
             "priority": priority,
             "blend_type": blend_type,
@@ -90,16 +95,14 @@ def main() -> None:
     args = parser.parse_args()
     _game_root.set_lenient(args.lenient)
 
-    from genieutils.datfile import DatFile
-
     dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
-    data = DatFile.parse(str(dat_path))
+    data = _game_root.parse_dat(dat_path)
     terrains = data.terrain_block.terrains
 
-    table, violations = _blend_table(terrains)
+    table, violations = _blend_table(terrains, shared_priorities=args.dataset in (_game_root.AOC, _game_root.HD))
 
     if violations:
         print("A terrain blend invariant no longer holds:", file=sys.stderr)

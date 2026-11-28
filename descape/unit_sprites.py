@@ -673,6 +673,8 @@ def smooth_shrink() -> bool:
 
 # The AoE2 male villager's x2 file, which stands for the whole x2 set.
 X2_PROBE_FILE = "u_vil_male_villager_idleA_x2.sld"
+# The Game.art formats this module has a walker for; any other game's units draw as marks.
+WALKED_ART = frozenset({"sld"})
 
 
 @lru_cache(maxsize=1)
@@ -691,7 +693,7 @@ def own_x2_art_installed(game: games.Game | None = None) -> bool:
     files, 2026-10-20). Any one file counts; False for a game without a
     root_subpath. For the viewer's messages only, like x2_art_installed()."""
     game = game or game_dataset.game()
-    install = asset_source.get_install_path()
+    install = game_dataset.install_root(game)
     return install is not None and game.root_subpath is not None and _ships_x2_art(game.root(install))
 
 
@@ -1090,15 +1092,26 @@ _ROR_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(
         *range(2651, 2660),
     ]
 )
+# The 1999 game (TASK-430): its .dat's class-27 consts, each at 5 angles; and its class-34
+# cliffs, one family of ten. Measured from descape/aoc/'s tables 2026-11-26.
+_AOC_ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({72, 117, 155, 208, 788})
+_AOC_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(range(264, 274))
+# HD Edition (TASK-431): its expansion .dat's class-27 consts at 5 angles (119 WALL4, 231 Aqueduct, 370 CWAL
+# and 1062 FENCE added or reused; the llama buildings 888-890 and 1118 have no 5-angle graphic), and AoC's cliffs.
+_HD_ROTATION_VARIANT_CONSTS: frozenset[int] = frozenset({72, 117, 119, 155, 208, 231, 370, 788, 1062})
+_HD_CLIFF_VARIANT_CONSTS: frozenset[int] = frozenset(range(264, 274))
 
 
 _ROTATION_VARIANT_BY_GAME = games.PerGame(
     "unit_sprites: wall consts whose rotation selects a shape",
-    {"aoe2": _ROTATION_VARIANT_CONSTS, "ror": _ROR_ROTATION_VARIANT_CONSTS},
+    {
+        "aoe2": _ROTATION_VARIANT_CONSTS, "ror": _ROR_ROTATION_VARIANT_CONSTS,
+        "aoc": _AOC_ROTATION_VARIANT_CONSTS, "hd": _HD_ROTATION_VARIANT_CONSTS,
+    },
 )
 _CLIFF_VARIANT_BY_GAME = games.PerGame(
     "unit_sprites: cliff consts (.dat class 34)",
-    {"aoe2": _CLIFF_VARIANT_CONSTS, "ror": _ROR_CLIFF_VARIANT_CONSTS},
+    {"aoe2": _CLIFF_VARIANT_CONSTS, "ror": _ROR_CLIFF_VARIANT_CONSTS, "aoc": _AOC_CLIFF_VARIANT_CONSTS, "hd": _HD_CLIFF_VARIANT_CONSTS},
 )
 
 
@@ -1495,6 +1508,9 @@ def variant_index(rotation: float, angle_count: int, variant_count: int | None =
 
 
 def _graphics_dir() -> Path | None:
+    """The graphics folder, or None with no install or for a game whose Game.art this module does not walk (marks then)."""
+    if game_dataset.game().art not in WALKED_ART:
+        return None
     root = asset_source.get_install_path()
     return None if root is None else root / GRAPHICS_SUBPATH
 
@@ -2989,6 +3005,7 @@ def _art_key(entry: dict) -> tuple:
 def icon_for(
     unit_const: int, rotation: float, team_index: int, footprint_w: int, footprint_h: int,
     seed: int | None = None, art: tuple[int | None, int, int | None] | None = None,
+    clip: tuple[int, int, int, int] = (0, 0, 0, 0),
 ) -> SpriteDraw | None:
     """This unit's sprite fitted into a footprint_w x footprint_h pixel rect --
     Flat mode's counterpart to sprite_for() (P3-g7). None to fall back to the
@@ -3009,7 +3026,10 @@ def icon_for(
     blitted off its footprint.
 
     footprint_w/h come from the CLAMPED unit_tile_bounds() rect, so a building
-    hanging off a map edge fits the rect actually painted.
+    hanging off a map edge fits the rect actually painted. `clip` is the px
+    the clamp cut off each side (left, right, top, bottom), which only the
+    de-projection reads: it draws the whole footprint and keeps the part on
+    the map (TASK-708), where contain-fit centres on the clamped rect.
 
     **Facings resolve at FLAT_ANGLE_ZERO_OFFSET_DEG, not the isometric zero
     point.** ANGLE_ZERO_OFFSET_DEG's -45 is a camera-relative correction for
@@ -3058,14 +3078,14 @@ def icon_for(
     deproject = art_const in cliff_const_set() and len(frames) == 1 and frames[0] in FLAT_DEPROJECT_CLIFF_FRAMES
     key = (
         _art_key(entry), frames, team_slot, footprint_w, footprint_h, _hi_res, _smooth_shrink,
-        *(("deproject",) if deproject else ()),
+        *(("deproject", clip) if deproject else ()),
     )
     hit = _icon_cache.get_or_none(key)
     if hit is not None:
         return None if hit is _MISS else hit
 
     team = TEAM_COLORS[team_slot]
-    draw = _deprojected_icon(art_const, entry, art_rotation, team, footprint_w, footprint_h) if deproject else None
+    draw = _deprojected_icon(art_const, entry, art_rotation, team, footprint_w, footprint_h, clip) if deproject else None
     if draw is None:
         draw = _build_icon(
             art_const, entry, art_rotation, team, footprint_w, footprint_h, FLAT_ANGLE_ZERO_OFFSET_DEG, seed,
@@ -3074,17 +3094,21 @@ def icon_for(
     return draw
 
 
-def _deprojected_icon(unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int) -> SpriteDraw | None:
+def _deprojected_icon(
+    unit_const: int, entry: dict, rotation: float, team, fw: int, fh: int, clip: tuple[int, int, int, int] = (0, 0, 0, 0),
+) -> SpriteDraw | None:
     """A cliff piece's frame de-projected onto its fw x fh footprint
     (flat_deproject), or None to contain-fit it: a composite, or no ink. The
     frame is tinted at native, then resized so one tile's diamond is 2 * tile
     px wide, by _build_icon()'s rules: x2 art at Enhanced when that enlarges
-    x1 (GH #241), area-resampled by _area_path() (GH #254), else nearest."""
+    x1 (GH #241), area-resampled by _area_path() (GH #254), else nearest.
+    `clip` as icon_for()'s: the hotspot stays on the whole footprint's centre."""
     if entry.get("pieces"):
         return None
     span_x, span_y = terrain_palette.tile_span(unit_const, (1, 1))
-    # One scale on both axes: a footprint clamped at the map edge loses tiles, not size.
-    tile = max(fw / span_x, fh / span_y)
+    left, right, top, bottom = clip
+    # From the whole footprint: a footprint clamped at the map edge loses tiles, not size.
+    tile = max((fw + left + right) / span_x, (fh + top + bottom) / span_y)
     pieces = _native_pieces_for(unit_const, entry, rotation, FLAT_ANGLE_ZERO_OFFSET_DEG)
     k = 1
     if _hi_res and tile > NATIVE_TILE_W / 2:
@@ -3099,7 +3123,9 @@ def _deprojected_icon(unit_const: int, entry: dict, rotation: float, team, fw: i
     w, h = max(1, round(src_w * scale)), max(1, round(src_h * scale))
     rgba = _tinted(main, playercolor, team)
     rgba = _box_resize_rgba(rgba, w, h) if _area_path(scale, k == 2) else _resize_rgba(rgba, w, h)
-    out = flat_deproject.deprojected(rgba, hx * w / src_w, hy * h / src_h, tile, tile, fw, fh)
+    out = flat_deproject.deprojected(
+        rgba, hx * w / src_w, hy * h / src_h, tile, tile, fw, fh, (right - left) / 2, (bottom - top) / 2,
+    )
     return SpriteDraw(rgba=out, hotspot_x=0, hotspot_y=0) if out[..., 3].any() else None
 
 

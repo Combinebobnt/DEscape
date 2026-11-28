@@ -214,8 +214,9 @@ ONE_LEVEL_EDITS = [("raise_1", _raise_one), ("lower_1", _lower_one), ("propagate
 def _one_level_case(monkeypatch, style, pct, edit, mip):
     from descape import settings
 
-    # Never the setter: it writes the real ini.
+    # Never the setter: it writes the real ini. Both styles' globals (GH #288).
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", pct)
     scenario = _scenario(ONE_LEVEL_BASE, "none")
     mm = scenario.map_manager
     cache, elevations, proj = _make_cache(style, scenario, False)

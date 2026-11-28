@@ -20,7 +20,7 @@ from descape import content_roots, debug_log
 from descape.content_roots import KIND_INSTALL, KIND_MOD_SUBSCRIBED, KIND_PROFILE, ContentRoot
 
 SCENARIO_DIR = "scenario"
-SUFFIXES = (".aoe2scenario", ".scn", ".scx")  # pre-DE files open read-only (TASK-429)
+SUFFIXES = (".aoe2scenario", ".scn", ".scx", ".scx2")  # pre-DE files open read-only (TASK-429)
 
 _UNSET = object()
 

@@ -287,7 +287,7 @@ def test_capture_flag_is_disabled_with_a_tooltip_in_a_file_that_does_not_store_i
     assert "1.59" in capture.toolTip() and "September 2026" in capture.toolTip()
     assert panel.unit_field_captions["capture_flag"].toolTip() == capture.toolTip()
     assert capture.isVisibleTo(panel), "disabled, not hidden"
-    assert set(asked) == {"capture_flag"}
+    assert set(asked) == {"capture_flag", "garrisoned_in_id"}
     # Unit State is in every version: never gated.
     assert _state(panel).isEnabled()
     assert _state(panel).currentText() == "Remove"
@@ -384,3 +384,17 @@ def test_a_live_row_repeats_its_value_as_the_tooltip() -> None:
     panel.show_group([_entry(reference_id=1, capture_flag=0), _entry(reference_id=2, capture_flag=1)])
     assert _capture(panel).toolTip() == "(mixed)"
     assert _state(panel).toolTip() == "Alive"
+
+
+def test_garrisoned_in_is_disabled_with_a_tooltip_in_a_file_that_does_not_store_it() -> None:
+    """TASK-515: an Age of Empires (1997) file stores no garrison, so its read-only row says why."""
+    panel, _reported = _panel(codec_field_supported=lambda name: name != "garrisoned_in_id")
+    panel.show_unit(_entry())
+    caption, label = panel.unit_field_captions["garrisoned_in_id"], panel.unit_field_labels["garrisoned_in_id"]
+    assert not caption.isEnabled() and not label.isEnabled() and label.text() == "-1"
+    assert "no garrison" in label.toolTip() and caption.toolTip() == label.toolTip()
+    assert _capture(panel).isEnabled() and panel.unit_field_labels["reference_id"].isEnabled()
+    panel, _reported = _panel()
+    panel.show_unit(_entry())
+    assert panel.unit_field_labels["garrisoned_in_id"].isEnabled()
+    assert panel.unit_field_labels["garrisoned_in_id"].toolTip() == ""

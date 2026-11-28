@@ -79,8 +79,8 @@ PER_ID_GETTERS: dict[str, tuple] = {
     "get_tool_option_default": _TOOL_OPTION_NAMES,
     "get_unit_favorites": _GAME_IDS,
 }
-# Takes a scenario path, not an id, and its key (data_mod_by_scenario) is local.
-EXCLUDED_GETTERS = frozenset({"get_data_mod_for"})
+# Take a scenario path, not an id, and their keys (data_mod_by_scenario, saved_views) are local.
+EXCLUDED_GETTERS = frozenset({"get_data_mod_for", "get_saved_views"})
 
 
 def _getters() -> tuple[list[str], list[str]]:

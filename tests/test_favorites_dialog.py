@@ -243,6 +243,61 @@ def test_the_civ_reaches_its_requests_and_an_unchanged_one_asks_nothing(fake_ins
         dialog.close()
 
 
+def test_an_antiquity_owner_renames_the_rows_and_a_switch_back_restores_them(athenian_bowman) -> None:
+    dialog = _dialog()
+    dialog.set_entries(_rows(_CASTLE, _ARCHER, _UNKNOWN))
+    base = _texts(dialog)
+    dialog.list.setCurrentRow(1)
+    dialog.set_civ(athenian_bowman)
+    assert _texts(dialog) == [base[0], "Bowman", base[2]], "only the Archer has an Athenian name"
+    assert dialog.list.item(1).toolTip() == f"Bowman ({_ARCHER}) (favorite)"
+    assert dialog.values() == [_CASTLE, _ARCHER, _UNKNOWN]
+    assert dialog.list.currentItem().data(Qt.UserRole) == _ARCHER, "the highlight survives the rename"
+    dialog._choose_mode("names")
+    assert _texts(dialog)[1] == "Bowman", "a mode change keeps the owner's names"
+    dialog.set_civ(1)
+    assert _texts(dialog) == base
+
+
+def test_a_renaming_owner_switch_still_asks_for_the_new_civs_portraits(athenian_bowman, fake_install, monkeypatch) -> None:
+    from PyQt5.QtWidgets import QApplication
+
+    dialog = _dialog()
+    asked = _recording(dialog._loader, monkeypatch)
+    dialog.show()
+    try:
+        dialog.set_entries(_rows(_ARCHER, _CASTLE))
+        QApplication.processEvents()
+        asked.clear()
+        dialog.set_civ(athenian_bowman)
+        assert asked and all(civ == athenian_bowman for _consts, civ in asked)
+    finally:
+        dialog.close()
+
+
+def test_rows_set_under_an_antiquity_owner_take_its_names(athenian_bowman) -> None:
+    dialog = _dialog()
+    dialog.set_civ(athenian_bowman)
+    dialog.set_entries(_rows(_ARCHER))
+    assert _texts(dialog) == ["Bowman"]
+
+
+def test_a_switch_between_owners_with_the_same_own_names_refills_nothing(athenian_bowman, monkeypatch) -> None:
+    dialog = _dialog()
+    dialog.set_entries(_rows(_ARCHER, _CASTLE))
+    calls = []
+    real = dialog._fill
+    monkeypatch.setattr(dialog, "_fill", lambda: (calls.append(1), real())[1])
+    dialog.set_civ(1)
+    dialog.set_civ(2)
+    assert calls == [], "two owners without own names"
+    dialog.set_civ(athenian_bowman)
+    assert calls == [1]
+    dialog.set_civ(48)  # the Spartans name the same consts by the same strings
+    assert calls == [1]
+    assert _texts(dialog)[0] == "Bowman"
+
+
 def test_the_window_and_the_catalog_both_fill_from_one_loader(fake_install) -> None:
     from PyQt5.QtWidgets import QApplication
 

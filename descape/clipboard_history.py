@@ -11,7 +11,8 @@ Session-only by design. Nothing here is written to disk: settings.py rewrites
 the whole YAML on every settings change, and a Select All on a 480x480 map is
 ~230k tiles, which has no business in a config file. The paste-filter
 checkboxes are not clipboard state: like every Tool Options control, the row
-holds the session value and Settings > Tools the default.
+holds the session value and Settings > Tools the default. Saving an entry for
+good is an explicit act, prefabs.py's, one file per entry.
 
 Rules pinned here so they are not re-litigated:
 

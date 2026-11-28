@@ -490,6 +490,38 @@ def test_a_stopped_parse_leaves_the_bar_alone(window, mods, tmp_path):
     assert window.load_progress.job("data_mod") == ("Parsing Beta: starting", 0)
 
 
+def test_a_close_settles_a_replaced_parse_too(window, mods, tmp_path):
+    """TASK-700: a replaced job is killed but not waited on; the close must see it end, or deleting
+    the window later has its QProcess emit finished() from its own destructor."""
+    from PyQt5.QtCore import QProcess
+
+    window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
+    mods.child = "import time; time.sleep(30)"
+    _menu(window)["Alpha"].trigger()
+    old = window.data_mod_menu._job
+    _menu(window)["Beta"].trigger()
+    new = window.data_mod_menu._job
+    window.data_mod_menu.shutdown()
+    assert old.process.state() == new.process.state() == QProcess.NotRunning
+
+
+def test_deleting_the_window_with_a_replaced_parse_running_does_not_abort(mods):
+    """TASK-700: no close and no event loop, so both jobs' processes are still starting when the
+    window goes; their destructor-emitted finished() must not reach a deleted QProcess (a qFatal)."""
+    from PyQt5 import sip
+    from PyQt5.QtCore import QCoreApplication, QEvent, QProcess
+
+    window = conftest.blank_window(load=False)  # no document, so no level warm outlives the deletion
+    mods.child = "import time; time.sleep(30)"
+    _menu(window)["Alpha"].trigger()
+    old = window.data_mod_menu._job
+    _menu(window)["Beta"].trigger()
+    assert old.process.state() != QProcess.NotRunning, "the race this test forces"
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    assert sip.isdeleted(window)
+
+
 def test_an_unreadable_mod_keeps_the_data_and_is_disabled(window, mods, tmp_path, monkeypatch):
     window.load_scenario(_scenario(tmp_path, "a.aoe2scenario"))
     message = "genieutils-py cannot read this .dat (VER 7.2, AssertionError)"

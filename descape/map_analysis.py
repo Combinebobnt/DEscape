@@ -80,6 +80,14 @@ buildings trained at Villager 293, an elite unit the file never enables);
 before the `gives` and placed-building rules it fired 21, 16 of them false.
 examples/ was not available for this measurement.
 
+The unit-id, unknown-id, garrison-fit and undefined-player checks (GH #282)
+fire on 0 of the 21 loadable examples/ files (2026-11-26), so all four are
+WARNING: two units sharing a reference_id, an id at or above the next-id
+counter, a unit const or terrain id the active game's data lacks (a data
+mod's objects, opened without it), a unit inside a host of the wrong type or
+past its base capacity, and units in an
+undefined player's list. The trigger checks live in map_analysis_triggers.
+
 Nothing here constructs an edit model, and nothing may be named verify_* or
 *_supported (both already mean byte-layout trust elsewhere).
 """
@@ -87,98 +95,61 @@ Nothing here constructs an edit model, and nothing may be named verify_* or
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Literal
+from functools import partial
 
 import numpy as np
 from AoE2ScenarioParser.datasets.effects import EffectId
 from AoE2ScenarioParser.datasets.terrains import TerrainId
 from AoE2ScenarioParser.objects.managers.trigger_manager import get_trigger_referencing_ce
 
-from descape import civ_availability, command_buttons, library_compat, object_catalog, placement_rules, train_locations
+from descape import (
+    civ_availability,
+    command_buttons,
+    garrison,
+    library_compat,
+    object_catalog,
+    placement_rules,
+    train_locations,
+)
 from descape.command_buttons import TECH, UNIT
 from descape.fill_tools import connected_regions
 from descape.iso_geometry import MAX_ELEVATION, MIN_ELEVATION
+from descape.map_analysis_triggers import (
+    check_created_object_terrain,
+    check_incomplete_triggers,
+    check_never_started_triggers,
+    check_trigger_coordinates,
+    check_trigger_players,
+)
+from descape.map_analysis_types import (  # noqa: F401 -- re-exported: map_analysis.Finding and the rest stay public here
+    _TRIGGERS_UNAVAILABLE,
+    MAX_FINDINGS_PER_CHECK,
+    AnalysisReport,
+    CheckResult,
+    Finding,
+    Severity,
+    _all_units,
+    _capped,
+    _owner,
+    _read,
+    _trigger_label,
+)
 from descape.messages_fields import STRING_ID_UNSET
 from descape.player_fields import defined_player_ids
 from descape.render_units import unit_tile_bounds
 from descape.scenario_io import LoadedScenario, parse_triggers
 from descape.terrain_palette import BUILDING_TILE_SPANS
 from descape.unit_kind import gaia_only_consts, invisible_consts, mobile_unit_consts
-from descape.unit_references import all_units, build_reference_index, trigger_references
-
-Severity = Literal["error", "warning", "info"]
+from descape.unit_references import build_reference_index, trigger_references
 
 # A player-owned unit on a land region smaller than this is reported.
 STRANDED_REGION_TILES = 25
-# Per-check cap, so a badly broken map can't build a 100k-row dialog.
-MAX_FINDINGS_PER_CHECK = 200
-
-_TRIGGERS_UNAVAILABLE = "triggers could not be parsed for this file"
+# DataHeader.next_unit_id_to_place, the leading u32 of decompressed_body (unit_model reads the same).
+_NEXT_UNIT_ID = struct.Struct("<I")
 # The effect field holding the const a Create Object or Replace Object effect makes.
 _MADE_CONST_ATTRIBUTES = {EffectId.CREATE_OBJECT: "object_list_unit_id", EffectId.REPLACE_OBJECT: "object_list_unit_id_2"}
-
-
-@dataclass(frozen=True)
-class Finding:
-    message: str
-    severity: Severity
-    tile: tuple[int, int] | None = None
-    unit_key: tuple[int, int] | None = None  # (player_id, reference_id)
-
-
-@dataclass(frozen=True)
-class CheckResult:
-    label: str
-    findings: tuple[Finding, ...] = ()
-    unavailable: str = ""
-    # TASK-096: False shows the findings but keeps them out of the headline, where the check counts as clean.
-    counted: bool = True
-
-    @property
-    def is_clean(self) -> bool:
-        return not self.unavailable and not self.findings
-
-
-@dataclass(frozen=True)
-class AnalysisReport:
-    results: tuple[CheckResult, ...]
-
-    @property
-    def finding_count(self) -> int:
-        return sum(len(r.findings) for r in self.results if r.counted)
-
-    @property
-    def headline(self) -> str:
-        clean = sum(1 for r in self.results if r.is_clean or (not r.counted and not r.unavailable))
-        unavailable = sum(1 for r in self.results if r.unavailable)
-        findings = self.finding_count
-        detail = f"{findings} finding{'' if findings == 1 else 's'}"
-        if unavailable:
-            detail += f", {unavailable} unavailable"
-        return f"Clean on {clean} of {len(self.results)} checks: {detail}"
-
-
-def _capped(label: str, findings: list[Finding]) -> CheckResult:
-    if len(findings) > MAX_FINDINGS_PER_CHECK:
-        extra = len(findings) - MAX_FINDINGS_PER_CHECK
-        severity = findings[0].severity
-        findings = [*findings[:MAX_FINDINGS_PER_CHECK], Finding(f"...and {extra} more not listed", severity)]
-    return CheckResult(label, tuple(findings))
-
-
-def _all_units(loaded: LoadedScenario):
-    """(player_id, unit) over the raw nine lists, index 0 = GAIA. Never
-    unit_pick.build_index(), which drops off-map units by design."""
-    return all_units(loaded)
-
-
-def _read(obj, attribute: str):
-    try:
-        return getattr(obj, attribute, None)
-    except Exception:  # noqa: BLE001 -- the library's version-gated properties raise
-        return None
 
 
 # -- checks -----------------------------------------------------------------
@@ -207,10 +178,6 @@ def _on_half_grid(v: float) -> bool:
 def _on_span_grid(v: float, span: int) -> bool:
     # render_units.span_anchor()'s rule: tile + span/2, so odd spans end in .5 and even ones in .0.
     return v - math.floor(v) == (span % 2) / 2
-
-
-def _owner(player_id: int) -> str:
-    return "GAIA" if player_id == 0 else f"Player {player_id}"
 
 
 def _parity(span: int) -> str:
@@ -445,11 +412,6 @@ def check_trigger_display_order(loaded: LoadedScenario) -> CheckResult:
     )
 
 
-def _trigger_label(trigger) -> str:
-    disabled = "" if _read(trigger, "enabled") else ", disabled"
-    return f'Trigger {trigger.trigger_id} "{trigger.name}"{disabled}'
-
-
 def check_trigger_references(loaded: LoadedScenario) -> CheckResult:
     label = "Dangling trigger references"
     manager = parse_triggers(loaded)
@@ -457,13 +419,17 @@ def check_trigger_references(loaded: LoadedScenario) -> CheckResult:
         return CheckResult(label, unavailable=_TRIGGERS_UNAVAILABLE)
     ids = {t.trigger_id for t in manager.triggers}
     findings = []
-    for trigger in manager.triggers:
+    for trigger_index, trigger in enumerate(manager.triggers):
         for ce in get_trigger_referencing_ce(trigger):
             target = ce.trigger_id
             if target == -1 or target in ids:  # -1 is unset, not dangling
                 continue
             findings.append(
-                Finding(f"{_trigger_label(trigger)} refers to trigger {target}, which does not exist", "warning")
+                Finding(
+                    f"{_trigger_label(trigger)} refers to trigger {target}, which does not exist",
+                    "warning",
+                    trigger_index=trigger_index,
+                )
             )
     return _capped(label, findings)
 
@@ -475,10 +441,11 @@ def check_unit_references(loaded: LoadedScenario) -> CheckResult:
     manager = parse_triggers(loaded)
     if manager is None:
         return CheckResult(label, unavailable=_TRIGGERS_UNAVAILABLE)
-    if not library_compat.vocabulary_is_available(loaded.scenario_version):
+    if not library_compat.vocabulary_is_available(loaded.vocabulary_version):
         return CheckResult(label, unavailable="no trigger vocabulary for this scenario version")
-    vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+    vocabulary = library_compat.load_vocabulary(loaded.vocabulary_version)
     index = build_reference_index(loaded)
+    list_index = {id(trigger): i for i, trigger in enumerate(manager.triggers)}
     findings = []
     for trigger, kind, definition, attribute, refs in trigger_references(manager.triggers, vocabulary):
         for ref in refs:
@@ -486,9 +453,10 @@ def check_unit_references(loaded: LoadedScenario) -> CheckResult:
                 continue
             findings.append(
                 Finding(
-                    f"{_trigger_label(trigger)}: {definition.name} {kind} "
+                    f"{_trigger_label(trigger)}: {definition.legacy_name or definition.name} {kind} "
                     f"{attribute} refers to unit id {ref}, which is not placed on the map",
                     "warning",
+                    trigger_index=list_index.get(id(trigger)),
                 )
             )
     return _capped(label, findings)
@@ -516,6 +484,154 @@ def check_garrison_links(loaded: LoadedScenario) -> CheckResult:
         if (host_id := _read(unit, "garrisoned_in_id")) not in (None, -1, unit.reference_id) and host_id not in ids
     ]
     return _capped(label, findings)
+
+
+def check_unit_ids(loaded: LoadedScenario, next_unit_id: int | None = None) -> CheckResult:
+    """Two units sharing a reference_id, and an id at or above the next-id
+    counter the file stores (DataHeader.next_unit_id_to_place).
+    `next_unit_id` is the edit model's live counter, which Save writes in
+    its place once a unit was added (analyze() passes it)."""
+    label = "Unit ids"
+    counter = next_unit_id if next_unit_id is not None else _NEXT_UNIT_ID.unpack_from(loaded.decompressed_body, 0)[0]
+    by_id: dict[int, list] = {}
+    findings = []
+    for player_id, unit in _all_units(loaded):
+        by_id.setdefault(unit.reference_id, []).append((player_id, unit))
+        if unit.reference_id >= counter:
+            findings.append(_placed("unit", player_id, unit, f" has an id at or above the next unit id ({counter})", "warning"))
+    for reference_id, holders in by_id.items():
+        if len(holders) < 2:
+            continue
+        names = ", ".join(f"{_owner(p)} {object_catalog.display_name(u.unit_const)} at ({u.x:g}, {u.y:g})" for p, u in holders)
+        player_id, unit = holders[0]
+        findings.append(
+            Finding(
+                f"Unit id {reference_id} is held by {len(holders)} units: {names}",
+                "warning",
+                tile=(int(unit.x), int(unit.y)),
+                unit_key=(player_id, reference_id),
+            )
+        )
+    return _capped(label, findings)
+
+
+def check_unknown_objects(loaded: LoadedScenario, foreign_data: str = "") -> CheckResult:
+    """A placed unit whose const neither the library's datasets nor the
+    active game's .dat table (a loaded data mod's included) lists: usually a
+    mod's object, opened without that mod. `foreign_data` (the three
+    game-data checks share it) is why the shown data is not the file's own
+    game's, which makes the check unavailable rather than a flood."""
+    label = "Objects the game data does not have"
+    if foreign_data:
+        return CheckResult(label, unavailable=foreign_data)
+    findings = [
+        _placed("object", player_id, unit, " is not in this game's data", "warning")
+        for player_id, unit in _all_units(loaded)
+        if not object_catalog.is_known_object(unit.unit_const)
+    ]
+    return _capped(label, findings)
+
+
+def check_unknown_terrains(loaded: LoadedScenario, foreign_data: str = "") -> CheckResult:
+    """One finding per terrain id the active .dat table does not list, with
+    its tile count and first tile. Unavailable with no generated table."""
+    label = "Terrains the game data does not have"
+    if foreign_data:
+        return CheckResult(label, unavailable=foreign_data)
+    known = object_catalog.dat_terrains()
+    if not known:
+        return CheckResult(label, unavailable="no terrain table for this game")
+    mm = loaded.map_manager
+    width = mm.map_width
+    first: dict[int, int] = {}
+    counts: dict[int, int] = {}
+    for i, tile in enumerate(mm.terrain):
+        terrain_id = tile.terrain_id
+        if terrain_id in known:
+            continue
+        first.setdefault(terrain_id, i)
+        counts[terrain_id] = counts.get(terrain_id, 0) + 1
+    findings = [
+        Finding(
+            f"Terrain id {terrain_id} is not in this game's data ({counts[terrain_id]} "
+            f"tile{'' if counts[terrain_id] == 1 else 's'}, first at ({i % width}, {i // width}))",
+            "warning",
+            tile=(i % width, i // width),
+        )
+        for terrain_id, i in sorted(first.items())
+    ]
+    return _capped(label, findings)
+
+
+def check_garrison_fit(loaded: LoadedScenario, foreign_data: str = "") -> CheckResult:
+    """garrison.refusal()'s two rules over the file: a unit inside a host of
+    the wrong type, then a host holding more of the units it accepts than its
+    base (.dat) capacity, one finding per host, so a wrong-type unit is not
+    reported twice. A dangling host is garrison_links' finding."""
+    label = "Garrisons the host can't hold"
+    if foreign_data:
+        return CheckResult(label, unavailable=foreign_data)
+    units = list(_all_units(loaded))
+    hosts = {unit.reference_id: (player_id, unit) for player_id, unit in units}
+    inside: dict[int, list] = {}
+    for player_id, unit in units:
+        host_id = _read(unit, "garrisoned_in_id")
+        if host_id in (None, -1, unit.reference_id) or host_id not in hosts:
+            continue
+        inside.setdefault(host_id, []).append((player_id, unit))
+    findings = []
+    for host_id, occupants in inside.items():
+        host_player, host = hosts[host_id]
+        host_name = f"{object_catalog.display_name(host.unit_const)} (id {host_id})"
+        host_tile = (int(host.x), int(host.y))
+        accepted = 0
+        for player_id, unit in occupants:
+            if garrison.accepts(host.unit_const, unit.unit_const):
+                accepted += 1
+            else:
+                findings.append(
+                    Finding(
+                        f"{_owner(player_id)} {object_catalog.display_name(unit.unit_const)} (id {unit.reference_id}) "
+                        f"is garrisoned in {host_name}, which can't hold it",
+                        "warning",
+                        tile=host_tile,
+                        unit_key=(player_id, unit.reference_id),
+                    )
+                )
+        cap = garrison.capacity(host.unit_const)
+        if 0 < cap < accepted:
+            findings.append(
+                Finding(
+                    f"{_owner(host_player)} {host_name} at ({host.x:g}, {host.y:g}) holds {accepted} units, "
+                    f"more than its base capacity of {cap}",
+                    "warning",
+                    tile=host_tile,
+                    unit_key=(host_player, host_id),
+                )
+            )
+    return _capped(label, findings)
+
+
+def check_undefined_player_units(loaded: LoadedScenario, defined_players: list[int] | None = None) -> CheckResult:
+    """Units in the list of a player the scenario does not define, one
+    finding per player with the first unit as its marker. `defined_players`
+    is the open document's count as edited; None reads the file's."""
+    defined = set(defined_player_ids(loaded) if defined_players is None else defined_players)
+    findings = []
+    for player_id, player_units in enumerate(loaded.unit_manager.units):
+        if player_id == 0 or player_id in defined or not player_units:
+            continue
+        unit = player_units[0]
+        count = len(player_units)
+        findings.append(
+            Finding(
+                f"Player {player_id} is not defined in this scenario but owns {count} unit{'' if count == 1 else 's'}",
+                "warning",
+                tile=(int(unit.x), int(unit.y)),
+                unit_key=(player_id, unit.reference_id),
+            )
+        )
+    return _capped("Units of undefined players", findings)
 
 
 def check_players_without_units(loaded: LoadedScenario) -> CheckResult:
@@ -716,6 +832,7 @@ def check_location_buttons(loaded: LoadedScenario) -> CheckResult:
     if manager is None:
         return CheckResult(label, unavailable=_TRIGGERS_UNAVAILABLE)
     edits = train_locations.location_edits(manager)
+    list_index = {trigger.trigger_id: i for i, trigger in enumerate(manager.triggers)}
     # A building placed on the map or made by a trigger exists whatever the civ (Kreposts given to Magyars).
     placed = frozenset(unit.unit_const for _player, unit in _all_units(loaded)) | _trigger_made_consts(manager)
     overrides: dict[int, civ_availability.Overrides] = {}
@@ -733,12 +850,20 @@ def check_location_buttons(loaded: LoadedScenario) -> CheckResult:
         problem = _location_problem(edit, loaded, overrides[edit.player], moved_away, placed)
         if problem is not None:
             reason, severity = problem
-            findings.append(Finding(f"{_location_label(edit)}: {reason}", severity))
+            findings.append(
+                Finding(
+                    f"{_location_label(edit)}: {reason}",
+                    severity,
+                    trigger_index=list_index.get(edit.trigger_id),
+                    trigger_entry=("effect", edit.index),
+                )
+            )
     return _capped(label, findings)
 
 
 CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("elevation", check_elevation),
+    ("unknown_terrains", check_unknown_terrains),
     ("off_map_units", check_off_map_units),
     ("off_grid_buildings", check_off_grid_buildings),
     ("off_grid_player_units", check_off_grid_player_units),
@@ -747,20 +872,45 @@ CHECKS: tuple[tuple[str, Callable[[LoadedScenario], CheckResult]], ...] = (
     ("units_on_wrong_terrain", check_units_on_wrong_terrain),
     ("buildings_on_wrong_terrain", check_buildings_on_wrong_terrain),
     ("overlapping_units", check_overlapping_units),
+    ("unit_ids", check_unit_ids),
+    ("unknown_objects", check_unknown_objects),
     ("trigger_display_order", check_trigger_display_order),
     ("trigger_references", check_trigger_references),
     ("location_buttons", check_location_buttons),
     ("unit_references", check_unit_references),
+    ("trigger_coordinates", check_trigger_coordinates),
+    ("created_object_terrain", check_created_object_terrain),
+    ("incomplete_triggers", check_incomplete_triggers),
+    ("trigger_players", check_trigger_players),
+    ("never_started_triggers", check_never_started_triggers),
     ("garrison_links", check_garrison_links),
+    ("garrison_fit", check_garrison_fit),
     ("players_without_units", check_players_without_units),
+    ("undefined_player_units", check_undefined_player_units),
     ("stranded_units", check_stranded_units),
     ("instructions", check_instructions),
     ("map_shape", check_map_shape),
 )
 
 
-def analyze(loaded: LoadedScenario) -> AnalysisReport:
-    return AnalysisReport(tuple(check(loaded) for _, check in CHECKS))
+def analyze(
+    loaded: LoadedScenario,
+    next_unit_id: int | None = None,
+    defined_players: list[int] | None = None,
+    foreign_data: str = "",
+) -> AnalysisReport:
+    """The open document's state Save would write, where it differs from the
+    file: `next_unit_id` is UnitEditModel.next_unit_id, `defined_players`
+    the player count as edited (None reads the file's own for either), and
+    `foreign_data` why the game data shown is another game's, which makes
+    the game-data checks unavailable."""
+    checks = dict(CHECKS)
+    checks["unit_ids"] = partial(check_unit_ids, next_unit_id=next_unit_id)
+    checks["undefined_player_units"] = partial(check_undefined_player_units, defined_players=defined_players)
+    checks["trigger_players"] = partial(check_trigger_players, defined_players=defined_players)
+    for name in ("unknown_objects", "unknown_terrains", "garrison_fit"):
+        checks[name] = partial(checks[name], foreign_data=foreign_data)
+    return AnalysisReport(tuple(check(loaded) for check in checks.values()))
 
 
 # -- map markers ----------------------------------------------------------------

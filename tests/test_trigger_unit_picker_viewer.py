@@ -723,7 +723,7 @@ def test_a_type_pick_on_a_locked_document_says_refused_and_leaves_the_row(monkey
         row = panel._type_pick_rows[TYPE_FIELD].line_edit
         shown = row.text()
         _type_button(panel).click()
-        monkeypatch.setattr(window, "game_data_lock_reason", lambda: "Shown with the other game's data.")
+        monkeypatch.setattr(window, "game_data_lock_reason", lambda family=None: "Shown with the other game's data.")
         window.map_view.on_unit_pick(_key(gen.REF_HOUSE))
         assert window._unit_picker is None
         assert _records(window) == records

@@ -1,0 +1,2645 @@
+{
+  "_comment": "unit_const -> standing .sld graphic -- see tools/gen_unit_graphic_map.py",
+  "graphics": {
+    "0": {
+      "graphic_id": 413,
+      "file_name": "slp_104",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "1": {
+      "graphic_id": 389,
+      "file_name": "slp_433",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "4": {
+      "graphic_id": 281,
+      "file_name": "slp_413",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5
+    },
+    "5": {
+      "graphic_id": 282,
+      "file_name": "slp_414",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5
+    },
+    "6": {
+      "graphic_id": 283,
+      "file_name": "slp_439",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5
+    },
+    "9": {
+      "graphic_id": 0,
+      "file_name": "slp_243",
+      "angle_count": 72,
+      "mirroring_mode": 54,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 37
+    },
+    "10": {
+      "graphic_id": 4,
+      "file_name": "slp_246",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "11": {
+      "graphic_id": 284,
+      "file_name": "slp_417",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "12": {
+      "graphic_id": 13,
+      "file_name": "slp_254",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "13": {
+      "graphic_id": 42,
+      "file_name": "slp_473",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "14": {
+      "graphic_id": 44,
+      "file_name": "slp_474",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "15": {
+      "graphic_id": 49,
+      "file_name": "slp_639",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "16": {
+      "graphic_id": 50,
+      "file_name": "slp_640",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "17": {
+      "graphic_id": 51,
+      "file_name": "slp_647",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 17,
+          "file_name": "slp_647",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 17,
+          "file_name": "slp_583",
+          "angle_count": 8,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "18": {
+      "graphic_id": 54,
+      "file_name": "slp_648",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 18,
+          "file_name": "slp_648",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 18,
+          "file_name": "slp_584",
+          "angle_count": 16,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "19": {
+      "graphic_id": 57,
+      "file_name": "slp_692",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 19,
+          "file_name": "slp_692",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 19,
+          "file_name": "slp_583",
+          "angle_count": 8,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "20": {
+      "graphic_id": 61,
+      "file_name": "slp_691",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 20,
+          "file_name": "slp_691",
+          "angle_count": 8,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 20,
+          "file_name": "slp_583",
+          "angle_count": 8,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "21": {
+      "graphic_id": 65,
+      "file_name": "slp_693",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 21,
+          "file_name": "slp_693",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 21,
+          "file_name": "slp_694",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0
+        },
+        {
+          "unit_id": 21,
+          "file_name": "slp_584",
+          "angle_count": 16,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "22": {
+      "graphic_id": 493,
+      "file_name": "slp_153",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "23": {
+      "graphic_id": 494,
+      "file_name": "slp_154",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "24": {
+      "graphic_id": 495,
+      "file_name": "slp_155",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "25": {
+      "graphic_id": 294,
+      "file_name": "slp_427",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "26": {
+      "graphic_id": 561,
+      "file_name": "slp_620",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "27": {
+      "graphic_id": 562,
+      "file_name": "slp_621",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "28": {
+      "graphic_id": 558,
+      "file_name": "slp_617",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "29": {
+      "graphic_id": 539,
+      "file_name": "slp_361",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "30": {
+      "graphic_id": 540,
+      "file_name": "slp_362",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "31": {
+      "graphic_id": 542,
+      "file_name": "slp_364",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "32": {
+      "graphic_id": 543,
+      "file_name": "slp_365",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "34": {
+      "graphic_id": 96,
+      "file_name": "slp_360",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "35": {
+      "graphic_id": 287,
+      "file_name": "slp_421",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "36": {
+      "graphic_id": 288,
+      "file_name": "slp_420",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "37": {
+      "graphic_id": 289,
+      "file_name": "slp_424",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "38": {
+      "graphic_id": 290,
+      "file_name": "slp_423",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "39": {
+      "graphic_id": 291,
+      "file_name": "slp_422",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "40": {
+      "graphic_id": 292,
+      "file_name": "slp_426",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "41": {
+      "graphic_id": 293,
+      "file_name": "slp_412",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "43": {
+      "graphic_id": 160,
+      "file_name": "slp_373",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "45": {
+      "graphic_id": 212,
+      "file_name": "slp_355",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "46": {
+      "graphic_id": 296,
+      "file_name": "slp_429",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "47": {
+      "graphic_id": 544,
+      "file_name": "slp_366",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "48": {
+      "graphic_id": 297,
+      "file_name": "slp_428",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "49": {
+      "graphic_id": 433,
+      "file_name": "slp_107",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "50": {
+      "graphic_id": 273,
+      "file_name": "slp_447",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "52": {
+      "graphic_id": 316,
+      "file_name": "slp_458",
+      "angle_count": 2,
+      "mirroring_mode": 1,
+      "frame_count": 30,
+      "rotation_is_variant": true,
+      "variant_count": 1
+    },
+    "53": {
+      "graphic_id": 316,
+      "file_name": "slp_458",
+      "angle_count": 2,
+      "mirroring_mode": 1,
+      "frame_count": 30,
+      "rotation_is_variant": true,
+      "variant_count": 1
+    },
+    "54": {
+      "graphic_id": 559,
+      "file_name": "slp_618",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "55": {
+      "graphic_id": 560,
+      "file_name": "slp_619",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "56": {
+      "graphic_id": 611,
+      "file_name": "slp_506",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "59": {
+      "graphic_id": 333,
+      "file_name": "slp_240",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "61": {
+      "graphic_id": 509,
+      "file_name": "slp_600",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 8
+    },
+    "65": {
+      "graphic_id": 397,
+      "file_name": "slp_479",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 12
+    },
+    "66": {
+      "graphic_id": 477,
+      "file_name": "slp_481",
+      "angle_count": 7,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 7
+    },
+    "68": {
+      "graphic_id": 421,
+      "file_name": "slp_108",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "69": {
+      "graphic_id": 424,
+      "file_name": "slp_119",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "70": {
+      "graphic_id": 407,
+      "file_name": "slp_218",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "71": {
+      "graphic_id": 443,
+      "file_name": "slp_106",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
+    "72": {
+      "graphic_id": 701,
+      "file_name": "slp_599",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
+    "73": {
+      "graphic_id": 304,
+      "file_name": "slp_425",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6
+    },
+    "74": {
+      "graphic_id": 305,
+      "file_name": "slp_415",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "75": {
+      "graphic_id": 306,
+      "file_name": "slp_416",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "76": {
+      "graphic_id": 308,
+      "file_name": "slp_437",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 4
+    },
+    "77": {
+      "graphic_id": 309,
+      "file_name": "slp_436",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "79": {
+      "graphic_id": 704,
+      "file_name": "slp_688",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "80": {
+      "graphic_id": 503,
+      "file_name": "slp_596",
+      "angle_count": 7,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 7
+    },
+    "82": {
+      "graphic_id": 419,
+      "file_name": "slp_110",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "83": {
+      "graphic_id": 285,
+      "file_name": "slp_418",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6
+    },
+    "84": {
+      "graphic_id": 475,
+      "file_name": "slp_500",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "85": {
+      "graphic_id": 391,
+      "file_name": "slp_391",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 4,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "86": {
+      "graphic_id": 435,
+      "file_name": "slp_116",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "87": {
+      "graphic_id": 431,
+      "file_name": "slp_115",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "89": {
+      "graphic_id": 462,
+      "file_name": "slp_497",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "90": {
+      "graphic_id": 297,
+      "file_name": "slp_428",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "93": {
+      "graphic_id": 312,
+      "file_name": "slp_442",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5
+    },
+    "94": {
+      "graphic_id": 313,
+      "file_name": "slp_438",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 7
+    },
+    "95": {
+      "graphic_id": 487,
+      "file_name": "slp_521",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 9
+    },
+    "96": {
+      "graphic_id": 485,
+      "file_name": "slp_406",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 9
+    },
+    "100": {
+      "graphic_id": 513,
+      "file_name": "slp_608",
+      "angle_count": 32,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "101": {
+      "graphic_id": 514,
+      "file_name": "slp_609",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "102": {
+      "graphic_id": 478,
+      "file_name": "slp_622",
+      "angle_count": 7,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 7
+    },
+    "103": {
+      "graphic_id": 515,
+      "file_name": "slp_527",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "104": {
+      "graphic_id": 439,
+      "file_name": "slp_117",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "105": {
+      "graphic_id": 437,
+      "file_name": "slp_114",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "106": {
+      "graphic_id": 591,
+      "file_name": "slp_266",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "108": {
+      "graphic_id": 11,
+      "file_name": "slp_244",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "109": {
+      "graphic_id": 598,
+      "file_name": "slp_280",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
+    "110": {
+      "graphic_id": 445,
+      "file_name": "slp_120",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "113": {
+      "graphic_id": 648,
+      "file_name": "slp_463",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "114": {
+      "graphic_id": 649,
+      "file_name": "slp_464",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "115": {
+      "graphic_id": 600,
+      "file_name": "slp_623",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
+    },
+    "116": {
+      "graphic_id": 429,
+      "file_name": "slp_112",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "117": {
+      "graphic_id": 452,
+      "file_name": "slp_113",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
+    "121": {
+      "graphic_id": 650,
+      "file_name": "slp_465",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "125": {
+      "graphic_id": 314,
+      "file_name": "slp_443",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "126": {
+      "graphic_id": 462,
+      "file_name": "slp_497",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "129": {
+      "graphic_id": 651,
+      "file_name": "slp_466",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "130": {
+      "graphic_id": 600,
+      "file_name": "slp_623",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
+    },
+    "131": {
+      "graphic_id": 600,
+      "file_name": "slp_623",
+      "angle_count": 4,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 4
+    },
+    "132": {
+      "graphic_id": 415,
+      "file_name": "slp_105",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "133": {
+      "graphic_id": 417,
+      "file_name": "slp_103",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "134": {
+      "graphic_id": 601,
+      "file_name": "slp_493",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "135": {
+      "graphic_id": 602,
+      "file_name": "slp_522",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "136": {
+      "graphic_id": 603,
+      "file_name": "slp_523",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "137": {
+      "graphic_id": 604,
+      "file_name": "slp_524",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "138": {
+      "graphic_id": 605,
+      "file_name": "slp_525",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "139": {
+      "graphic_id": 606,
+      "file_name": "slp_526",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "140": {
+      "graphic_id": 607,
+      "file_name": "slp_511",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "141": {
+      "graphic_id": 608,
+      "file_name": "slp_503",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "142": {
+      "graphic_id": 609,
+      "file_name": "slp_504",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "143": {
+      "graphic_id": 610,
+      "file_name": "slp_505",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "144": {
+      "graphic_id": 611,
+      "file_name": "slp_506",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "145": {
+      "graphic_id": 612,
+      "file_name": "slp_507",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "146": {
+      "graphic_id": 613,
+      "file_name": "slp_508",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "147": {
+      "graphic_id": 614,
+      "file_name": "slp_509",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "148": {
+      "graphic_id": 615,
+      "file_name": "slp_510",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "149": {
+      "graphic_id": 616,
+      "file_name": "slp_513",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "150": {
+      "graphic_id": 617,
+      "file_name": "slp_512",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "151": {
+      "graphic_id": 618,
+      "file_name": "slp_514",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "152": {
+      "graphic_id": 619,
+      "file_name": "slp_515",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "153": {
+      "graphic_id": 620,
+      "file_name": "slp_516",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "154": {
+      "graphic_id": 426,
+      "file_name": "slp_109",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
+    "155": {
+      "graphic_id": 447,
+      "file_name": "slp_111",
+      "angle_count": 3,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 3
+    },
+    "157": {
+      "graphic_id": 406,
+      "file_name": "slp_475",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "158": {
+      "graphic_id": 8,
+      "file_name": "slp_249",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "159": {
+      "graphic_id": 12,
+      "file_name": "slp_245",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "161": {
+      "graphic_id": 653,
+      "file_name": "slp_468",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "162": {
+      "graphic_id": 323,
+      "file_name": "slp_460",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "164": {
+      "graphic_id": 593,
+      "file_name": "slp_275",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "165": {
+      "graphic_id": 594,
+      "file_name": "slp_276",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "166": {
+      "graphic_id": 595,
+      "file_name": "slp_277",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "167": {
+      "graphic_id": 522,
+      "file_name": "slp_294",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "168": {
+      "graphic_id": 521,
+      "file_name": "slp_292",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "169": {
+      "graphic_id": 596,
+      "file_name": "slp_278",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "170": {
+      "graphic_id": 523,
+      "file_name": "slp_295",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "171": {
+      "graphic_id": 524,
+      "file_name": "slp_296",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "172": {
+      "graphic_id": 525,
+      "file_name": "slp_297",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "173": {
+      "graphic_id": 526,
+      "file_name": "slp_298",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "174": {
+      "graphic_id": 527,
+      "file_name": "slp_299",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "175": {
+      "graphic_id": 528,
+      "file_name": "slp_300",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "176": {
+      "graphic_id": 529,
+      "file_name": "slp_301",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "177": {
+      "graphic_id": 520,
+      "file_name": "slp_293",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "178": {
+      "graphic_id": 517,
+      "file_name": "slp_382",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "179": {
+      "graphic_id": 518,
+      "file_name": "slp_383",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "180": {
+      "graphic_id": 519,
+      "file_name": "slp_384",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "181": {
+      "graphic_id": 530,
+      "file_name": "slp_10",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "182": {
+      "graphic_id": 531,
+      "file_name": "slp_11",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "183": {
+      "graphic_id": 532,
+      "file_name": "slp_12",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "184": {
+      "graphic_id": 569,
+      "file_name": "slp_536",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "185": {
+      "graphic_id": 583,
+      "file_name": "slp_550",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "186": {
+      "graphic_id": 564,
+      "file_name": "slp_531",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "187": {
+      "graphic_id": 534,
+      "file_name": "slp_304",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "188": {
+      "graphic_id": 535,
+      "file_name": "slp_305",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "189": {
+      "graphic_id": 536,
+      "file_name": "slp_306",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "190": {
+      "graphic_id": 537,
+      "file_name": "slp_307",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "191": {
+      "graphic_id": 533,
+      "file_name": "slp_303",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "192": {
+      "graphic_id": 621,
+      "file_name": "slp_149",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "193": {
+      "graphic_id": 622,
+      "file_name": "slp_150",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "194": {
+      "graphic_id": 623,
+      "file_name": "slp_151",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "195": {
+      "graphic_id": 627,
+      "file_name": "slp_492",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "197": {
+      "graphic_id": 624,
+      "file_name": "slp_152",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "198": {
+      "graphic_id": 654,
+      "file_name": "slp_469",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "199": {
+      "graphic_id": 496,
+      "file_name": "slp_593",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "203": {
+      "graphic_id": 655,
+      "file_name": "slp_470",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "204": {
+      "graphic_id": 2,
+      "file_name": "slp_242",
+      "angle_count": 8,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 8
+    },
+    "205": {
+      "graphic_id": 1,
+      "file_name": "slp_265",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 3,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "206": {
+      "graphic_id": 3,
+      "file_name": "slp_252",
+      "angle_count": 32,
+      "mirroring_mode": 0,
+      "frame_count": 3,
+      "rotation_is_variant": true,
+      "variant_count": 32
+    },
+    "207": {
+      "graphic_id": 135,
+      "file_name": "slp_367",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "208": {
+      "graphic_id": 136,
+      "file_name": "slp_368",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "209": {
+      "graphic_id": 138,
+      "file_name": "slp_380",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "210": {
+      "graphic_id": 139,
+      "file_name": "slp_371",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "211": {
+      "graphic_id": 140,
+      "file_name": "slp_372",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 3,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "212": {
+      "graphic_id": 143,
+      "file_name": "slp_376",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 3,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "213": {
+      "graphic_id": 144,
+      "file_name": "slp_381",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "214": {
+      "graphic_id": 152,
+      "file_name": "slp_378",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "215": {
+      "graphic_id": 154,
+      "file_name": "slp_394",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "216": {
+      "graphic_id": 156,
+      "file_name": "slp_395",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "217": {
+      "graphic_id": 155,
+      "file_name": "slp_379",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "218": {
+      "graphic_id": 157,
+      "file_name": "slp_396",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "219": {
+      "graphic_id": 137,
+      "file_name": "slp_398",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "221": {
+      "graphic_id": 161,
+      "file_name": "slp_401",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "222": {
+      "graphic_id": 162,
+      "file_name": "slp_402",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "223": {
+      "graphic_id": 163,
+      "file_name": "slp_370",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "224": {
+      "graphic_id": 165,
+      "file_name": "slp_387",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "226": {
+      "graphic_id": 656,
+      "file_name": "slp_471",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "235": {
+      "graphic_id": 288,
+      "file_name": "slp_420",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "236": {
+      "graphic_id": 424,
+      "file_name": "slp_119",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "237": {
+      "graphic_id": 291,
+      "file_name": "slp_422",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "242": {
+      "graphic_id": 698,
+      "file_name": "slp_529",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "244": {
+      "graphic_id": 148,
+      "file_name": "slp_239",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "246": {
+      "graphic_id": 827,
+      "file_name": "slp_701",
+      "angle_count": 180,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 181
+    },
+    "247": {
+      "graphic_id": 827,
+      "file_name": "slp_701",
+      "angle_count": 180,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 181
+    },
+    "248": {
+      "graphic_id": 506,
+      "file_name": "slp_607",
+      "angle_count": 8,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "249": {
+      "graphic_id": 479,
+      "file_name": "slp_501",
+      "angle_count": 36,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 36
+    },
+    "250": {
+      "graphic_id": 65,
+      "file_name": "slp_693",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 250,
+          "file_name": "slp_693",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 250,
+          "file_name": "slp_695",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0
+        },
+        {
+          "unit_id": 250,
+          "file_name": "slp_584",
+          "angle_count": 16,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "252": {
+      "graphic_id": 158,
+      "file_name": "slp_399",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "253": {
+      "graphic_id": 150,
+      "file_name": "slp_389",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "254": {
+      "graphic_id": 159,
+      "file_name": "slp_400",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "255": {
+      "graphic_id": 153,
+      "file_name": "slp_393",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "256": {
+      "graphic_id": 141,
+      "file_name": "slp_374",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "257": {
+      "graphic_id": 149,
+      "file_name": "slp_388",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "258": {
+      "graphic_id": 151,
+      "file_name": "slp_390",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "260": {
+      "graphic_id": 318,
+      "file_name": "slp_594",
+      "angle_count": 7,
+      "mirroring_mode": 0,
+      "frame_count": 15,
+      "rotation_is_variant": true,
+      "variant_count": 7
+    },
+    "261": {
+      "graphic_id": 145,
+      "file_name": "slp_369",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "262": {
+      "graphic_id": 395,
+      "file_name": "slp_392",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 4,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "263": {
+      "graphic_id": 319,
+      "file_name": "slp_594",
+      "angle_count": 7,
+      "mirroring_mode": 0,
+      "frame_count": 15,
+      "rotation_is_variant": true,
+      "variant_count": 7
+    },
+    "264": {
+      "graphic_id": 107,
+      "file_name": "slp_283",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "265": {
+      "graphic_id": 109,
+      "file_name": "slp_284",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "266": {
+      "graphic_id": 110,
+      "file_name": "slp_285",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "267": {
+      "graphic_id": 111,
+      "file_name": "slp_286",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "268": {
+      "graphic_id": 112,
+      "file_name": "slp_287",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "269": {
+      "graphic_id": 113,
+      "file_name": "slp_288",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "270": {
+      "graphic_id": 114,
+      "file_name": "slp_289",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "271": {
+      "graphic_id": 115,
+      "file_name": "slp_290",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "272": {
+      "graphic_id": 116,
+      "file_name": "slp_291",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 25
+    },
+    "273": {
+      "graphic_id": 108,
+      "file_name": "slp_282",
+      "angle_count": 25,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 1
+    },
+    "274": {
+      "graphic_id": 506,
+      "file_name": "slp_607",
+      "angle_count": 8,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "275": {
+      "graphic_id": 830,
+      "file_name": "slp_705",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 9,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "276": {
+      "graphic_id": 458,
+      "file_name": "slp_121",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "277": {
+      "graphic_id": 65,
+      "file_name": "slp_693",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 277,
+          "file_name": "slp_693",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 277,
+          "file_name": "slp_695",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0
+        },
+        {
+          "unit_id": 277,
+          "file_name": "slp_584",
+          "angle_count": 16,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "278": {
+      "graphic_id": 424,
+      "file_name": "slp_119",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "279": {
+      "graphic_id": 284,
+      "file_name": "slp_417",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "280": {
+      "graphic_id": 288,
+      "file_name": "slp_420",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "281": {
+      "graphic_id": 291,
+      "file_name": "slp_422",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "282": {
+      "graphic_id": 309,
+      "file_name": "slp_436",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "283": {
+      "graphic_id": 290,
+      "file_name": "slp_423",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "291": {
+      "graphic_id": 313,
+      "file_name": "slp_438",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 7
+    },
+    "292": {
+      "graphic_id": 42,
+      "file_name": "slp_473",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "293": {
+      "graphic_id": 285,
+      "file_name": "slp_418",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6
+    },
+    "294": {
+      "graphic_id": 785,
+      "file_name": "slp_698",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "295": {
+      "graphic_id": 786,
+      "file_name": "slp_699",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "296": {
+      "graphic_id": 833,
+      "file_name": "slp_702",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "297": {
+      "graphic_id": 65,
+      "file_name": "slp_693",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 297,
+          "file_name": "slp_693",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 297,
+          "file_name": "slp_695",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0
+        },
+        {
+          "unit_id": 297,
+          "file_name": "slp_584",
+          "angle_count": 16,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "298": {
+      "graphic_id": 285,
+      "file_name": "slp_418",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6
+    },
+    "299": {
+      "graphic_id": 315,
+      "file_name": "slp_445",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 9
+    },
+    "300": {
+      "graphic_id": 389,
+      "file_name": "slp_433",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "303": {
+      "graphic_id": 134,
+      "file_name": "slp_377",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "304": {
+      "graphic_id": 565,
+      "file_name": "slp_532",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "305": {
+      "graphic_id": 566,
+      "file_name": "slp_533",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "306": {
+      "graphic_id": 567,
+      "file_name": "slp_534",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "307": {
+      "graphic_id": 568,
+      "file_name": "slp_535",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "308": {
+      "graphic_id": 570,
+      "file_name": "slp_537",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "309": {
+      "graphic_id": 571,
+      "file_name": "slp_538",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "310": {
+      "graphic_id": 572,
+      "file_name": "slp_539",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "311": {
+      "graphic_id": 573,
+      "file_name": "slp_540",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "312": {
+      "graphic_id": 574,
+      "file_name": "slp_541",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "313": {
+      "graphic_id": 575,
+      "file_name": "slp_542",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "314": {
+      "graphic_id": 579,
+      "file_name": "slp_546",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "315": {
+      "graphic_id": 580,
+      "file_name": "slp_547",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "316": {
+      "graphic_id": 581,
+      "file_name": "slp_548",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "317": {
+      "graphic_id": 582,
+      "file_name": "slp_549",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "318": {
+      "graphic_id": 584,
+      "file_name": "slp_551",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "319": {
+      "graphic_id": 585,
+      "file_name": "slp_552",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "320": {
+      "graphic_id": 586,
+      "file_name": "slp_553",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "321": {
+      "graphic_id": 587,
+      "file_name": "slp_554",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "322": {
+      "graphic_id": 588,
+      "file_name": "slp_555",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "323": {
+      "graphic_id": 589,
+      "file_name": "slp_556",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "324": {
+      "graphic_id": 590,
+      "file_name": "slp_557",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "329": {
+      "graphic_id": 97,
+      "file_name": "slp_461",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 10
+    },
+    "330": {
+      "graphic_id": 322,
+      "file_name": "slp_459",
+      "angle_count": 2,
+      "mirroring_mode": 0,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 2
+    },
+    "331": {
+      "graphic_id": 495,
+      "file_name": "slp_155",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "332": {
+      "graphic_id": 576,
+      "file_name": "slp_543",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "333": {
+      "graphic_id": 577,
+      "file_name": "slp_544",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "334": {
+      "graphic_id": 578,
+      "file_name": "slp_545",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "335": {
+      "graphic_id": 147,
+      "file_name": "slp_386",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 4,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "336": {
+      "graphic_id": 146,
+      "file_name": "slp_385",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "337": {
+      "graphic_id": 834,
+      "file_name": "slp_707",
+      "angle_count": 36,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "338": {
+      "graphic_id": 853,
+      "file_name": "slp_777",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 12
+    },
+    "339": {
+      "graphic_id": 911,
+      "file_name": "slp_781",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "340": {
+      "graphic_id": 557,
+      "file_name": "slp_616",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "341": {
+      "graphic_id": 164,
+      "file_name": "slp_403",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "342": {
+      "graphic_id": 142,
+      "file_name": "slp_375",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 3,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "343": {
+      "graphic_id": 538,
+      "file_name": "slp_344",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "344": {
+      "graphic_id": 541,
+      "file_name": "slp_363",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "345": {
+      "graphic_id": 910,
+      "file_name": "slp_776",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "346": {
+      "graphic_id": 97,
+      "file_name": "slp_461",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 10
+    },
+    "347": {
+      "graphic_id": 854,
+      "file_name": "slp_783",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "348": {
+      "graphic_id": 545,
+      "file_name": "slp_483",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "349": {
+      "graphic_id": 546,
+      "file_name": "slp_484",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "350": {
+      "graphic_id": 547,
+      "file_name": "slp_485",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "351": {
+      "graphic_id": 548,
+      "file_name": "slp_486",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "352": {
+      "graphic_id": 549,
+      "file_name": "slp_487",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "353": {
+      "graphic_id": 550,
+      "file_name": "slp_488",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "354": {
+      "graphic_id": 551,
+      "file_name": "slp_610",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "355": {
+      "graphic_id": 552,
+      "file_name": "slp_611",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "356": {
+      "graphic_id": 553,
+      "file_name": "slp_612",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "357": {
+      "graphic_id": 554,
+      "file_name": "slp_613",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "358": {
+      "graphic_id": 555,
+      "file_name": "slp_614",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "359": {
+      "graphic_id": 556,
+      "file_name": "slp_615",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "360": {
+      "graphic_id": 907,
+      "file_name": "slp_792",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 9
+    },
+    "361": {
+      "graphic_id": 901,
+      "file_name": "slp_788",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "362": {
+      "graphic_id": 389,
+      "file_name": "slp_433",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 1
+    },
+    "363": {
+      "graphic_id": 850,
+      "file_name": "slp_775",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "365": {
+      "graphic_id": 628,
+      "file_name": "slp_493",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "366": {
+      "graphic_id": 630,
+      "file_name": "slp_494",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "367": {
+      "graphic_id": 631,
+      "file_name": "slp_495",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "368": {
+      "graphic_id": 47,
+      "file_name": "slp_360",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "369": {
+      "graphic_id": 460,
+      "file_name": "slp_397",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 4,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "370": {
+      "graphic_id": 321,
+      "file_name": "slp_689",
+      "angle_count": 2,
+      "mirroring_mode": 1,
+      "frame_count": 34,
+      "rotation_is_variant": true,
+      "variant_count": 1
+    },
+    "372": {
+      "graphic_id": 845,
+      "file_name": "slp_715",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1
+    },
+    "373": {
+      "graphic_id": 844,
+      "file_name": "slp_714",
+      "angle_count": 36,
+      "mirroring_mode": 27,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 19
+    },
+    "374": {
+      "graphic_id": 849,
+      "file_name": "slp_774",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "375": {
+      "graphic_id": 910,
+      "file_name": "slp_776",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "376": {
+      "graphic_id": 290,
+      "file_name": "slp_423",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "377": {
+      "graphic_id": 65,
+      "file_name": "slp_693",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1,
+      "pieces": [
+        {
+          "unit_id": 377,
+          "file_name": "slp_693",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0,
+          "parent": true
+        },
+        {
+          "unit_id": 377,
+          "file_name": "slp_695",
+          "angle_count": 16,
+          "frame_count": 1,
+          "dx": 0,
+          "dy": 0
+        },
+        {
+          "unit_id": 377,
+          "file_name": "slp_584",
+          "angle_count": 16,
+          "frame_count": 9,
+          "dx": 0,
+          "dy": 0
+        }
+      ]
+    },
+    "378": {
+      "graphic_id": 306,
+      "file_name": "slp_416",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 8
+    },
+    "379": {
+      "graphic_id": 290,
+      "file_name": "slp_423",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 13
+    },
+    "380": {
+      "graphic_id": 424,
+      "file_name": "slp_119",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "383": {
+      "graphic_id": 424,
+      "file_name": "slp_119",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "384": {
+      "graphic_id": 397,
+      "file_name": "slp_479",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 12
+    },
+    "385": {
+      "graphic_id": 918,
+      "file_name": "slp_767",
+      "angle_count": 7,
+      "mirroring_mode": 0,
+      "frame_count": 1,
+      "rotation_is_variant": true,
+      "variant_count": 7
+    },
+    "386": {
+      "graphic_id": 922,
+      "file_name": "slp_782",
+      "angle_count": 32,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "387": {
+      "graphic_id": 923,
+      "file_name": "slp_786",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 20
+    },
+    "389": {
+      "graphic_id": 927,
+      "file_name": "slp_798",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "390": {
+      "graphic_id": 926,
+      "file_name": "slp_797",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 5,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "391": {
+      "graphic_id": 928,
+      "file_name": "slp_801",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "392": {
+      "graphic_id": 929,
+      "file_name": "slp_802",
+      "angle_count": 1,
+      "mirroring_mode": 0,
+      "frame_count": 1
+    },
+    "394": {
+      "graphic_id": 314,
+      "file_name": "slp_443",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "396": {
+      "graphic_id": 931,
+      "file_name": "slp_803",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    },
+    "397": {
+      "graphic_id": 940,
+      "file_name": "slp_810",
+      "angle_count": 16,
+      "mirroring_mode": 12,
+      "frame_count": 1
+    },
+    "398": {
+      "graphic_id": 936,
+      "file_name": "slp_807",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 10
+    },
+    "399": {
+      "graphic_id": 934,
+      "file_name": "slp_806",
+      "angle_count": 8,
+      "mirroring_mode": 6,
+      "frame_count": 6,
+      "rotation_is_variant": true,
+      "variant_count": 5
+    }
+  }
+}

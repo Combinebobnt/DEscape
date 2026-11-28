@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from descape import map_analysis
+from descape import map_analysis, map_analysis_types
 from descape.fill_tools import connected_regions
 from descape.messages_fields import STRING_ID_UNSET
 from descape.scenario_io import load_map_and_units, parse_triggers
@@ -72,10 +72,11 @@ def test_findings_are_capped_with_a_summary_row() -> None:
     assert result.findings[-1].message == "...and 5 more not listed"
 
 
-def test_the_untouched_units_fixture_has_no_errors_or_warnings() -> None:
+def test_the_untouched_units_fixture_has_no_errors_or_warnings_but_its_house_garrison() -> None:
+    """The fixture garrisons Villager 203 in House 200, which no game-made file does."""
     report = map_analysis.analyze(load_map_and_units(UNITS_FIXTURE))
-    severities = {f.severity for r in report.results for f in r.findings}
-    assert severities <= {"info"}, report
+    warnings = [(r.label, f.unit_key) for r in report.results for f in r.findings if f.severity != "info"]
+    assert warnings == [("Garrisons the host can't hold", (1, 203))], report
 
 
 # -- off-map units --------------------------------------------------------------
@@ -152,7 +153,7 @@ def test_building_off_the_half_tile_grid_is_one_warning() -> None:
 def test_a_later_warning_survives_the_cap_ahead_of_info(monkeypatch) -> None:
     loaded = load_map_and_units(UNITS_FIXTURE)
     _place(loaded, 201, _BARRACKS, 20.3, 20.5)
-    monkeypatch.setattr(map_analysis, "MAX_FINDINGS_PER_CHECK", 1)
+    monkeypatch.setattr(map_analysis_types, "MAX_FINDINGS_PER_CHECK", 1)
     result = map_analysis.check_off_grid_buildings(loaded)
     assert [(f.unit_key, f.severity) for f in result.findings] == [((1, 201), "warning"), (None, "warning")]
 
@@ -793,6 +794,300 @@ def test_marker_anchors_from_a_real_elevation_violation() -> None:
     assert sum(errors.values()) == len(map_analysis.check_elevation(loaded).findings) == 8
 
 
+# -- TASK-098: unit ids, unknown ids, garrison fit, undefined players -------------------
+
+
+def test_unit_ids_are_clean_on_the_fixture_and_a_shared_id_is_one_warning() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_unit_ids(loaded).is_clean
+    _unit(loaded, 301).reference_id = 300
+    findings = map_analysis.check_unit_ids(loaded).findings
+    assert [(f.severity, f.unit_key) for f in findings] == [("warning", (2, 300))]
+    assert "held by 2 units" in findings[0].message
+
+
+def test_an_id_at_the_file_counter_is_a_warning_unless_the_live_counter_covers_it() -> None:
+    """The units fixture stores next_unit_id_to_place 400; the edit model's
+    counter replaces it on Save once a unit was added."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _unit(loaded, 301).reference_id = 400
+    findings = map_analysis.check_unit_ids(loaded).findings
+    assert [(f.severity, f.unit_key) for f in findings] == [("warning", (2, 400))]
+    assert "(400)" in findings[0].message
+    assert map_analysis.check_unit_ids(loaded, next_unit_id=401).is_clean
+    report = map_analysis.analyze(loaded, next_unit_id=401)
+    assert next(r for r in report.results if r.label == "Unit ids").is_clean
+
+
+def test_an_unknown_object_const_is_a_warning() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_unknown_objects(loaded).is_clean
+    _unit(loaded, 201).unit_const = 59999
+    findings = map_analysis.check_unknown_objects(loaded).findings
+    assert [(f.severity, f.unit_key) for f in findings] == [("warning", (1, 201))]
+
+
+def test_an_unknown_terrain_id_is_one_warning_per_id_with_its_count() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_unknown_terrains(loaded).is_clean
+    _tile(loaded, 7, 3).terrain_id = 250
+    _tile(loaded, 2, 9).terrain_id = 250
+    findings = map_analysis.check_unknown_terrains(loaded).findings
+    assert [(f.severity, f.tile) for f in findings] == [("warning", (7, 3))]
+    assert "Terrain id 250" in findings[0].message and "2 tiles" in findings[0].message
+
+
+def test_unknown_terrains_is_unavailable_without_a_terrain_table(monkeypatch) -> None:
+    from descape import object_catalog
+
+    monkeypatch.setattr(object_catalog, "dat_terrains", dict)
+    result = map_analysis.check_unknown_terrains(load_map_and_units(UNITS_FIXTURE))
+    assert result.unavailable and not result.is_clean
+
+
+_TOWN_CENTER = 109
+
+
+def test_a_villager_in_a_house_is_a_wrong_type_warning_and_in_a_town_center_is_not() -> None:
+    """The units fixture garrisons Villager 203 in House 200, which holds nothing."""
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    findings = map_analysis.check_garrison_fit(loaded).findings
+    assert [(f.severity, f.unit_key, f.tile) for f in findings] == [("warning", (1, 203), (10, 10))]
+    assert "can't hold it" in findings[0].message
+    _unit(loaded, 200).unit_const = _TOWN_CENTER
+    assert map_analysis.check_garrison_fit(loaded).is_clean
+
+
+def test_a_host_over_its_base_capacity_is_one_warning_and_a_dangling_host_is_not_this_check(monkeypatch) -> None:
+    from descape import garrison
+
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _unit(loaded, 200).unit_const = _WATCH_TOWER
+    _unit(loaded, 201).garrisoned_in_id = 200
+    assert map_analysis.check_garrison_fit(loaded).is_clean
+    monkeypatch.setattr(garrison, "capacity", lambda _host: 1)
+    findings = map_analysis.check_garrison_fit(loaded).findings
+    assert [(f.severity, f.unit_key) for f in findings] == [("warning", (1, 200))]
+    assert "holds 2 units, more than its base capacity of 1" in findings[0].message
+    _unit(loaded, 201).garrisoned_in_id = 99999
+    _unit(loaded, 203).garrisoned_in_id = 99999
+    assert map_analysis.check_garrison_fit(loaded).is_clean
+
+
+def test_units_of_an_undefined_player_are_one_warning_per_player() -> None:
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    assert map_analysis.check_undefined_player_units(loaded).is_clean
+    units = loaded.unit_manager.units
+    units[4].extend(units[2])
+    findings = map_analysis.check_undefined_player_units(loaded).findings
+    assert [(f.severity, f.unit_key) for f in findings] == [("warning", (4, 300))]
+    assert "Player 4" in findings[0].message and "2 units" in findings[0].message
+
+
+# -- TASK-098: trigger coordinates, created objects, completeness, players, starts -------
+
+_NEW_TRIGGER_CHECKS = (
+    map_analysis.check_trigger_coordinates,
+    map_analysis.check_created_object_terrain,
+    map_analysis.check_incomplete_triggers,
+    map_analysis.check_trigger_players,
+    map_analysis.check_never_started_triggers,
+)
+
+
+def _new_trigger(name: str = "analysis test"):
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    manager = parse_triggers(loaded)
+    return loaded, manager, manager.add_trigger(name)
+
+
+def _new_trigger_findings(check, loaded):
+    """The findings about _new_trigger()'s trigger, list index 4."""
+    return [f for f in check(loaded).findings if f.trigger_index == 4]
+
+
+def test_the_new_trigger_checks_are_unavailable_when_triggers_do_not_parse() -> None:
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    loaded.trigger_read_supported = False
+    for check in _NEW_TRIGGER_CHECKS:
+        result = check(loaded)
+        assert result.unavailable == map_analysis_types._TRIGGERS_UNAVAILABLE, check
+        assert not result.is_clean
+
+
+def test_the_vocabulary_checks_are_unavailable_without_a_vocabulary(monkeypatch) -> None:
+    from descape import library_compat
+
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    monkeypatch.setattr(library_compat, "vocabulary_is_available", lambda _version: False)
+    for check in _NEW_TRIGGER_CHECKS[:4]:
+        assert check(loaded).unavailable == "no trigger vocabulary for this scenario version", check
+    assert not map_analysis.check_never_started_triggers(loaded).unavailable
+
+
+def test_the_fixture_triggers_give_only_their_two_known_findings() -> None:
+    """Trigger 3 carries a half-set area and a Patrol with no location on
+    purpose (the status-colour tests use it); trigger 2 is disabled."""
+    loaded = load_map_and_units(TRIGGERS_FIXTURE)
+    found = {check.__name__: [f.trigger_index for f in check(loaded).findings] for check in _NEW_TRIGGER_CHECKS}
+    assert found == {
+        "check_trigger_coordinates": [],
+        "check_created_object_terrain": [],
+        "check_incomplete_triggers": [3],
+        "check_trigger_players": [],
+        "check_never_started_triggers": [2],
+    }
+
+
+def test_trigger_coordinates_sort_warnings_ahead_of_an_edge_area() -> None:
+    """120x120 fixture: an area reaching past the edge is INFO, one wholly
+    outside and an off-map location are WARNINGs, all three in the new trigger."""
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_condition.objects_in_area(area_x1=110, area_y1=100, area_x2=125, area_y2=105)
+    trigger.new_condition.objects_in_area(area_x1=121, area_y1=0, area_x2=130, area_y2=5)
+    trigger.new_effect.create_object(object_list_unit_id=4, source_player=1, location_x=50, location_y=140)
+    trigger.new_condition.objects_in_area(area_x1=0, area_y1=0, area_x2=119, area_y2=119)
+    findings = map_analysis.check_trigger_coordinates(loaded).findings
+    assert [f.severity for f in findings] == ["warning", "warning", "info"]
+    assert "wholly outside" in findings[0].message and findings[0].tile == (119, 0)
+    assert "location (50, 140)" in findings[1].message and findings[1].tile == (50, 119)
+    assert "reaches past the edge" in findings[2].message and findings[2].tile == (110, 100)
+    assert {f.trigger_index for f in findings} == {4}
+    assert findings[1].trigger_entry == ("effect", 0)
+
+
+def test_a_created_unit_on_water_is_a_warning_and_off_map_is_left_to_coordinates() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    _tile(loaded, 30, 30).terrain_id = _WATER
+    trigger.new_effect.create_object(object_list_unit_id=4, source_player=1, location_x=30, location_y=30)
+    trigger.new_effect.create_object(object_list_unit_id=4, source_player=1, location_x=31, location_y=31)
+    trigger.new_effect.create_object(object_list_unit_id=4, source_player=1, location_x=130, location_y=30)
+    findings = map_analysis.check_created_object_terrain(loaded).findings
+    assert [(f.severity, f.tile, f.trigger_entry) for f in findings] == [("warning", (30, 30), ("effect", 0))]
+
+
+def test_an_incomplete_trigger_is_one_info_and_dangling_ids_stay_with_their_checks() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_condition.destroy_object(unit_object=99999)
+    trigger.new_condition.timer(timer=5)
+    findings = _new_trigger_findings(map_analysis.check_incomplete_triggers, loaded)
+    assert [f.severity for f in findings] == ["info"]
+    assert findings[0].message.endswith("has no effects")
+    trigger.new_effect.activate_trigger(trigger_id=99)
+    assert _new_trigger_findings(map_analysis.check_incomplete_triggers, loaded) == []
+
+
+def test_an_entry_type_the_vocabulary_lacks_is_an_incomplete_reason() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_effect.activate_trigger(trigger_id=0)
+    trigger.effects[0].effect_type = 9999
+    findings = _new_trigger_findings(map_analysis.check_incomplete_triggers, loaded)
+    assert len(findings) == 1 and "effect 1 (type 9999): this version has no such effect type" in findings[0].message
+
+
+def test_an_entry_naming_an_undefined_player_is_info_where_its_type_uses_the_field() -> None:
+    """The fixture defines players 1 and 2."""
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_effect.change_diplomacy(source_player=1, target_player=5)
+    trigger.new_effect.change_diplomacy(source_player=0, target_player=2)
+    trigger.new_effect.activate_trigger(trigger_id=0)
+    trigger.effects[2].source_player = 6  # activate_trigger lists no player field
+    findings = map_analysis.check_trigger_players(loaded).findings
+    assert [(f.severity, f.trigger_entry) for f in findings] == [("info", ("effect", 0))]
+    assert "target player is player 5" in findings[0].message
+
+
+def test_a_disabled_trigger_nothing_activates_never_starts() -> None:
+    loaded, manager, trigger = _new_trigger()
+    before = map_analysis.check_never_started_triggers(loaded).findings
+    trigger.enabled = 0
+    findings = map_analysis.check_never_started_triggers(loaded).findings
+    assert len(findings) == len(before) + 1
+    assert findings[-1].trigger_index == 4 and findings[-1].severity == "info"
+    manager.triggers[0].new_effect.activate_trigger(trigger_id=trigger.trigger_id)
+    assert len(map_analysis.check_never_started_triggers(loaded).findings) == len(before)
+
+
+def test_a_disabled_divider_is_not_a_never_started_trigger() -> None:
+    from descape import trigger_organize
+
+    loaded, _manager, trigger = _new_trigger()
+    before = len(map_analysis.check_never_started_triggers(loaded).findings)
+    trigger.name = "--- Section ---"
+    trigger.enabled = 0
+    assert trigger_organize.is_divider(trigger.name)
+    assert len(map_analysis.check_never_started_triggers(loaded).findings) == before
+
+
+# -- TASK-098 review folds ----------------------------------------------------------
+
+
+def test_the_player_checks_read_the_edited_player_count_when_given() -> None:
+    """Raising Number of Players to 4 without saving defines player 4 for both checks."""
+    loaded, _manager, trigger = _new_trigger()
+    loaded.unit_manager.units[4].extend(loaded.unit_manager.units[1])
+    trigger.new_effect.change_diplomacy(source_player=1, target_player=4)
+    assert map_analysis.check_undefined_player_units(loaded).findings
+    assert _new_trigger_findings(map_analysis.check_trigger_players, loaded)
+    assert map_analysis.check_undefined_player_units(loaded, defined_players=[1, 2, 3, 4]).is_clean
+    report = map_analysis.analyze(loaded, defined_players=[1, 2, 3, 4])
+    by_label = {r.label: r for r in report.results}
+    assert by_label["Units of undefined players"].is_clean
+    assert not [f for f in by_label["Trigger entries naming an undefined player"].findings if f.trigger_index == 4]
+
+
+def test_the_game_data_checks_are_unavailable_when_another_games_data_is_shown() -> None:
+    report = map_analysis.analyze(load_map_and_units(UNITS_FIXTURE), foreign_data="showing other data")
+    by_label = {r.label: r for r in report.results}
+    for label in ("Objects the game data does not have", "Terrains the game data does not have", "Garrisons the host can't hold"):
+        assert by_label[label].unavailable == "showing other data", label
+
+
+def test_a_wrong_type_occupant_is_not_also_counted_against_capacity(monkeypatch) -> None:
+    from descape import garrison
+
+    loaded = load_map_and_units(UNITS_FIXTURE)
+    _unit(loaded, 201).garrisoned_in_id = 200  # the house holds neither unit
+    monkeypatch.setattr(garrison, "capacity", lambda _host: 1)
+    findings = map_analysis.check_garrison_fit(loaded).findings
+    assert [f.unit_key for f in findings] == [(1, 201), (1, 203)]
+    assert all("can't hold it" in f.message for f in findings)
+
+
+def test_an_unset_player_is_not_an_undefined_player() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_effect.change_diplomacy(source_player=-1, target_player=-1)
+    assert _new_trigger_findings(map_analysis.check_trigger_players, loaded) == []
+
+
+def test_a_trigger_that_only_activates_itself_never_starts() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    trigger.enabled = 0
+    trigger.new_effect.activate_trigger(trigger_id=trigger.trigger_id)
+    assert [f.trigger_index for f in map_analysis.check_never_started_triggers(loaded).findings][-1] == 4
+
+
+def test_an_entry_label_numbers_by_display_slot_and_the_entry_keeps_its_stored_index() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_effect.activate_trigger(trigger_id=0)
+    trigger.new_effect.change_diplomacy(source_player=1, target_player=5)
+    trigger.effect_order = [1, 0]
+    findings = _new_trigger_findings(map_analysis.check_trigger_players, loaded)
+    assert [f.trigger_entry for f in findings] == [("effect", 1)]
+    assert "effect 1 (change diplomacy)" in findings[0].message
+
+
+def test_the_existing_trigger_checks_fill_trigger_index() -> None:
+    loaded, _manager, trigger = _new_trigger()
+    trigger.new_effect.activate_trigger(trigger_id=99)
+    trigger.new_condition.destroy_object(unit_object=99999)
+    trigger.new_effect.change_train_location(object_list_unit_id=4, object_list_unit_id_2=87, button_location=0)
+    assert [f.trigger_index for f in map_analysis.check_trigger_references(loaded).findings] == [4]
+    assert 4 in [f.trigger_index for f in map_analysis.check_unit_references(loaded).findings]
+    located = [f for f in map_analysis.check_location_buttons(loaded).findings if f.trigger_index == 4]
+    assert [f.trigger_entry for f in located] == [("effect", 1)]
+
+
 # -- corpus ---------------------------------------------------------------------
 # Real-file false-positive baselines: they stay corpus, since the synthetic test map
 # (conftest.TEST_MAP_PATH) is no baseline for what real maps hold.
@@ -824,3 +1119,30 @@ def test_shipping_scenarios_have_no_unit_on_wrong_terrain(scenario_path: Path) -
     """GH #173: the WARNING row. 0 of 21 examples/ files on 2026-10-13."""
     loaded = load_map_and_units(scenario_path)
     assert [f.message for f in map_analysis.check_units_on_wrong_terrain(loaded).findings] == []
+
+
+@pytest.mark.corpus
+@pytest.mark.parametrize(
+    "check",
+    [
+        map_analysis.check_unit_ids,
+        map_analysis.check_unknown_objects,
+        map_analysis.check_unknown_terrains,
+        map_analysis.check_garrison_fit,
+        map_analysis.check_undefined_player_units,
+        map_analysis.check_created_object_terrain,
+    ],
+    ids=lambda check: check.__name__,
+)
+def test_shipping_scenarios_fire_no_gh282_warning_check(scenario_path: Path, check) -> None:
+    """GH #282: each of these fired on 0 of 21 examples/ files on 2026-11-26."""
+    assert [f.message for f in check(load_map_and_units(scenario_path)).findings] == []
+
+
+@pytest.mark.corpus
+def test_shipping_scenarios_have_no_trigger_coordinate_warning(scenario_path: Path) -> None:
+    """GH #282: no WARNING anywhere; 8tp3w9j's three areas reaching x = 259 on its 240 map are INFO."""
+    findings = map_analysis.check_trigger_coordinates(load_map_and_units(scenario_path)).findings
+    assert [f.message for f in findings if f.severity == "warning"] == []
+    if scenario_path.name == "8tp3w9j.aoe2scenario":
+        assert len(findings) == 3

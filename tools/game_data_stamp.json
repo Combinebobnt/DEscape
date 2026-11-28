@@ -1,10 +1,72 @@
 {
   "_comment": "What the committed descape/*.json game-data tables were generated from, and each table's sha256 (CRLF folded to LF). `refreshed` is the day a full regeneration first recorded this .dat and build id. Written by tools/regen_game_data.py: regenerate, never edit by hand.",
+  "aoc": {
+    "dat": {
+      "sha256": "e49d05b326ecf4a14e0cddd5171718c6849abe2548939bb9a93a8f3039753d9d",
+      "size": 1041720
+    },
+    "dat57": "d488f36d0f2d03d9c26940ed40e9e49c51a67319b41e169df6167edfdc1ffebb",
+    "install_files": {
+      "Data/gamedata.drs": 531384,
+      "Data/gamedata_x1.drs": 944156,
+      "Data/gamedata_x1_p1.drs": 530869,
+      "Data/graphics.drs": 86137347,
+      "Data/interfac.drs": 54029361,
+      "Data/terrain.drs": 6649972
+    },
+    "refreshed": "2026-11-26",
+    "steam_buildid": null,
+    "tables": {
+      "building_art_map.json": "c692090856dbeabe56e08393f249f25f3cc7b676d2d08711181377fc3935656b",
+      "garrison_table.json": "39bc10b235c5d8fdd612a5192166f15f548483101512bdb63f4093e29355214b",
+      "object_catalog.json": "4293a0edf10f37aa4783fa59572e8e4526fe6d0f9dc7684f2266a84aece74491",
+      "terrain_blend_map.json": "9b214e5ef11078ffdaa18f9f7ba68baf4cd032a9961228a19fb22adb452116a2",
+      "terrain_classes.json": "d04defc97611f70bb9b3ffecb3443d100c3dca91d35585a1611050452bf6ad07",
+      "terrain_texture_map.json": "c8680d23a38696511d492b7f46fd43b3bdf7c8e8da462ddbce1aaa2854d6e99b",
+      "terrain_unit_map.json": "b8d783cc13c60d0410a94a90e07558629528d81fc25bd4fa97818e28a1b87d6c",
+      "tree_unit_ids.json": "ae73874953a5ac74f25f195376a5408d79bb2193982f229b44095ae43ff5ebc1",
+      "unit_graphic_map.json": "81e29be1b28f452909a059dc7a430a379e6687b80bbc59939f396da2f4b08346",
+      "unit_render_data.json": "f1dd8e0d16f510577385401ca7d41fa40892f559d869dfdc3e55744df07dcec5",
+      "unit_stats.json": "5a2118dbca7d96992fbdbe6268c2b78f83aaaa247a4c0b57301f2bd24b0ce56f"
+    }
+  },
   "dat": {
     "sha256": "d0aefd92428e2215d6f4d9b1d544901e6f171e19183f9e0b88218de5153a337f",
     "size": 11963833
   },
   "genieutils": "0.1.2",
+  "hd": {
+    "dat": {
+      "sha256": "21591ac67251d8674635d5634f2d8e9ff80ad90f3c792f9503d60dd658d61058",
+      "size": 2260159
+    },
+    "dat57": "d488f36d0f2d03d9c26940ed40e9e49c51a67319b41e169df6167edfdc1ffebb",
+    "folder_counts": {
+      "resources/_common/drs/gamedata_x1": 6,
+      "resources/_common/drs/gamedata_x2": 1417,
+      "resources/_common/drs/graphics": 1768,
+      "resources/_common/terrain/textures": 82
+    },
+    "install_files": {
+      "resources/_common/dat/blendomatic_x1.dat": 741518,
+      "resources/_common/drs/interface/50500.bina": 2888
+    },
+    "refreshed": "2026-11-27",
+    "steam_buildid": "3062235",
+    "tables": {
+      "building_art_map.json": "50320aa49fb85ee04786fe59ad39e0d8c47eae8e7494675a2f9396e535eb11ae",
+      "garrison_table.json": "d7d4addd8de16b08c25534963b88030e88712707ce9369b15a6b12115236a64e",
+      "object_catalog.json": "216b803f4d1ef56bd01584ef3d01ad24166a747c47eacc55a904f8eec13057f5",
+      "terrain_blend_map.json": "84a19627c0c569bacae2756e2672eff47c640cdc63415c647155b13cbf91e6b0",
+      "terrain_classes.json": "45340563028c7d163533938fb0a853d59732d6db13daa96eb03fbf138b9fa279",
+      "terrain_texture_map.json": "a35a1e7b9fe40b764f584e495d947e9c4c7359ddbc76cc2541087af96d26561f",
+      "terrain_unit_map.json": "bc787bdeb3804e88682a1fe73bb245c02a6a450bdbe7f294db87187429205b54",
+      "tree_unit_ids.json": "3ea3ead16b4213d0ab2596b85d866541f8f00a32810b1a242d9140487f3cc1a5",
+      "unit_graphic_map.json": "6bbc148ae2f805efa583eb36dd5981756a7d3f307ed3d6ff1b130e2e4192ed9b",
+      "unit_render_data.json": "89950b7ae27fffe3481728a008d54cc1e02f7c7c10d34fac00fc70a9b1ecfaab",
+      "unit_stats.json": "66d7be50921f5b43da3567bfc64e7c3295af0d1a3dea964b33d8233cd81aee60"
+    }
+  },
   "refreshed": "2026-11-14",
   "ror": {
     "dat": {

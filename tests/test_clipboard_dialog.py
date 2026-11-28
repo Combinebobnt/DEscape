@@ -287,3 +287,69 @@ def test_the_clipboard_history_action_is_registered_and_unbound_by_default() -> 
     ids = [row[0] for row in settings.REBINDABLE_ACTIONS]
     assert "edit_clipboard_history" in ids
     assert settings.get_keybind("edit_clipboard_history") == ""
+
+
+# -- the Prefabs tab (TASK-269) ----------------------------------------------
+
+
+def _prefab_rows():
+    thumb = np.zeros((2, 2, 3), np.uint8)
+    return [
+        ("/p/a.descape-prefab", "Alpha", "", "4x4", 3, "2026-11-25 10:00", thumb, None),
+        ("/p/b.descape-prefab", "Beta", "Return of Rome", "units only", 1, "2026-11-25 11:00", None, None),
+        ("/p/c.descape-prefab", "c", "", "", 0, "", None, "not a DEscape prefab file"),
+    ]
+
+
+def test_prefab_tab_buttons_report_paths_and_grey_an_unreadable_row(monkeypatch) -> None:
+    from descape import clipboard_dialog
+
+    calls = []
+    dialog = _dialog(
+        on_save_prefab=lambda entry_id: calls.append(("save", entry_id)),
+        on_use_prefab=lambda path: calls.append(("use", path)),
+        on_rename_prefab=lambda path, name: calls.append(("rename", path, name)),
+        on_delete_prefab=lambda path: calls.append(("delete", path)),
+        on_open_prefab_folder=lambda: calls.append(("folder",)),
+        on_prefabs_shown=lambda: calls.append(("shown",)),
+    )
+    try:
+        dialog.show_tab("prefabs")
+        assert calls == [("shown",)]
+        dialog.set_prefab_rows(_prefab_rows())
+        assert dialog.prefab_tree.topLevelItemCount() == 3
+        assert not dialog.use_prefab_button.isEnabled() and not dialog.delete_prefab_button.isEnabled()
+        assert dialog.prefab_tree.topLevelItem(1).text(1) == "Beta (Return of Rome)"
+
+        dialog.select_prefab("/p/b.descape-prefab")
+        dialog.use_prefab_button.click()
+        monkeypatch.setattr(clipboard_dialog.QInputDialog, "getText", staticmethod(lambda *a: (" Gamma ", True)))
+        dialog.rename_prefab_button.click()
+        dialog.delete_prefab_button.click()
+        dialog.open_folder_button.click()
+        assert calls[1:] == [
+            ("use", "/p/b.descape-prefab"),
+            ("rename", "/p/b.descape-prefab", "Gamma"),
+            ("delete", "/p/b.descape-prefab"),
+            ("folder",),
+        ]
+
+        dialog.select_prefab("/p/c.descape-prefab")
+        bad = dialog.prefab_tree.currentItem()
+        assert "not a DEscape prefab file" in bad.toolTip(1)
+        assert not dialog.use_prefab_button.isEnabled() and not dialog.rename_prefab_button.isEnabled()
+        assert dialog.delete_prefab_button.isEnabled()
+
+        dialog.set_prefab_rows(_prefab_rows()[::-1])  # a refresh keeps the selection by path
+        assert dialog.selected_prefab_path() == "/p/c.descape-prefab"
+        dialog.set_prefab_rows([])
+        assert dialog.prefab_status.text() == dialog._NO_PREFABS
+
+        dialog.show_tab("session")
+        assert not dialog.save_prefab_button.isEnabled()
+        dialog.set_entries(_rows(2), 100)
+        dialog.select_entry(101)
+        dialog.save_prefab_button.click()
+        assert calls[-1] == ("save", 101)
+    finally:
+        dialog.close()

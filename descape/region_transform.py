@@ -10,9 +10,10 @@ each unit's reference_id. Both take each unit's const, position and rotation
 from mirror_tools.unit_image(), the functions Mirror Map uses. So an ANGLE
 facing goes through facing_image(), a wall's shape index through
 wall_index_image() (integer-encoded files only), a gate through
-reorient_gate_const(), a bridge, chain, longhouse or blocker through
-reorient_object_const() (object_orientation.py's siblings, a bridge's ends
-included), and every other rotation is copied verbatim.
+reorient_gate_const(), a bridge (1x1 wooden pieces too), chain, longhouse
+or blocker through reorient_object_const() (object_orientation.py's
+siblings, a bridge's ends included), a DE bridge piece's frame through
+reorient_piece_frame(), and every other rotation is copied verbatim.
 
 Only the eight D4 elements, which are exact on the tile lattice. The block sits
 in block-local coordinates on an N x N square, N = max(width, height), the
@@ -27,7 +28,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
-from descape import gate_orientation, mirror_tools, object_orientation, render_units, unit_rotation, unit_sprites
+from descape import (
+    gate_orientation,
+    mirror_tools,
+    object_orientation,
+    render_units,
+    unit_rotation,
+    unit_sprites,
+)
 from descape.region_clipboard import RegionBlock
 from descape.terrain_palette import tile_span
 
@@ -42,8 +50,8 @@ ROTATE_CW, ROTATE_CCW, FLIP_WEST_NORTH, FLIP_WEST_SOUTH = "r", "r3", "mx", "my"
 @dataclass(frozen=True)
 class BlockTransform:
     block: RegionBlock
-    # Units drawn as before though the block turned: a non-square span with no
-    # gate or object orientation sibling under an axis-swapping element, and every cliff.
+    # Units drawn as before though the block turned: a non-square span or a 2x2 wooden
+    # bridge with no gate or object sibling under an axis-swapping element, and every cliff.
     kept_orientation: int
 
 
@@ -51,8 +59,10 @@ def _keeps_orientation(unit_const: int, element: str) -> bool:
     if unit_const in unit_sprites.cliff_consts():
         return True
     span_x, span_y = tile_span(unit_const, render_units.NON_BUILDING_SPAN)
-    if span_x == span_y or element not in mirror_tools.AXIS_SWAPPING:
+    if element not in mirror_tools.AXIS_SWAPPING:
         return False
+    if span_x == span_y:
+        return object_orientation.has_unturned_axis(unit_const)
     return not gate_orientation.is_gate(unit_const) and not object_orientation.has_siblings(unit_const)
 
 
@@ -178,8 +188,9 @@ class FirstUnit:
     gate: int = -1
 
 
-# InPlaceImage.rotation_write's two kinds: a facing for set_rotation(), a shape index for set_wall_variant().
-WRITE_ANGLE, WRITE_WALL = "angle", "wall"
+# InPlaceImage.rotation_write's three kinds: a facing for set_rotation(), a shape index for
+# set_wall_variant(), a DE bridge piece's frame for set_variant() (TASK-705).
+WRITE_ANGLE, WRITE_WALL, WRITE_VARIANT = "angle", "wall", "variant"
 
 
 @dataclass(frozen=True)
@@ -188,7 +199,7 @@ class InPlaceImage:
     unit_const: int
     x: float
     y: float
-    # (WRITE_ANGLE, facing), (WRITE_WALL, index), or None to keep the rotation verbatim.
+    # (WRITE_ANGLE, facing), (WRITE_WALL, index), (WRITE_VARIANT, frame), or None to keep the rotation verbatim.
     rotation_write: tuple[str, float] | None
 
 
@@ -208,9 +219,10 @@ def plan_in_place(
     edits rather than new ones (TASK-256). The images are unit_images()', so
     the per-const rules are the region turn's and Mirror Map's: an ANGLE
     facing through facing_image(), a wall's shape index through
-    wall_index_image() in an integer-encoded file only, a gate or a non-square
-    object through mirror_tools.image_const(), every other rotation verbatim
-    (rotation_write None).
+    wall_index_image() in an integer-encoded file only, a gate or an
+    orientation-sibling object through mirror_tools.image_const(), a DE bridge
+    piece's frame through reorient_piece_frame() (WRITE_VARIANT), every other
+    rotation verbatim (rotation_write None).
     The image rectangle is centred on `rect`'s doubled centre by anchor_for(),
     so a caller that always plans from the same first state and the element
     composed since cannot drift. `tiles` is `rect`'s tiles-only block, turned
@@ -239,10 +251,13 @@ def plan_in_place(
 
 def _rotation_write(first: FirstUnit, rotation: float, file_radian: bool) -> tuple[str, float] | None:
     """How a planned rotation reaches the model: ANGLE consts through
-    set_rotation(), a wall whose index changed (integer-encoded file) through
+    set_rotation(), a DE bridge piece whose frame changed through
+    set_variant(), a wall whose index changed (integer-encoded file) through
     set_wall_variant(), and nothing else at all."""
     if unit_rotation.rotation_is_angle(first.unit_const):
         return (WRITE_ANGLE, rotation)
+    if mirror_tools.frame_turns(first.unit_const):
+        return None if rotation == float(first.rotation) else (WRITE_VARIANT, rotation)
     if file_radian or not unit_sprites.rotation_variant_eligible(first.unit_const):
         return None
     if rotation == float(first.rotation):

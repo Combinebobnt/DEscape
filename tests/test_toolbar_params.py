@@ -50,10 +50,13 @@ pytestmark = [
 # its own Clear rulers button (GH #108/#109); see tests/test_ruler_viewer.py.
 # Triggers-only tools (Create Objects) are excluded for the same reason as
 # the Units-only ones; tests/test_create_objects_tool.py covers them.
+# The Clone Stamp shows Trees and Eye candy on its own Terrain tick, not
+# param_widget == "terrain"'s rule; tests/test_clone_stamp_viewer.py pins its row.
 _TERRAIN_MODE_TOOLS = [
     t
     for t in settings.TOOLS
-    if viewer_common.tool_applicable(t.tool_id, "terrain") and t.tool_id not in ("eyedropper", "select", "ruler")
+    if viewer_common.tool_applicable(t.tool_id, "terrain")
+    and t.tool_id not in ("eyedropper", "select", "ruler", "clone")
 ]
 
 # Which of the two single-valued params (if either) is expected to be
@@ -330,7 +333,8 @@ def test_the_target_combo_shows_for_the_terrain_tools_and_the_eyedropper() -> No
             assert window.terrain_target_param_action.isVisible() == shows, tool
             assert window.terrain_target_label_action.isVisible() == shows, tool
             assert window.terrain_target_combo.isEnabled() == shows, tool
-        assert {t for t, p in _EXPECTED_PARAM.items() if p == "terrain"} == {"draw", "fill", "draw_line", "draw_rect"}
+        terrain_tools = {t for t, p in _EXPECTED_PARAM.items() if p == "terrain"}
+        assert terrain_tools == {"draw", "spray", "fill", "draw_line", "draw_rect", "replace_brush"}
 
         window.eyedropper_action.setChecked(True)
         assert window._current_tool == "eyedropper"
@@ -341,6 +345,48 @@ def test_the_target_combo_shows_for_the_terrain_tools_and_the_eyedropper() -> No
         assert not window.terrain_target_param_action.isVisible()
         assert not window.terrain_target_label_action.isVisible()
         assert not window.terrain_target_combo.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_flow_and_hardness_show_for_the_spray_can_only() -> None:
+    """Keyed on the tool, not param_widget: the other terrain tools share Spray's "terrain"."""
+    window = conftest.terrain_edit_window()
+    try:
+        spray_actions = (
+            window.spray_flow_label_action, window.spray_flow_param_action,
+            window.spray_hardness_label_action, window.spray_hardness_param_action,
+        )
+        for tool in _EXPECTED_PARAM:
+            window._on_tool_selected(tool)
+            shows = tool == "spray"
+            assert all(a.isVisible() == shows for a in spray_actions), tool
+            assert window.spray_flow_spin.isEnabled() == shows, tool
+            assert window.spray_hardness_spin.isEnabled() == shows, tool
+        window._on_tool_selected("spray")
+        assert window.spray_flow_spin.suffix() == " %" and window.spray_hardness_spin.suffix() == " %"
+        assert (window.spray_flow_spin.minimum(), window.spray_flow_spin.maximum()) == (1, 100)
+        assert (window.spray_hardness_spin.minimum(), window.spray_hardness_spin.maximum()) == (0, 100)
+        assert (window.spray_flow_spin.value(), window.spray_hardness_spin.value()) == (10, 40)
+        assert "Hold to spray a random scatter of the selected terrain" in window.spray_action.toolTip()
+        assert window.spray_action.isEnabled()
+
+        window.mode_combo.setCurrentText("View")
+        assert not any(a.isVisible() for a in spray_actions)
+        assert not window.spray_flow_spin.isEnabled()
+    finally:
+        window.edit_history.mark_saved()
+        window.close()
+
+
+def test_the_spray_can_greys_with_draw_on_a_locked_document(monkeypatch) -> None:
+    window = conftest.terrain_edit_window()
+    try:
+        monkeypatch.setattr(window, "terrain_lock_reason", lambda family=None: "locked")
+        window._update_tool_enabled()
+        assert not window.draw_action.isEnabled()
+        assert not window.spray_action.isEnabled()
     finally:
         window.edit_history.mark_saved()
         window.close()

@@ -47,6 +47,7 @@ from PyQt5.QtWidgets import (
 )
 
 from descape import asset_source, ui_icons
+from descape.flow_layout import FlowLayout
 from descape.objectives_box import (
     NOTE,
     VARIABLE_BOTH,
@@ -91,6 +92,17 @@ PREVIEW_TIP = "Shown in the preview. Untick to leave it out of the box, here and
 NO_DOCUMENT = "No map open."
 NO_TRIGGERS = "This file's triggers cannot be read."
 EMPTY_LIST = "No objectives yet. New Objective, New Header or Add Trigger… makes one."
+LIST_MIN_ROWS = 7
+
+
+def _kept_together(*widgets: QWidget) -> QWidget:
+    """Widgets a FlowLayout never splits across lines (a label and its combo, ▲ and ▼)."""
+    holder = QWidget()
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(0, 0, 0, 0)
+    for widget in widgets:
+        row.addWidget(widget)
+    return holder
 
 
 def resolved_text(row: ObjectiveRow) -> tuple[str, str]:
@@ -315,8 +327,6 @@ class ObjectivesPanel(QWidget):
         tree.setRootIsDecorated(False)
         tree.setAlternatingRowColors(True)
         tree.setUniformRowHeights(True)
-        # A few rows at least: in a short dock the panel scrolls rather than crushing the list.
-        tree.setMinimumHeight(tree.fontMetrics().height() * 7)
         tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         tree.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         tree.setDragDropMode(QAbstractItemView.InternalMove)
@@ -387,13 +397,15 @@ class ObjectivesPanel(QWidget):
         self.renumber_button.clicked.connect(
             lambda: self.on_order(renumbered(self._rows, self.selected_indices()), "Renumber objectives")
         )
-        buttons = QHBoxLayout()
+        # Wraps onto a second line when docked on a side rather than clipping the labels.
+        buttons_row = QWidget()
+        buttons = FlowLayout(buttons_row)
         for button in (
             self.new_objective_button, self.new_header_button, self.add_trigger_button, self.remove_button,
-            self.up_button, self.down_button, self.renumber_button,
         ):
             buttons.addWidget(button)
-        buttons.addStretch()
+        buttons.addWidget(_kept_together(self.up_button, self.down_button))
+        buttons.addWidget(self.renumber_button)
 
         self.place_combo = QComboBox()
         for place, label in PLACES:
@@ -411,9 +423,9 @@ class ObjectivesPanel(QWidget):
         group.addButton(self.all_radio)
         group.addButton(self.start_radio)
         self.start_radio.toggled.connect(self._on_at_start_toggled)
-        preview_row = QHBoxLayout()
-        preview_row.addWidget(QLabel("Preview:"))
-        preview_row.addWidget(self.place_combo)
+        preview_widget = QWidget()
+        preview_row = FlowLayout(preview_widget)
+        preview_row.addWidget(_kept_together(QLabel("Preview:"), self.place_combo))
         preview_row.addWidget(self.all_radio)
         preview_row.addWidget(self.start_radio)
         self.variable_combo = QComboBox()
@@ -424,9 +436,7 @@ class ObjectivesPanel(QWidget):
             "its value at game start (0), or both"
         )
         self.variable_combo.currentIndexChanged.connect(self._on_variable_mode_changed)
-        preview_row.addWidget(QLabel("Variables:"))
-        preview_row.addWidget(self.variable_combo)
-        preview_row.addStretch()
+        preview_row.addWidget(_kept_together(QLabel("Variables:"), self.variable_combo))
 
         self.box = ObjectivesBox()
         self.box.state.on_tick = self.toggle_tick
@@ -435,10 +445,10 @@ class ObjectivesPanel(QWidget):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addLayout(preview_row)
+        left_layout.addWidget(preview_widget)
         left_layout.addWidget(self.note_label)
         left_layout.addWidget(self.tree, 1)
-        left_layout.addLayout(buttons)
+        left_layout.addWidget(buttons_row)
         self.preview = QWidget()
         right_layout = QVBoxLayout(self.preview)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -458,7 +468,7 @@ class ObjectivesPanel(QWidget):
         content_layout.setContentsMargins(4, 4, 4, 4)
         content_layout.addWidget(self.splitter)
         # Scrolls rather than holding a minimum: tabbed under the map, its height would cap the side panel's.
-        # Never sideways: too narrow, the controls are cut off and only the preview scrolls across.
+        # Never sideways: too narrow, the control rows wrap and only the preview (and the list's columns) scroll across.
         content.setMinimumWidth(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -469,7 +479,17 @@ class ObjectivesPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(scroll)
+        self._fit_list_minimum()
         self._update_buttons()
+
+    def _fit_list_minimum(self) -> None:
+        """Seven rows visible at least, under the header and above a horizontal scroll bar:
+        in a short dock the panel scrolls rather than crushing the list."""
+        tree = self.tree
+        # An empty list has no row to measure: the font's height plus a little stands in.
+        row = tree.sizeHintForRow(0) if tree.topLevelItemCount() else tree.fontMetrics().height() + 4
+        chrome = tree.header().sizeHint().height() + tree.horizontalScrollBar().sizeHint().height() + 2 * tree.frameWidth()
+        tree.setMinimumHeight(chrome + row * LIST_MIN_ROWS)
 
     def fit_height(self) -> int:
         """The height that shows the controls, the list's minimum rows and the buttons with no scrolling."""
@@ -522,6 +542,7 @@ class ObjectivesPanel(QWidget):
         self.tree.setDragDropMode(QAbstractItemView.InternalMove if self._editable else QAbstractItemView.NoDragDrop)
         self.note_label.setText(note or ("" if self._rows else EMPTY_LIST))
         self.note_label.setVisible(bool(self.note_label.text()))
+        self._fit_list_minimum()
         self._update_buttons()
         self._push_box()
 

@@ -1,6 +1,6 @@
 # Map Tools
 
-These commands work on the whole map, or on many objects at once, from any mode. They live in the Map, Edit and Tools menus. Each one that changes the map is one undo step, except Resize Map, which cannot be undone. For an edit none of them covers, **Tools > Scripts** runs your own Python against the open map, also as one undo step: see [Scripts](scripts-and-addons.md).
+These commands work on the whole map, or on many objects at once, from any mode. They live in the Map, Edit and Tools menus. Each one that changes the map is one undo step, except Resize Map, which cannot be undone. For an edit none of them covers, **Tools > Scripts** runs your own Python against the open map, also as one undo step, and **Tools > Addons** holds commands that addons add: see [Scripts and Addons](scripts-and-addons.md).
 
 ## Resize Map
 
@@ -20,7 +20,7 @@ In the in-game editor, this is the Map tab's Extend Map.
 
 **Map > Mirror Map…** copies one part of the map onto the rest by reflection or rotation, for a fair layout. Pick a Symmetry (two-way mirrors, a 180° turn, four-way and eight-way, and approximate three-way and six-way modes for three or six players) and the Source slice, which is shaded on the map. Tick what to copy: Terrain, Elevation and Units.
 
-With Units ticked, every other slice's units are rewritten from the source slice. Units with a real facing turn to match, a wall's run turns with the mirror, and a gate becomes the orientation it is mirrored into. Bridges (except the wooden ones and the DE bridge pieces), chains, longhouses and blockers do the same, and a bridge's end pieces stay at its ends. Overlapping copies chooses what happens where a copy would land on an original: refuse the whole mirror, skip those copies, or place them anyway. Grass, plants, flowers and other objects units can walk through never count as overlapping: their copies land anywhere, and other copies may land on them. Rotate ownership by moves each slice's copies that many places further along the scenario's player list than the slice before; GAIA's units stay GAIA's.
+With Units ticked, every other slice's units are rewritten from the source slice. Units with a real facing turn to match, a wall's run turns with the mirror, and a gate becomes the orientation it is mirrored into. Bridges (except the DE bridge's 1x1 pieces), chains, longhouses and blockers do the same, and a bridge's end pieces stay at its ends. Overlapping copies chooses what happens where a copy would land on an original: refuse the whole mirror, skip those copies, or place them anyway. A bridge piece on the mirror line whose copy is a different piece (it runs the other way) counts as landing on its original. Grass, plants, flowers and other objects units can walk through never count as overlapping: their copies land anywhere, and other copies may land on them. Rotate ownership by moves each slice's copies that many places further along the scenario's player list than the slice before; GAIA's units stay GAIA's.
 
 Preview applies the mirror and leaves the dialog open, so you can look at the result. Changing an option or pressing Cancel takes the preview back, and Apply keeps it. Until you quit DEscape, the dialog opens with the options you last applied; Cancel leaves them as they were. Mirror Map needs a square map. In the in-game editor, the closest thing is the Terrain tab's Map Copy.
 
@@ -32,13 +32,23 @@ Preview applies the mirror and leaves the dialog open, so you can look at the re
 
 **Map > Swap Players…** makes two players exchange slots: their units, settings and disabled objects, and optionally their trigger references and diplomacy, as one undo step. The Players panel has the same dialog; [Players](players.md) covers what moves.
 
+## Launch in AoE2:DE
+
+**Tools > Launch in AoE2:DE** writes the open map, unsaved edits included, to `DEscape_launch.aoe2scenario` in your AoE2:DE profile's scenario folder, then starts the game through Steam, asking it to open its scenario editor. There, Load **DEscape_launch**. It is not a Save: your own file and its unsaved state are left as they were, and the previous launch copy is kept beside it as a `.bak`.
+
+If the launch copy was changed outside DEscape (saved over from the game's editor, say), DEscape asks before overwriting it, and keeps the changed file beside it under a dated `.bak` name. On Linux, if the game is already running, the copy is written but no second game starts: Load it again in the game's editor. A Return of Rome scenario goes to the same folder; switch the game to Return of Rome before loading it.
+
+It needs your profile folder (Settings > Mods, or detected) and a scenario folder in it, which the game creates the first time you save a scenario from its editor. It works on Linux and Windows (the Flatpak Steam client and Windows are not tested yet), and is off on macOS, where AoE2:DE has no build. An older-format scenario must be converted first (File > Convert to .aoe2scenario…). The arguments passed to the game are the `aoe2de_launch_args` setting in config.yaml, one line split like a shell command.
+
 ## Map Analysis
 
-**Tools > Map Analysis…** checks the open map for common problems before you ship it, and changes nothing. It covers illegal elevation steps, off-map and off-grid objects, objects on terrain they can't stand on or inside each other, GAIA-only objects owned by a player, dangling trigger, unit and garrison references, trigger display order, players with no units, player units stranded on small land areas, missing scenario instructions and a map that is not square.
+**Tools > Map Analysis…** checks the open map for common problems before you ship it, and changes nothing. It covers illegal elevation steps, off-map and off-grid objects, objects on terrain they can't stand on or inside each other, GAIA-only objects owned by a player, two units sharing an id or an id at or above the next unit id, objects and terrains the game's data doesn't have (a data mod's, opened without it), dangling trigger, unit and garrison references, a garrison its host can't hold, trigger display order, players with no units, units of a player the scenario doesn't define, player units stranded on small land areas, missing scenario instructions and a map that is not square.
+
+Its trigger checks report areas and locations off the map, a Create Object or Place Foundation effect that puts a unit on terrain it can't stand on, incomplete triggers (the rule that colours the trigger list), a condition or effect naming a player the scenario doesn't define, and a disabled trigger that no Activate Trigger effect names.
 
 Its Train and research buttons check warns when a Change Train Location, Add Train Location or Change Research Location effect's button won't show: a unit the civ can't have, a tech the player's starting age already researched, one hidden by a lower-id unit, a covered tech, or a slot with no button.
 
-Each finding is an Error, a Warning or Info, and a check that could not run says why. Missing scenario instructions are listed but left out of the summary line's finding count, and a map whose only finding is that one counts as clean on every check: campaign scenarios usually keep their instructions outside the scenario file. Findings are marked on the map while the dialog is open. Double-click one to jump to its tile or unit, and press Refresh to check again after a fix.
+Each finding is an Error, a Warning or Info, and a check that could not run says why. Missing scenario instructions are listed but left out of the summary line's finding count, and a map whose only finding is that one counts as clean on every check: campaign scenarios usually keep their instructions outside the scenario file. Findings are marked on the map while the dialog is open. Double-click one to jump to its tile, unit or trigger (a trigger finding opens Triggers mode on that trigger), and press Refresh to check again after a fix.
 
 ## Find and Replace
 
@@ -59,3 +69,9 @@ Its other mode, Move the selected units, moves each selected unit to a random ti
 **Edit > History…** lists every edit you can undo, from Opened file down. The current one is bold, undone ones are grey and a tick marks the state last saved. Double-click an entry, or press Jump Here, to undo or redo up to it.
 
 **Edit > Clipboard History…** keeps the last regions or units you copied this session. Set Active (or a double-click) picks the one Paste uses. Paste lands on the tile under the mouse, so click the map, hover where it should go, then paste.
+
+### Prefabs
+
+A prefab is a copy saved for good, to paste into any map in a later session. **Edit > Save as Prefab…** saves the active clipboard entry under a name (the Clipboard History window's Save as Prefab… button saves the selected one), and a name already in use asks before replacing it. **Edit > Prefabs…** opens the same window on its Prefabs tab: Use (or a double-click) makes a prefab the active clipboard entry, then paste it like any copy. A prefab keeps its terrain, layered terrain, elevation and units, garrisons included, but no triggers.
+
+Each prefab is one file in a `prefabs` folder beside DEscape's settings file. Open Folder shows it, and copying files in or out of it is how prefabs are shared. A prefab copied from a Return of Rome file is marked with the game's name and refused in an Age of Empires II file, and the other way round, as a copy is; one copied from an older .scn, .scx or .scx2 file is marked older format. Using a prefab whose units are objects this game data does not define, such as a data mod's, says how many in the status log.

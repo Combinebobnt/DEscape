@@ -64,6 +64,7 @@ from descape import (
     batch_api,
     elevation_tools,
     garrison,
+    legacy_write,
     object_catalog,
     place_rotation,
     render_units,
@@ -615,6 +616,8 @@ class ScriptRun:
         its edit, so that snapshot equals the run-start image."""
         if self._units_ready:
             return self.model
+        if legacy_write.is_legacy(self.loaded):  # TASK-520: no band saves unit edits back yet
+            raise ScriptError(legacy_write.lock_reason(self.loaded, "units"))
         findings = unit_findings(self.image, self.expected, self.membership, self.loaded.unit_manager, self.model)
         if findings:
             self.fail(findings)
@@ -718,6 +721,8 @@ class ScriptRun:
                     write_supported=self.loaded.terrain_write_supported,
                     has_layer=self.loaded.terrain_has_layer,
                 )
+                if tile_record is not None and not findings and legacy_write.is_legacy(self.loaded):
+                    findings += legacy_write.tile_findings(self.loaded, tile_record.changes, mm.map_width)[:FINDING_LIMIT]
                 findings += unit_findings(
                     self.image, self.expected, self.membership, self.loaded.unit_manager, self.model
                 )

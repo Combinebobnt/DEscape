@@ -106,6 +106,7 @@ _CHOICE_READERS = {
 _OTHER_CHOICE = "Other ({value})"
 # UnitFieldSpec.requires_codec_field -> why the row is disabled in a file without it.
 _CODEC_FIELD_TOOLTIPS = {
+    "garrisoned_in_id": "This scenario's format stores no garrison: Age of Empires (1997) units are never inside another.",
     "capture_flag": (
         "Capture Flag needs a scenario saved by the September 2026 game update (version 1.59). "
         "File > Convert to Version 1.59 upgrades a 1.58 one."
@@ -1031,6 +1032,7 @@ class UnitsPanel(QWidget):
         }
         for field, text in texts.items():
             self.unit_field_labels[field].setText(text)
+        self._apply_text_gates()
         # Guards the editors below against _field_changed recording a
         # phantom undo step from this programmatic populate -- the same
         # _populating guard players_panel._changed() uses.
@@ -1143,6 +1145,17 @@ class UnitsPanel(QWidget):
             combo.removeItem(0)
         while combo.count() > len(spec.choices):
             combo.removeItem(combo.count() - 1)
+
+    def _apply_text_gates(self) -> None:
+        """Disables each read-only TEXT row whose field the loaded file does not store, with why."""
+        for spec in unit_fields.FIELDS:
+            gate = spec.requires_codec_field
+            if spec.kind != unit_fields.TEXT or gate is None:
+                continue
+            supported = self._codec_field_supported(gate)
+            for widget in (self.unit_field_captions[spec.field_id], self.unit_field_labels[spec.field_id]):
+                widget.setEnabled(supported)
+                widget.setToolTip("" if supported else _CODEC_FIELD_TOOLTIPS[gate])
 
     def _apply_choice_fields(self, units) -> None:
         """Populates each CHOICE row (GH #186) for the selected unit(s): the

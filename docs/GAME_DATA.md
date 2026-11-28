@@ -24,6 +24,7 @@ data, registered in `games.GAMES`. `games.py` imports nothing from
 | `root_subpath` | none | `modes/Pompeii` | The game's own root under the install |
 | `fallback` | none | `aoe2` | The game whose files fill in what this root lacks |
 | `variants` | none | `{2}` | The file header variants that are this game's |
+| `formats` | none | `aoe1-1.15` | The `scenario_format` labels that are this game's |
 | `tables_dir` | `descape/` | `descape/ror/` | The folder of its generated tables |
 | `stamp_key` | none | `ror` | Its section of `tools/game_data_stamp.json` |
 | `strings_files` | `key-value-strings-utf8.txt`, `key-value-paphos-strings-utf8.txt` | `key-value-pompeii-strings-utf8.txt` | Its strings files, read in this order |
@@ -51,13 +52,29 @@ Notes on the fields:
   game's root. A game with another name or format adds a field for it.
 - **`tables_dir`** holds every table `dat_derive.TABLE_NAMES` lists,
   generated from that game's `.dat` by `tools/regen_game_data.py`.
-- **`reader`, `art` and `install`** have one implemented value each
-  (`games.IMPLEMENTED_READERS`, `games.IMPLEMENTED_ART`,
-  `games.AOE2DE_INSTALL`). They mark where another scenario reader, sprite
-  format or install plugs in.
-- **Format versions are not a field.** Every Definitive Edition scenario
-  version is the same game, and `variants` is the only per-game marker in
-  those headers.
+- **`reader`, `art` and `install`** take a value from
+  `games.IMPLEMENTED_READERS`, `games.IMPLEMENTED_ART` and
+  `games.IMPLEMENTED_INSTALLS`. They mark where another scenario reader,
+  sprite format or install plugs in. `aoc_install` is the 1999 install
+  and `hd_install` HD Edition's, each set in Settings > Advanced > Game data
+  (`descape/legacy_content.py`, `descape/hd_content.py`); a game with
+  `derived_root` resolves its files under the root built from it (below). `"slp"` art is registered ahead of its walker: until then a game
+  with `"slp"` art draws marks.
+- **`formats`** claims files by `scenario_format` label
+  (`ScenarioFormat.game`), checked before `variants`: Age of Kings / The
+  Conquerors claims the `scn-aok` and `scn-aoc` labels and `scn-up`, data
+  version 1.23 (mostly UserPatch `.scx2`, which the bytes cannot tell from an
+  HD Edition `.scx` of that band), and Return of Rome
+  the `aoe1-1.15` label of Age of Empires (1997) and Rise of Rome files,
+  which it shows until Age of Empires has data of its own. Every Definitive
+  Edition scenario version is the same game, so the DE games claim no DE
+  version. HD Edition (`hd`) claims `scn-hd`, its header-2 bands 1.21, 1.24
+  and 1.26. Its header-3 `.aoe2scenario` carries `hd-aoe2scenario`, which no
+  game claims, so it opens as an AoE2:DE file; `hd`'s `hand_pick_formats`
+  names it, so while HD Edition is configured the status log says Settings
+  > Advanced > Game data can show it with HD data, view-only.
+- **`stand_in`** names the game whose data shows this game's files while its
+  own install is not configured (`game_dataset.configured()`).
 
 What reads each field outside `game_dataset`: the window title reads
 `title_tag`, the portrait lookup `icon_materials`, File > Data Mod and the
@@ -75,39 +92,90 @@ elsewhere in `descape/`.
 ## Two questions: whose file, and which data
 
 `game_dataset.game()` is the active game: the data that names, draws and
-measures everything shown. `games.for_scenario(loaded)` is a file's own
-game, from its header variant, whatever data is active. They differ when
+measures everything shown. `game_dataset.file_game(loaded)` is a file's
+game, whatever data is active: `games.for_scenario(loaded)` (the game
+claiming its format, else its header variant's), or that game's `stand_in`
+while its own install is not configured, so an Age of Kings file with no
+1999 install is an Age of Empires II file in every respect. They differ when
 Settings > Advanced > Game data shows a file with another game's data.
 
-Code that asks about the file, not the display, reads `for_scenario()`:
-the lock, the clipboard's stamp (a copied block carries the ids of its
-file's game), the civ indexes of a file's players (`civ_art`,
-`civ_availability`), New Map's donor and `batch_api.load()`, which makes
-the file's own game active. Building art compares the two: a file shown
+Code that asks about the file, not the display, reads `file_game()`: Auto,
+the lock and `write_scenario()`'s refusal, the clipboard's stamp (a copied
+block carries the ids of its file's game), the civ indexes of a file's
+players (`civ_art`, `civ_availability`) and `batch_api.load()`, which makes
+that game active. Only New Map's donor reads `for_scenario()` itself. Building art compares the two: a file shown
 with another game's data draws the plain table art, since the active
 tables do not have its civs.
 
 ## View-only games and the lock
 
-`game_dataset.lock_reason(file_game, shown_game)` is the one rule for
-whether a document may be written, Qt-free. A game whose descriptor says
+`game_dataset.lock_reason(file_game, shown_game, legacy)` is the one rule
+for whether a document may be written, Qt-free. A game whose descriptor says
 `writable=False` is view-only: every one of its files is locked, whatever
-data shows it. Otherwise a file is locked while another game's data shows
-it. The window's `game_data_lock_reason()` shows that reason in its banner
-and refuses every edit and save while it applies.
+data shows it, except a pre-DE (`legacy`) document, whose band's edit
+families decide instead (below). Otherwise a file is locked while another
+game's data shows it. The window's `game_data_lock_reason()` shows that
+reason in its banner and refuses every edit and save while it applies.
 
 `scenario_write.write_scenario()` refuses a scenario whose own game is not
-writable, so a batch script is refused as well, and the rule is enforced
-rather than only shown. It does not reach the tools that write scenario
-bytes themselves (`strip_units` and the template generators); the first
-view-only game's own work covers those. Both games today are writable.
+writable (a pre-DE one excepted, as above), so a batch script is refused as
+well, and the rule is enforced rather than only shown. It does not reach the
+tools that write scenario bytes themselves (`strip_units` and the template
+generators); the first view-only game's own work covers those. Age of Kings
+/ The Conquerors is view-only (`writable=False`), and every one of its files
+is pre-DE, so only its band's families ever save; while its install is not
+configured its files are their stand-in's and lock as such. HD Edition is
+view-only the same way; its header-2 files are pre-DE, and a header-3 HD
+file stays AoE2's, so showing it with HD data locks it.
 
 A pre-DE format (`scenario_format`, `LoadedScenario.source_format.legacy`)
-is a second lock, at the format level, beside `writable`: the window's
-`game_data_lock_reason()` returns its reason first, whatever data shows the
-file. `scenario_write.refuse_legacy()` enforces it in `write_scenario()`,
-`build_patched_body()` and `build_patched()`, and it does reach the
-byte-writing tools: `strip_units` and `gen_blank_template` call it.
+is a second lock, at the format level, beside `writable`, and it is per
+edit family: the window's `game_data_lock_reason(family)` returns its reason
+first, whatever data shows the file, unless the band's
+`legacy_write.ALLOWED` entry holds that family (a call naming no family is
+always locked), and then still falls through to the data lock above, so a
+legacy file shown under Return of Rome data stays locked. Save, Save As,
+autosave and the Scripts menu ask whether any family is allowed.
+`scenario_write.build_patched()` enforces the same table, raising
+`LegacyEditNotAllowed` for any other edit (`docs/SCENARIO_IO.md`, "Saving
+back to the old format"). `scenario_write.refuse_legacy()` still refuses
+outright in resize, Convert to Version and the byte-writing tools
+(`strip_units`, `gen_blank_template`). The
+way out is File > Convert to .aoe2scenario (`legacy_convert.convert()`),
+which reads the legacy document and builds a new one under AoE2 data from
+the DE blank template.
+
+## The 1999 and HD Edition installs and their derived roots
+
+`asset_source.get_install_path()` is the active game's content root: the
+AoE2:DE install for a game on it, and for a `derived_root` game the folder its
+recipe (`legacy_content.recipe(game.install)`) built from its install, None until that
+exists (it never builds). `game_dataset.install_root(game)` answers the same
+for a game that is not active. The AoE2:DE install itself, and the Settings
+install field's override that sets it, is `get_de_install_path()`, read by
+what only DE has: the profile and its mods (`content_roots`, `mod_graphics`),
+File > Data Mod and the game-data regeneration tool.
+
+The root mirrors an AoE2:DE install's layout (each graphic SLP, the palette
+with a neutral player-colour ramp, blendomatic, the string tables), under the
+user cache's `game_roots/aoc/<key>/`, the key hashing a format version, the
+install path and each source file's name, size and mtime. A root is staged
+and renamed into place whole, and nothing deletes one. The viewer builds it
+before activating the game, on a worker thread behind a progress line
+(`viewer_game_root.py`), and `batch_api.load()` calls the
+recipe's `ensure_root()` first. A build that fails leaves the game
+unconfigured (`configured()`), so Auto shows the file with its stand-in's
+data, until the install setting changes.
+
+HD Edition's root is a second recipe of the same shape, `hd_content`, under
+`game_roots/hd/<key>/`: its loose files are linked (a hardlink, else a
+symlink, else a copy) rather than unpacked, the art folders in
+`gamedata_x2`, `gamedata_x1`, `graphics` order, and its key hashes each art
+and texture folder's matching file names (not their stats, nor the
+folders' mtimes, which the scenarios and sounds saved beside the art move)
+and Steam's build id from `appmanifest_221380.acf`.
+`legacy_content.recipe(game.install)` gives the module for an install kind;
+every caller reaches a root through it.
 
 ## Ids are persisted
 
@@ -177,6 +245,7 @@ A switch tells the caches which layers changed, as a set passed down
 | A data-mod switch | `{TABLES}` (`game_dataset.DATA_MOD_SWITCH`) |
 | A game switch | `{TABLES, ROOTS}` (`game_dataset.GAME_SWITCH`) |
 | The install path, the profile, a test's reset | `None`: everything |
+| The 1999 install path, its root built or its build failed | `None`; the viewer's build (`viewer_game_root.build_root()`) clears with `None` again when it ends, so a repaint during the build cannot keep `get_install_path()` as None |
 
 Mod Art toggled or a mod opted out calls `clear_art_caches()` alone, with
 `None`: the art caches below drop, the strings and the install-keyed rest
@@ -292,4 +361,11 @@ mode, as Return of Rome is):
 A game before the Definitive Edition also needs its own scenario reader
 (`reader`), art format (`art`, SLP inside DRS archives) and `.dat` reader:
 `genieutils-py` reads only the DE family. Each is that game's own work;
-the fields mark where it plugs in.
+the fields mark where it plugs in. `_game_root.parse_dat()` picks the
+reader by the `.dat`'s version string: `tools/_dat57.py` for the 1999
+game's `VER 5.7`, `tools/_dat37.py` for Age of Empires' `VER 3.7`. Such a
+game is a `CLASSIC` dataset in `_game_root.py`: its `.dat` and DRS archives
+are found case-insensitively along its ordered art folders
+(`classic_archives()`, `classic_graphics()`), and each generator's classic
+branch serves every classic game. A dataset whose descriptor is not
+registered yet waits in `_game_root.PENDING`, which `--dataset` accepts.

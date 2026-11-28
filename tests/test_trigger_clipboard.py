@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from descape import library_compat, trigger_clipboard
+from descape import library_compat, trigger_clipboard, trigger_version_compat
 from descape.scenario_io import load_map_and_units, parse_triggers
 from descape.trigger_model import set_entry_order
 from descape.trigger_organize import is_divider
@@ -649,18 +649,143 @@ def test_158_entries_paste_into_a_159_trigger_and_save(tmp_path: Path) -> None:
     assert all(c.unit_object == -1 for c in manager.triggers[0].conditions if c.condition_type == 1)
 
 
-@pytest.mark.parametrize(("block_version", "here"), [("1.57", "1.59"), ("1.59", "1.58")])
-def test_an_uncovered_version_pair_raises_before_anything_is_pasted(block_version, here) -> None:
-    """Only 1.58 into 1.59 has a step: anything else raises before the import,
-    so a structural_edit() never stores a half-done paste."""
-    manager = _manager()
-    names = [t.name for t in manager.triggers]
-    block = trigger_clipboard.copy_block(manager, [3], doc_id="A", scenario_version=block_version)
-    entries = trigger_clipboard.copy_entries(manager, 3, [("condition", 0)], doc_id="A", scenario_version=block_version)
-    conditions = len(manager.triggers[0].conditions)
-    with pytest.raises(ValueError, match=f"from a {block_version} scenario"):
-        trigger_clipboard.paste_into(manager, block, doc_id="B", scenario_version=here)
-    with pytest.raises(ValueError, match=f"from a {block_version} scenario"):
-        trigger_clipboard.paste_entries(manager, 0, entries, doc_id="B", scenario_version=here)
-    assert [t.name for t in manager.triggers] == names
-    assert len(manager.triggers[0].conditions) == conditions
+def _refused_blocks(kind: str):
+    """(block, destination manager, destination version) pairs the GH #317
+    rules refuse, built from real data rather than a relabelled version: a
+    1.59 Object Visible condition with allow_in_fog set into the 1.58
+    fixture, and a 1.58 effect of type 91, which no vocabulary defines, into
+    a 1.59 map. Each block is copied before its destination loads, as the
+    app copies with the source document active."""
+    from descape.trigger_model import TriggerEditModel
+
+    def copy(manager, index, ref, version):
+        if kind == "triggers":
+            return trigger_clipboard.copy_block(manager, [index], doc_id="A", scenario_version=version)
+        return trigger_clipboard.copy_entries(manager, index, [ref], doc_id="A", scenario_version=version)
+
+    blank = _v159_destination()
+    _KEEP_ALIVE.append(blank)
+    newer = TriggerEditModel(blank).manager()
+    newer.add_trigger("Source").new_condition.object_visible_multiplayer(source_player=1)
+    vars(newer.triggers[0].conditions[0])["allow_in_fog"] = 1
+    newer_block = copy(newer, 0, ("condition", 0), "1.59")
+    older = _manager()
+    vars(older.triggers[3].effects[0])["_effect_type"] = 91
+    older_block = copy(older, 3, ("effect", 0), VERSION)
+    yield newer_block, older, VERSION
+    library_compat.depoison()  # the 1.59 destination's own classes, as its reload would leave them
+    yield older_block, newer, "1.59"
+
+
+@pytest.mark.parametrize("kind", ["triggers", "entries"])
+def test_a_refused_block_raises_before_anything_is_pasted(kind) -> None:
+    """A block the rules refuse raises before the import, so a
+    structural_edit() never stores a half-done paste."""
+    for block, destination, here in _refused_blocks(kind):
+        names = [t.name for t in destination.triggers]
+        conditions = [len(t.conditions) for t in destination.triggers]
+        with pytest.raises(ValueError, match=f"from a {block.scenario_version} scenario; this one is {here}"):
+            if kind == "triggers":
+                trigger_clipboard.paste_into(destination, block, doc_id="B", scenario_version=here)
+            else:
+                trigger_clipboard.paste_entries(destination, 0, block, doc_id="B", scenario_version=here)
+        assert [t.name for t in destination.triggers] == names
+        assert [len(t.conditions) for t in destination.triggers] == conditions
+
+
+# -- GH #317: every other version pair -------------------------------------------
+
+
+def _library_default(version: str):
+    loaded = load_map_and_units(library_compat.VERSIONS_DIR / f"v{version}" / "default.aoe2scenario")
+    _KEEP_ALIVE.append(loaded)
+    return loaded
+
+
+_ARMOUR = (4, 300)  # class, quantity: wider than the 8+8 packing below trigger version 2.5
+
+
+def _populated_source(version: str, quantity: float):
+    """A `version` library default holding one trigger: a Timer condition, a
+    Display Instructions, a Change Object Armor at _ARMOUR and a Modify
+    Attribute (movement speed, a float attribute) at `quantity`."""
+    from descape.trigger_model import TriggerEditModel
+
+    loaded = _library_default(version)
+    manager = TriggerEditModel(loaded).manager()
+    trigger = manager.add_trigger("Source")
+    trigger.new_condition.timer(timer=5)
+    trigger.new_effect.display_instructions(source_player=1, message="hello")
+    armour = trigger.new_effect.change_object_armor(source_player=1)
+    vars(armour).update(_armour_attack_class=_ARMOUR[0], _armour_attack_quantity=_ARMOUR[1])
+    speed = trigger.new_effect.modify_attribute(source_player=1, object_attributes=5, operation=1)
+    vars(speed)["_quantity"] = quantity
+    return manager
+
+
+def _round_trip(source_version, here, kind, pristine, tmp_path: Path, quantity=2.5):
+    """Copy the populated source, load the destination last (its classes
+    poisoned for it) or depoison them, paste twice, save and reload."""
+    from descape.scenario_write import write_scenario
+    from descape.trigger_model import TriggerEditModel
+
+    source = _populated_source(source_version, quantity)
+    if kind == "triggers":
+        block = trigger_clipboard.copy_block(source, [0], doc_id="A", scenario_version=source_version)
+    else:
+        refs = [("condition", 0)] + [("effect", i) for i in range(3)]
+        block = trigger_clipboard.copy_entries(source, 0, refs, doc_id="A", scenario_version=source_version)
+    before = [dict(vars(o)) for o in trigger_version_compat.block_objects(block)]
+    destination = _library_default(here)
+    model = TriggerEditModel(destination)
+    if pristine:
+        library_compat.depoison()
+    if kind == "triggers":
+        for _ in range(2):
+            model.structural_edit(lambda m: trigger_clipboard.paste_into(m, block, doc_id="B", scenario_version=here))
+    else:
+        model.structural_edit(lambda m: m.add_trigger("Destination"))
+        model.structural_edit(
+            lambda m: [trigger_clipboard.paste_entries(m, 0, block, doc_id="B", scenario_version=here) for _ in range(2)],
+            content_touched=[0],
+        )
+    assert [dict(vars(o)) for o in trigger_version_compat.block_objects(block)] == before, "the clipboard is unchanged"
+    out = tmp_path / "pasted.aoe2scenario"
+    write_scenario(destination, out, triggers=model)
+    reloaded = load_map_and_units(out)
+    _KEEP_ALIVE.append(reloaded)
+    manager = parse_triggers(reloaded)
+    assert (reloaded.scenario_version, reloaded.trigger_write_supported) == (here, True)
+    return manager
+
+
+def _pasted_entries(manager, kind):
+    if kind == "triggers":
+        assert len(manager.triggers) == 2
+        return [(t.conditions, t.effects) for t in manager.triggers]
+    (trigger,) = manager.triggers
+    return [(trigger.conditions[i : i + 1], trigger.effects[3 * i : 3 * i + 3]) for i in range(2)]
+
+
+@pytest.mark.parametrize("pristine", [False, True], ids=["poisoned", "pristine"])
+@pytest.mark.parametrize("kind", ["triggers", "entries"])
+@pytest.mark.parametrize(("source_version", "here"), [("1.55", "1.59"), ("1.59", "1.55")])
+def test_a_block_pastes_across_versions_and_saves(source_version, here, kind, pristine, tmp_path: Path) -> None:
+    manager = _round_trip(source_version, here, kind, pristine, tmp_path)
+    for conditions, effects in _pasted_entries(manager, kind):
+        assert [c.condition_type for c in conditions] == [10]  # Timer
+        assert [e.effect_type for e in effects] == [20, 31, 51]
+        display, armour, speed = effects
+        assert display.message == "hello"
+        assert (armour.armour_attack_class, armour.armour_attack_quantity) == _ARMOUR
+        assert speed.quantity == 2.5
+        if here == "1.59":
+            assert (display.use_tag_color_for_icon, armour.object_filter) == (-1, -1), "filled with 1.59's defaults"
+
+
+def test_an_integral_float_quantity_pastes_below_1_55_as_an_int(tmp_path: Path) -> None:
+    manager = _round_trip("1.55", "1.54", "triggers", False, tmp_path, quantity=3.0)
+    for trigger in manager.triggers:
+        speed = trigger.effects[2]
+        assert (speed.effect_type, speed.quantity) == (51, 3)
+        assert (trigger.effects[1].armour_attack_class, trigger.effects[1].armour_attack_quantity) == _ARMOUR

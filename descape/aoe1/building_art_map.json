@@ -1,0 +1,1033 @@
+{
+ "_comment": "GH #48 per-civ and per-age building art, and per-civ unit art -- see tools/gen_unit_graphic_map.py",
+ "civ_names": {
+  "0": "Gaia",
+  "1": "Egyptian",
+  "2": "Greek",
+  "3": "Babylonian",
+  "4": "Assyrian",
+  "5": "Minoan",
+  "6": "Hittite",
+  "7": "Phoenician",
+  "8": "Sumerian",
+  "9": "Persian",
+  "10": "Shang",
+  "11": "Yamato",
+  "12": "Choson",
+  "13": "Roman",
+  "14": "Carthage",
+  "15": "Palmyra",
+  "16": "Macedonian"
+ },
+ "age_upgrades": {
+  "101": {
+   "4": 86,
+   "5": 86
+  },
+  "109": {
+   "4": 71,
+   "5": 71
+  }
+ },
+ "entries": [
+  {
+   "graphic_id": 220,
+   "file_name": "slp_16",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 240,
+   "file_name": "slp_19",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 228,
+   "file_name": "slp_20",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 231,
+   "file_name": "slp_31",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 250,
+   "file_name": "slp_18",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 226,
+   "file_name": "slp_22",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 242,
+   "file_name": "slp_28",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 238,
+   "file_name": "slp_27",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 246,
+   "file_name": "slp_29",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 244,
+   "file_name": "slp_26",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 252,
+   "file_name": "slp_32",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 236,
+   "file_name": "slp_24",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 259,
+   "file_name": "slp_25",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 222,
+   "file_name": "slp_17",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 224,
+   "file_name": "slp_15",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 233,
+   "file_name": "slp_21",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 254,
+   "file_name": "slp_23",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 265,
+   "file_name": "slp_33",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 342,
+   "file_name": "slp_60",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 362,
+   "file_name": "slp_63",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 350,
+   "file_name": "slp_64",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 353,
+   "file_name": "slp_75",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 372,
+   "file_name": "slp_62",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 348,
+   "file_name": "slp_66",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 364,
+   "file_name": "slp_72",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 360,
+   "file_name": "slp_71",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 368,
+   "file_name": "slp_73",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 366,
+   "file_name": "slp_70",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 374,
+   "file_name": "slp_76",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 358,
+   "file_name": "slp_68",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 381,
+   "file_name": "slp_69",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 344,
+   "file_name": "slp_61",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 346,
+   "file_name": "slp_59",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 355,
+   "file_name": "slp_65",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 376,
+   "file_name": "slp_67",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 387,
+   "file_name": "slp_77",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 708,
+   "file_name": "slp_160",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 728,
+   "file_name": "slp_163",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 716,
+   "file_name": "slp_164",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 719,
+   "file_name": "slp_175",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 738,
+   "file_name": "slp_162",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 714,
+   "file_name": "slp_166",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 730,
+   "file_name": "slp_172",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 726,
+   "file_name": "slp_171",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 734,
+   "file_name": "slp_173",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 732,
+   "file_name": "slp_170",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 740,
+   "file_name": "slp_176",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 724,
+   "file_name": "slp_168",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 747,
+   "file_name": "slp_169",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 710,
+   "file_name": "slp_161",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 712,
+   "file_name": "slp_159",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 721,
+   "file_name": "slp_165",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 742,
+   "file_name": "slp_167",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 753,
+   "file_name": "slp_177",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 855,
+   "file_name": "slp_718",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 875,
+   "file_name": "slp_721",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 863,
+   "file_name": "slp_722",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 866,
+   "file_name": "slp_733",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 885,
+   "file_name": "slp_720",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 861,
+   "file_name": "slp_724",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 877,
+   "file_name": "slp_730",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 873,
+   "file_name": "slp_729",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 881,
+   "file_name": "slp_731",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 879,
+   "file_name": "slp_728",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 887,
+   "file_name": "slp_734",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 871,
+   "file_name": "slp_726",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 894,
+   "file_name": "slp_727",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 857,
+   "file_name": "slp_719",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 859,
+   "file_name": "slp_717",
+   "angle_count": 2,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 2
+  },
+  {
+   "graphic_id": 868,
+   "file_name": "slp_723",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 889,
+   "file_name": "slp_725",
+   "angle_count": 3,
+   "mirroring_mode": 0,
+   "frame_count": 1,
+   "rotation_is_variant": true,
+   "variant_count": 3
+  },
+  {
+   "graphic_id": 900,
+   "file_name": "slp_735",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 7,
+   "file_name": "slp_248",
+   "angle_count": 1,
+   "mirroring_mode": 0,
+   "frame_count": 1
+  },
+  {
+   "graphic_id": 11,
+   "file_name": "slp_244",
+   "angle_count": 8,
+   "mirroring_mode": 6,
+   "frame_count": 1
+  }
+ ],
+ "civ_art": {
+  "1": {
+   "0": 0,
+   "49": 1,
+   "68": 2,
+   "69": 3,
+   "71": 4,
+   "82": 5,
+   "86": 6,
+   "87": 7,
+   "104": 8,
+   "105": 9,
+   "110": 10,
+   "116": 11,
+   "117": 12,
+   "132": 13,
+   "133": 14,
+   "154": 15,
+   "155": 16,
+   "276": 17,
+   "278": 3,
+   "380": 3,
+   "383": 3
+  },
+  "2": {
+   "0": 18,
+   "49": 19,
+   "68": 20,
+   "69": 21,
+   "71": 22,
+   "82": 23,
+   "86": 24,
+   "87": 25,
+   "104": 26,
+   "105": 27,
+   "110": 28,
+   "116": 29,
+   "117": 30,
+   "132": 31,
+   "133": 32,
+   "154": 33,
+   "155": 34,
+   "276": 35,
+   "278": 21,
+   "380": 21,
+   "383": 21
+  },
+  "3": {
+   "0": 36,
+   "49": 37,
+   "68": 38,
+   "69": 39,
+   "71": 40,
+   "82": 41,
+   "86": 42,
+   "87": 43,
+   "104": 44,
+   "105": 45,
+   "110": 46,
+   "116": 47,
+   "117": 48,
+   "132": 49,
+   "133": 50,
+   "154": 51,
+   "155": 52,
+   "276": 53,
+   "278": 39,
+   "380": 39,
+   "383": 39
+  },
+  "4": {
+   "0": 0,
+   "49": 1,
+   "68": 2,
+   "69": 3,
+   "71": 4,
+   "82": 5,
+   "86": 6,
+   "87": 7,
+   "104": 8,
+   "105": 9,
+   "110": 10,
+   "116": 11,
+   "117": 12,
+   "132": 13,
+   "133": 14,
+   "154": 15,
+   "155": 16,
+   "276": 17,
+   "278": 3,
+   "380": 3,
+   "383": 3
+  },
+  "5": {
+   "0": 18,
+   "49": 19,
+   "68": 20,
+   "69": 21,
+   "71": 22,
+   "82": 23,
+   "86": 24,
+   "87": 25,
+   "104": 26,
+   "105": 27,
+   "110": 28,
+   "116": 29,
+   "117": 30,
+   "132": 31,
+   "133": 32,
+   "154": 33,
+   "155": 34,
+   "276": 35,
+   "278": 21,
+   "380": 21,
+   "383": 21
+  },
+  "6": {
+   "0": 36,
+   "49": 37,
+   "68": 38,
+   "69": 39,
+   "71": 40,
+   "82": 41,
+   "86": 42,
+   "87": 43,
+   "104": 44,
+   "105": 45,
+   "110": 46,
+   "116": 47,
+   "117": 48,
+   "132": 49,
+   "133": 50,
+   "154": 51,
+   "155": 52,
+   "276": 53,
+   "278": 39,
+   "380": 39,
+   "383": 39
+  },
+  "7": {
+   "0": 18,
+   "49": 19,
+   "68": 20,
+   "69": 21,
+   "71": 22,
+   "82": 23,
+   "86": 24,
+   "87": 25,
+   "104": 26,
+   "105": 27,
+   "110": 28,
+   "116": 29,
+   "117": 30,
+   "132": 31,
+   "133": 32,
+   "154": 33,
+   "155": 34,
+   "276": 35,
+   "278": 21,
+   "380": 21,
+   "383": 21
+  },
+  "8": {
+   "0": 0,
+   "49": 1,
+   "68": 2,
+   "69": 3,
+   "71": 4,
+   "82": 5,
+   "86": 6,
+   "87": 7,
+   "104": 8,
+   "105": 9,
+   "110": 10,
+   "116": 11,
+   "117": 12,
+   "132": 13,
+   "133": 14,
+   "154": 15,
+   "155": 16,
+   "276": 17,
+   "278": 3,
+   "380": 3,
+   "383": 3
+  },
+  "9": {
+   "0": 36,
+   "49": 37,
+   "68": 38,
+   "69": 39,
+   "71": 40,
+   "82": 41,
+   "86": 42,
+   "87": 43,
+   "104": 44,
+   "105": 45,
+   "110": 46,
+   "116": 47,
+   "117": 48,
+   "132": 49,
+   "133": 50,
+   "154": 51,
+   "155": 52,
+   "276": 53,
+   "278": 39,
+   "380": 39,
+   "383": 39
+  },
+  "13": {
+   "0": 54,
+   "49": 55,
+   "68": 56,
+   "69": 57,
+   "71": 58,
+   "82": 59,
+   "86": 60,
+   "87": 61,
+   "104": 62,
+   "105": 63,
+   "110": 64,
+   "116": 65,
+   "117": 66,
+   "132": 67,
+   "133": 68,
+   "154": 69,
+   "155": 70,
+   "276": 71,
+   "278": 57,
+   "380": 57,
+   "383": 57
+  },
+  "14": {
+   "0": 54,
+   "49": 55,
+   "68": 56,
+   "69": 57,
+   "71": 58,
+   "82": 59,
+   "86": 60,
+   "87": 61,
+   "104": 62,
+   "105": 63,
+   "110": 64,
+   "116": 65,
+   "117": 66,
+   "132": 67,
+   "133": 68,
+   "154": 69,
+   "155": 70,
+   "276": 71,
+   "278": 57,
+   "380": 57,
+   "383": 57
+  },
+  "15": {
+   "0": 54,
+   "49": 55,
+   "68": 56,
+   "69": 57,
+   "71": 58,
+   "82": 59,
+   "86": 60,
+   "87": 61,
+   "104": 62,
+   "105": 63,
+   "110": 64,
+   "116": 65,
+   "117": 66,
+   "132": 67,
+   "133": 68,
+   "154": 69,
+   "155": 70,
+   "276": 71,
+   "278": 57,
+   "380": 57,
+   "383": 57
+  },
+  "16": {
+   "0": 54,
+   "49": 55,
+   "68": 56,
+   "69": 57,
+   "71": 58,
+   "82": 59,
+   "86": 60,
+   "87": 61,
+   "104": 62,
+   "105": 63,
+   "110": 64,
+   "116": 65,
+   "117": 66,
+   "132": 67,
+   "133": 68,
+   "154": 69,
+   "155": 70,
+   "276": 71,
+   "278": 57,
+   "380": 57,
+   "383": 57
+  }
+ },
+ "unit_art": {
+  "1": {
+   "158": 72,
+   "159": 73,
+   "236": 3
+  },
+  "2": {
+   "158": 72,
+   "159": 73,
+   "236": 21
+  },
+  "3": {
+   "158": 72,
+   "159": 73,
+   "236": 39
+  },
+  "4": {
+   "158": 72,
+   "159": 73,
+   "236": 3
+  },
+  "5": {
+   "158": 72,
+   "159": 73,
+   "236": 21
+  },
+  "6": {
+   "158": 72,
+   "159": 73,
+   "236": 39
+  },
+  "7": {
+   "158": 72,
+   "159": 73,
+   "236": 21
+  },
+  "8": {
+   "158": 72,
+   "159": 73,
+   "236": 3
+  },
+  "9": {
+   "158": 72,
+   "159": 73,
+   "236": 39
+  },
+  "10": {
+   "158": 72,
+   "159": 73
+  },
+  "11": {
+   "158": 72,
+   "159": 73
+  },
+  "12": {
+   "158": 72,
+   "159": 73
+  },
+  "13": {
+   "158": 72,
+   "159": 73,
+   "236": 57
+  },
+  "14": {
+   "158": 72,
+   "159": 73,
+   "236": 57
+  },
+  "15": {
+   "158": 72,
+   "159": 73,
+   "236": 57
+  },
+  "16": {
+   "158": 72,
+   "159": 73,
+   "236": 57
+  }
+ },
+ "unit_groups": {
+  "158": "regional",
+  "159": "regional",
+  "236": "regional"
+ }
+}

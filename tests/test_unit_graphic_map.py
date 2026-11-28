@@ -1307,6 +1307,109 @@ def test_a_dropped_age_pair_warns_only_a_base_an_annex_upgrade_uses(gen, lenient
     assert "annexes may still show" not in lenient[0]["text"]
 
 
+def test_a_listed_age_upgrade_holdout_keeps_its_base_art_and_must_match_the_measured_ones(gen, monkeypatch):
+    """TASK-515: an every-civ age upgrade in _AGE_UPGRADE_HOLDOUTS is dropped without failing the strict run,
+    for an art field break only; a listed pair the .dat no longer breaks fails it, as the other holdout lists do."""
+    data, gaia_entries, ages = _building_art_case(gen, monkeypatch)
+    monkeypatch.setattr(gen, "_ART_INVARIANT_HOLDOUTS", {10: "civ 1's own angle count"})
+    monkeypatch.setattr(gen, "_AGE_UPGRADE_HOLDOUTS", {(11, 12): "base art at every age"})
+    art = gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    assert art["age_upgrades"] == {"11": {"4": 13}}, "the held-out row is gone; the clean one stays"
+    monkeypatch.setattr(gen, "_AGE_UPGRADE_HOLDOUTS", {(11, 12): "x", (11, 13): "no longer breaks"})
+    with pytest.raises(SystemExit, match=r"age upgrade holdouts measured \[\(11, 12\)\], listed \[\(11, 12\), \(11, 13\)\]"):
+        gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+    monkeypatch.setattr(gen, "_AGE_UPGRADE_HOLDOUTS", {(11, 12): "x"})
+    for units in (data.civs[0].units, data.civs[1].units):
+        units[12].clearance_size = (2.0, 2.0)
+    with pytest.raises(SystemExit, match=r"age 3 11 -> 12: clearance_size"):
+        gen._building_art(data, [], Path("no-graphics"), {}, gaia_entries, set(range(10, 15)), ages, {})
+
+
+def test_an_age_target_a_slot_keeps_counts_at_its_first_age_only(gen, monkeypatch):
+    """The 1997 game upgrades a building once and keeps it: the target held through later ages is no second age.
+    A composite's still is, since its annex map is built from one age."""
+    monkeypatch.setattr(gen, "_COMPOSITE_SCOPE", frozenset({60}))
+    assert gen._annex_upgrades({11: {2: 50, 3: 50, 4: 50}, 12: {2: 60}}) == {60: {11: 50, 12: 60}}
+    for ages, target in (({11: {2: 50}, 12: {3: 50}}, 50), ({12: {2: 60, 3: 60}}, 60)):
+        with pytest.raises(SystemExit, match=f"const {target} is an age target at two ages"):
+            gen._annex_upgrades(ages)
+
+
+def _age_art_case(gen, monkeypatch, town_centres: set[int], listed: set[int]):
+    """_age_art() over Gaia and one civ, every _entry_for() resolving nothing."""
+    from types import SimpleNamespace as NS
+
+    monkeypatch.setattr(gen, "_TOWN_CENTRE_SCOPE", frozenset(town_centres))
+    monkeypatch.setattr(gen, "_AGE_ART_SCOPE", frozenset(listed))
+    monkeypatch.setattr(gen, "_entry_for", lambda *args: (None, "no_unit"))
+    return NS(civs=[NS(units=[]), NS(units=[])])
+
+
+def test_a_listed_town_centre_an_age_tech_now_reaches_counts_no_object(gen, lenient, monkeypatch):
+    """TASK-701: with no unlisted town centre unreached, the scope refusal names nothing."""
+    data = _age_art_case(gen, monkeypatch, {2275, 2276}, {2275, 2276})
+    reached = {109: {3: 2275}}
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="town centres no age tech reaches: \\[2276\\]"):
+        gen._age_art(data, [], Path("no-graphics"), {}, reached)
+    gen._game_root.set_lenient(True)
+    gen._age_art(data, [], Path("no-graphics"), {}, reached)
+    assert not any("town centres no age tech reaches" in text for text in _texts(lenient))
+
+
+def test_an_unlisted_unreached_town_centre_is_still_counted(gen, lenient, monkeypatch):
+    data = _age_art_case(gen, monkeypatch, {2275, 2276}, {2275})
+    gen._age_art(data, [], Path("no-graphics"), {}, {})
+    scope = [w for w in lenient if "town centres no age tech reaches" in w["text"]]
+    assert _kinds(scope) == [("age_art", (2276,))]
+
+
+def test_a_gaia_age_entry_miss_is_age_art_and_another_civs_is_civ_art(gen, lenient, monkeypatch):
+    """Commit 69eb92ea: Gaia's miss loses the age's look, a civ's falls back to Gaia's."""
+    data = _age_art_case(gen, monkeypatch, {2275}, {2275})
+    gen._age_art(data, [], Path("no-graphics"), {}, {})
+    by_civ = {w["text"].split(" const ")[0]: (w["kind"], w["subject"]) for w in lenient}
+    assert by_civ == {"civ 0": ("age_art", 2275), "civ 1": ("civ_art", 2275)}, lenient
+    assert all("resolves no town-centre pieces" in text for text in _texts(lenient))
+
+
+def _particles_and_fish(gen, monkeypatch, entries, particles, fish_bodies):
+    monkeypatch.setattr(gen, "_PARTICLE_CONSTS", frozenset({303, 1308}))
+    monkeypatch.setattr(gen, "_UNDERWATER_BODY_CONSTS", frozenset({450}))
+    monkeypatch.setattr(gen, "_BODY_FRAME_OFFSETS", {"a_fish_marlin1_underwater_x1": 7})
+    gen._check_particles_and_fish(entries, particles, fish_bodies)
+
+
+FISH_OK = {450: "a_fish_marlin1_underwater_x1"}
+
+
+def test_a_particle_const_drawn_as_a_plain_entry_counts_no_object(gen, lenient, monkeypatch):
+    """TASK-701: a mod that gives 1308 an ordinary sprite draws it, so only a const with no entry counts."""
+    entries = {"303": {"particle": True}, "1308": {"file_name": "a_bird_x1"}}
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="particle consts emitted \\[303\\]"):
+        _particles_and_fish(gen, monkeypatch, entries, {303: "fx"}, FISH_OK)
+    gen._game_root.set_lenient(True)
+    _particles_and_fish(gen, monkeypatch, entries, {303: "fx"}, FISH_OK)
+    assert lenient == []
+    _particles_and_fish(gen, monkeypatch, {"303": {"particle": True}}, {303: "fx"}, FISH_OK)
+    assert _kinds(lenient) == [("not_drawn", (1308,))]
+
+
+def test_a_lone_unused_fish_frame_offset_counts_no_object(gen, lenient, monkeypatch):
+    """TASK-701: every listed fish has its body, so an offset no body uses changes no drawing."""
+    entries = {"303": {}, "1308": {}}
+    particles = {303: "fx", 1308: "fx"}
+    gen._game_root.set_lenient(False)
+    with pytest.raises(SystemExit, match="frame offsets \\['a_fish_marlin1_underwater_x1'\\]"):
+        _particles_and_fish(gen, monkeypatch, entries, particles, {450: "a_fish_other_underwater_x1"})
+    gen._game_root.set_lenient(True)
+    _particles_and_fish(gen, monkeypatch, entries, particles, {450: "a_fish_other_underwater_x1"})
+    assert lenient == []
+    _particles_and_fish(gen, monkeypatch, entries, particles, {})
+    assert _kinds(lenient) == [("not_drawn", (450,))]
+
+
 ANTIQUITY = 46
 
 

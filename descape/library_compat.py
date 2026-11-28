@@ -96,9 +96,15 @@ VERSIONS_DIR = Path(AoE2ScenarioParser.__file__).resolve().parent / "versions" /
 REPO_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "DE"
 
 # Pre-DE (FileHeader version 2) structures, one per DataHeader version
-# (v1.20 Age of Kings, v1.22 The Conquerors, v1.26 HD Edition .scx), never by
+# (v1.20 Age of Kings, v1.22 The Conquerors, the rest HD Edition / UserPatch), never by
 # file version: see scenario_format. Looked up at call time like the one above.
 LEGACY_VERSIONS_DIR = Path(__file__).resolve().parent / "versions" / "legacy"
+LEGACY_VOCABULARY_PREFIX = "legacy-"  # a legacy vocabulary key, "legacy-<data version>"
+
+
+def legacy_vocabulary_key(data_version: str | None) -> str:
+    """The vocabulary and trigger-clipboard key of a pre-DE file's data version."""
+    return f"{LEGACY_VOCABULARY_PREFIX}{data_version}"
 
 
 def legacy_structure_path(data_version: str | None) -> Path | None:
@@ -351,6 +357,12 @@ class VocabularyEntry:
     name: str
     attributes: tuple[str, ...]  # the fields this type actually displays
     default_attributes: Mapping[str, Any]  # every field, with its unset value
+    legacy_name: str = ""  # a pre-DE vocabulary's name for it in the old game; `name` stays DE's, rule tables key on it
+
+    @property
+    def label(self) -> str:
+        """The name shown for this type: "freeze unit" in a pre-DE file, else "freeze object"."""
+        return (self.legacy_name or self.name).replace("_", " ")
 
 
 @dataclass(frozen=True)
@@ -383,6 +395,7 @@ def _parse_vocabulary_json(raw: Mapping[str, Any]) -> tuple[Mapping[int, Vocabul
             name=value["name"],
             attributes=tuple(value.get("attributes", ())),
             default_attributes=MappingProxyType(dict(value.get("default_attributes", {}))),
+            legacy_name=value.get("legacy_name", ""),
         )
     return MappingProxyType(entries), MappingProxyType(presentation)
 
@@ -396,7 +409,11 @@ def _has_vocabulary(version_dir: Path) -> bool:
 
 def _vocabulary_dir(scenario_version: str) -> tuple[Path, bool] | None:
     """(directory, is_repo) holding `scenario_version`'s conditions.json and
-    effects.json, or None. The library's own wins, as for structures."""
+    effects.json, or None. The library's own wins, as for structures. A
+    "legacy-X" key (LoadedScenario.vocabulary_version) is LEGACY_VERSIONS_DIR's vX."""
+    if scenario_version.startswith(LEGACY_VOCABULARY_PREFIX):
+        legacy = LEGACY_VERSIONS_DIR / f"v{scenario_version.removeprefix(LEGACY_VOCABULARY_PREFIX)}"
+        return (legacy, True) if _has_vocabulary(legacy) else None
     name = f"v{scenario_version}"
     if _has_vocabulary(VERSIONS_DIR / name):
         return VERSIONS_DIR / name, False

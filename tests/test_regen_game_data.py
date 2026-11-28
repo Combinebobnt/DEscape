@@ -133,7 +133,11 @@ def stamped(world):
 
 
 def test_the_registry_covers_every_dat_generator():
-    parsing = {path.name for path in (ROOT / "tools").glob("gen_*.py") if "DatFile.parse(" in path.read_text(encoding="utf-8")}
+    parsing = {
+        path.name
+        for path in (ROOT / "tools").glob("gen_*.py")
+        if any(call in path.read_text(encoding="utf-8") for call in ("DatFile.parse(", "_game_root.parse_dat("))
+    }
     registered = {script for script, _tables in regen.GENERATORS}
     assert registered == parsing, (
         f"tools/regen_game_data.py's GENERATORS and the tools/gen_*.py that parse the .dat disagree: "
@@ -165,16 +169,16 @@ def test_each_committed_table_matches_its_stamp_entry():
         )
 
 
-def test_the_ror_tables_are_the_registry_and_match_their_stamp_section():
-    # GH #67: descape/ror/ holds one copy of every generated table, and nothing else.
+@pytest.mark.parametrize("game", [g for g in games.GAMES if g.stamp_key is not None], ids=lambda g: g.id)
+def test_a_games_tables_are_the_registry_and_match_their_stamp_section(game):
+    # GH #67: each other game's folder holds one copy of every generated table, and nothing else.
     outputs = regen.outputs_of(regen.GENERATORS)
-    ror_dir = regen.TABLES_DIR / regen.ROR_TABLES_SUBDIR
-    assert sorted(path.name for path in ror_dir.glob("*")) == sorted(outputs)
-    section = regen.load_stamp(regen.STAMP_PATH)["ror"]
+    assert sorted(path.name for path in game.tables_dir.glob("*")) == sorted(outputs)
+    section = regen.load_stamp(regen.STAMP_PATH)[game.stamp_key]
     assert sorted(section["tables"]) == sorted(outputs)
     for name in outputs:
-        assert regen.table_sha256(ror_dir / name) == section["tables"][name], (
-            f"ror/{name} changed without its stamp: run tools/regen_game_data.py --dataset ror"
+        assert regen.table_sha256(game.tables_dir / name) == section["tables"][name], (
+            f"{game.id}/{name} changed without its stamp: run tools/regen_game_data.py --dataset {game.id}"
         )
 
 
@@ -182,9 +186,15 @@ def test_the_stamp_is_kept_out_of_the_bundled_data_and_carries_its_fields():
     # packaging/descape.spec bundles every descape/**/*.json, so the stamp must not live there.
     assert (ROOT / "descape") not in regen.STAMP_PATH.parents
     stamp = regen.load_stamp(regen.STAMP_PATH)
-    assert sorted(stamp) == ["_comment", "dat", "genieutils", "refreshed", "ror", "steam_buildid", "tables"]
+    assert sorted(stamp) == ["_comment", "aoc", "dat", "genieutils", "hd", "refreshed", "ror", "steam_buildid", "tables"]
     assert sorted(stamp["dat"]) == ["sha256", "size"]
     assert sorted(stamp["ror"]) == ["dat", "genieutils", "refreshed", "steam_buildid", "tables"]
+    # The 1999 game: _dat57.py's digest in place of genieutils-py's version, and its archives' sizes.
+    assert sorted(stamp["aoc"]) == ["dat", "dat57", "install_files", "refreshed", "steam_buildid", "tables"]
+    assert stamp["aoc"]["dat57"] == regen.dat57_digest(), "tools/_dat57.py changed: regenerate --dataset aoc"
+    # HD Edition (TASK-431): the same, with its art folders' file counts.
+    assert sorted(stamp["hd"]) == ["dat", "dat57", "folder_counts", "install_files", "refreshed", "steam_buildid", "tables"]
+    assert stamp["hd"]["dat57"] == regen.dat57_digest(), "tools/_dat57.py changed: regenerate --dataset hd"
     assert regen.STAMP_PATH.read_text(encoding="utf-8") == regen.stamp_text(stamp), "the stamp was edited by hand"
 
 
@@ -429,7 +439,10 @@ def test_regenerating_into_another_tables_dir_needs_its_own_stamp(tmp_path):
 def _refused_only(world, dataset: str, refused: Path) -> None:
     """One refusal line, after all's AoE2 header; all stops there, before any RoR write."""
     header = ["=== Age of Empires II ==="] if dataset == "all" else []
-    assert world.lines == [*header, f"refusing to write into a subscribed-mods (mods/subscribed/) folder: {refused}"]
+    # Under all, the world has no 1999 or HD Edition install, which notes say first.
+    skipped = tuple(f"note: no {game.display_name} .dat (no install set)" for game in (games.AOC, games.HD))
+    lines = [line for line in world.lines if not line.startswith(skipped)]
+    assert lines == [*header, f"refusing to write into a subscribed-mods (mods/subscribed/) folder: {refused}"]
     assert not world.tables.exists() and not world.stamp.exists()
 
 
@@ -525,7 +538,7 @@ def test_a_registered_game_gets_its_own_dataset_tables_and_stamp_section(world):
         assert after["dat"] != before["dat"]
         fake_dat.unlink()
         assert world.run("--status") == regen.EXIT_OK, world.text
-        assert world.lines[0] == f"note: no Fake Game .dat at {fake_dat}: skipping its tables"
+        assert f"note: no Fake Game .dat at {fake_dat}: skipping its tables" in world.lines[:3]
     with pytest.raises(SystemExit):
         world.run("--dataset", "fake")
 
@@ -570,3 +583,68 @@ def test_every_generator_reproduces_its_committed_tables():
         capture_output=True, text=True, timeout=600, check=False,
     )
     assert run.returncode == 0, run.stdout + run.stderr
+
+
+# --- HD Edition's install (TASK-431) -------------------------------------
+
+
+def test_a_game_with_its_own_install_never_reads_the_aoe2de_one(tmp_path):
+    de, aoc, hd = tmp_path / "de", tmp_path / "aoc", tmp_path / "hd"
+    assert regen.install_for(games.HD, de, aoc, hd) == hd and regen.install_for(games.HD, de, aoc, None) is None
+    assert regen.install_for(games.AOC, de, aoc, hd) == aoc and regen.install_for(games.ROR, de, aoc, hd) == de
+
+
+def test_the_hd_context_reads_dat57_and_its_own_build_id_and_folders(tmp_path):
+    ctx = regen.dataset_context(regen.Context(), games.HD)
+    assert (ctx.reader_key, ctx.steam_app_id, ctx.stamp_key) == ("dat57", regen.HD_STEAM_APP_ID, "hd")
+    assert ctx.generator_args == ("--dataset", "hd") and "--hd-install" in ctx.install_hint
+    steamapps = tmp_path / "steamapps"
+    install = steamapps / "common" / "Age2HD"
+    (install / regen.DAT_SUBPATH).parent.mkdir(parents=True)
+    (install / regen.DAT_SUBPATH).write_bytes(b"hd dat")
+    for folder, count in zip(regen.HD_COUNTED_FOLDERS, (3, 0, 2, 1), strict=True):
+        (install / folder).mkdir(parents=True, exist_ok=True)
+        for k in range(count):
+            (install / folder / f"{k}.slp").write_bytes(b"")
+    (steamapps / f"appmanifest_{AOE2DE_STEAM_APP_ID}.acf").write_text('"buildid" "111"\n', encoding="utf-8")
+    (steamapps / f"appmanifest_{regen.HD_STEAM_APP_ID}.acf").write_text('"buildid" "3062235"\n', encoding="utf-8")
+    fingerprint, buildid = regen._read_install(install, regen.replace(ctx, out=lambda _line: None))
+    assert buildid == "3062235", "HD's own manifest, never AoE2:DE's"
+    assert list(fingerprint["folder_counts"].values()) == [3, 0, 2, 1]
+    assert set(fingerprint["install_files"]) == {path.as_posix() for path in regen.HD_INSTALL_FILES}
+    assert regen.steam_buildid(install, None) is None
+
+
+def test_an_hd_section_records_its_folder_counts_and_a_new_slp_is_a_new_build(world, tmp_path):
+    """The hd section keeps `refreshed` until the art folders change."""
+    hd = tmp_path / "hd_steamapps" / "common" / "Age2HD"
+    (hd / regen.DAT_SUBPATH).parent.mkdir(parents=True)
+    (hd / regen.DAT_SUBPATH).write_bytes(b"hd dat")
+    for path in regen.HD_INSTALL_FILES:
+        (hd / path).parent.mkdir(parents=True, exist_ok=True)
+        (hd / path).write_bytes(b"file")
+    for folder in regen.HD_COUNTED_FOLDERS:
+        (hd / folder).mkdir(parents=True, exist_ok=True)
+    x2 = hd / regen.HD_COUNTED_FOLDERS[2]
+    (x2 / "8.slp").write_bytes(b"")
+    assert world.run("--dataset", "hd", "--hd-install", str(hd)) == regen.EXIT_OK, world.text
+    section = world.stamp_data()["hd"]
+    assert section["folder_counts"][regen.HD_COUNTED_FOLDERS[2].as_posix()] == 1 and section["refreshed"] == "2026-01-02"
+    assert "folder_counts" not in section["dat"] and "dat57" in section
+    world.day = "2026-02-03"
+    assert world.run("--dataset", "hd", "--hd-install", str(hd)) == regen.EXIT_OK
+    assert world.stamp_data()["hd"]["refreshed"] == "2026-01-02", "the same files are not a refresh"
+    (x2 / "6000.slp").write_bytes(b"")
+    assert world.run("--status", "--dataset", "hd", "--hd-install", str(hd)) == regen.EXIT_STALE
+    assert [line for line in world.lines if line.startswith("STALE")] == [
+        f"STALE folder_counts.{regen.HD_COUNTED_FOLDERS[2].as_posix()}: install 2, stamp 1",
+    ]
+    assert world.run("--dataset", "hd", "--hd-install", str(hd)) == regen.EXIT_OK
+    assert world.stamp_data()["hd"]["refreshed"] == "2026-02-03"
+
+
+def test_hd_install_path_reads_its_variable(tmp_path, monkeypatch):
+    monkeypatch.setenv(regen.HD_INSTALL_ENV, str(tmp_path))
+    assert regen.hd_install_path(tmp_path / "no-config.yaml") == tmp_path
+    monkeypatch.setenv(regen.HD_INSTALL_ENV, str(tmp_path / "missing"))
+    assert regen.hd_install_path(tmp_path / "no-config.yaml") is None

@@ -5,7 +5,7 @@ descape.scenario_write for the write path itself.
 
 This module is the main window. ViewerWindow owns the menus, toolbar, mode
 switching, the render pipeline and every edit callback, and is this module's
-class plus 20 mixins, one module per area:
+class plus 24 mixins, one module per area:
 
 - viewer.py: the class head, __init__, mode switching, the title, the Qt
   event overrides and icon re-ink, the status log, the info-tree and combo
@@ -35,12 +35,16 @@ class plus 20 mixins, one module per area:
   and style selection.
 - viewer_strokes.py: terrain strokes, shape commit, Convert, the Unit Brush
   and the Eraser.
+- viewer_clone_stamp.py: the Clone Stamp's source, marker query and stroke.
 - viewer_region.py: region select, the clipboard and its dialogs, paste,
   lift and transform, fill, the eyedropper and mirror.
+- viewer_prefabs.py: Save as Prefab and the Prefabs tab's operations.
 - viewer_render.py: _apply_dirty, warms, placeholders, reach, the viewport,
   _render_current and refresh_map.
 - viewer_triggers.py: trigger editing, from _ensure_trigger_edits to
   variable_structural_edit.
+- viewer_legacy_convert.py: File > Convert to .aoe2scenario.
+- viewer_game_launch.py: Tools > Launch in AoE2:DE.
 - viewer_file.py: game data, autosave, save, open, recent files, New Map,
   resize, load_scenario and close_scenario.
 - viewer_find.py: Analysis, Find and Replace, trigger range rings and rulers.
@@ -57,7 +61,7 @@ Rules of the split (tests/test_viewer_split.py checks them):
 
 - A mixin defines no __init__, no Qt event override and no signal: all
   instance state is created in ViewerWindow.__init__.
-- No name is defined by two of the 21 classes.
+- No name is defined by two of the 25 classes.
 - The mixins precede QMainWindow in ViewerWindow's bases.
 - A mixin module never imports this one at runtime. A module-level name two
   modules need lives in viewer_common.py.
@@ -111,6 +115,7 @@ from PyQt5.QtWidgets import (
 
 from descape import (
     __version__,
+    addon_menu,
     ai_scripts,
     asset_source,
     autosave,
@@ -118,6 +123,7 @@ from descape import (
     civ_art,
     cliff_chain,
     clipboard_history,
+    clone_stamp,
     composite_backend,
     crash_report,
     debug_log,
@@ -140,7 +146,9 @@ from descape import (
     region_transform,
     settings,
     settings_file,
+    spray,
     sprite_prefetch,
+    terrain_replace,
     terrain_target,
     tool_option_bindings,
     trigger_clipboard,
@@ -196,6 +204,7 @@ from descape.unit_model import (
     UnitEditModel,
 )
 from descape.units_panel import UnitsPanel
+from descape.viewer_clone_stamp import _ViewerCloneStampMixin
 from descape.viewer_common import (
     _DEFAULT_WALL_CONST,
     _LEFT_PAGE_FOR_MODE,
@@ -211,11 +220,14 @@ from descape.viewer_common import (
 from descape.viewer_dialogs import CrashReportDialog, apply_theme, apply_ui_font
 from descape.viewer_file import _ViewerFileMixin
 from descape.viewer_find import _ViewerFindMixin
+from descape.viewer_game_launch import _ViewerGameLaunchMixin
 from descape.viewer_history import _ViewerHistoryMixin
 from descape.viewer_info import _ViewerInfoMixin
+from descape.viewer_legacy_convert import _ViewerLegacyConvertMixin
 from descape.viewer_menus import _ViewerMenusMixin
 from descape.viewer_objectives import _ViewerObjectivesMixin
 from descape.viewer_options import _ViewerOptionsMixin
+from descape.viewer_prefabs import _ViewerPrefabsMixin
 from descape.viewer_region import _ViewerRegionMixin
 from descape.viewer_render import _ViewerRenderMixin
 from descape.viewer_strokes import _ViewerStrokesMixin
@@ -416,8 +428,8 @@ class ViewerWindow(
     _ViewerUnitMoveMixin, _ViewerUnitPlaceMixin, _ViewerUnitOpsMixin,
     _ViewerUnitEditMixin, _ViewerHistoryMixin, _ViewerViewMixin,
     _ViewerTriggerOverlayMixin, _ViewerOptionsMixin, _ViewerToolStateMixin,
-    _ViewerStrokesMixin, _ViewerRegionMixin, _ViewerRenderMixin,
-    _ViewerTriggersMixin, _ViewerFileMixin, _ViewerFindMixin, _ViewerInfoMixin,
+    _ViewerStrokesMixin, _ViewerCloneStampMixin, _ViewerRegionMixin, _ViewerPrefabsMixin, _ViewerRenderMixin,
+    _ViewerTriggersMixin, _ViewerLegacyConvertMixin, _ViewerGameLaunchMixin, _ViewerFileMixin, _ViewerFindMixin, _ViewerInfoMixin,
     _ViewerObjectivesMixin, QMainWindow,
 ):
     # GH #142: the View info page's minimumSizeHint width at the baseline font (the stats table).
@@ -468,6 +480,8 @@ class ViewerWindow(
         # not a real file), so Save As must default to UNTITLED_NAME instead.
         # Cleared by a successful Save As, by File > Open, and by Close.
         self._untitled = False
+        # TASK-270: View > Saved Views' slots for this document, kept in config.yaml once it has a path.
+        self._saved_views: dict = {}
         # File > New Map…'s panel, built on first open and reused (GH #243).
         self._new_map_panel: NewMapDialog | None = None
         # Holds whichever style's chunk cache is current -- an IsoChunkCache
@@ -833,6 +847,15 @@ class ViewerWindow(
         self._unit_brush_base = 0
         # The open Draw stroke's Target, snapshotted at its start (_init_stroke_state).
         self._stroke_target = terrain_target.TERRAIN
+        # The open Spray Can stroke's seed, Flow, Hardness and coverage (GH #295), None outside one.
+        self._stroke_spray: spray.SprayStroke | None = None
+        # The open Replace Brush stroke's Flood, reference and region (GH #296), None outside one.
+        self._stroke_replace: terrain_replace.ReplaceStroke | None = None
+        # GH #285's Clone Stamp: the source (one document's, dropped on load and close), the open
+        # stroke's (terrain, elevation) ticks, and its elevation clamp state, both None outside one.
+        self._clone = clone_stamp.CloneSource()
+        self._stroke_clone: tuple[bool, bool] | None = None
+        self._clone_stroke: clone_stamp.CloneStroke | None = None
         # GH #184's Eraser: the open drag's state (None outside one) and its repaint throttle.
         self._erase: eraser.EraseStroke | None = None
         self._erase_refresh_timer = QTimer(self)
@@ -1106,6 +1129,7 @@ class ViewerWindow(
             )
         )
         self.map_view.set_cliff_preview(self.on_cliff_preview)
+        self.map_view.set_clone_hooks(self.set_clone_source, self._clone_marker_tiles)
         # The Move tool's press picks what to drag; GH #75: a drag on a group member moves the group.
         self.map_view.set_unit_drag_hooks(self.on_move_press, self._is_group_key)
         # TASK-325: under Units Select, Escape clears the unit selection before the region.
@@ -1354,7 +1378,7 @@ class ViewerWindow(
         # too, and the emphasis has to go with it.
         self._refresh_camera_markers()
         self._push_instruction_overlay()
-        self._log_status(f"Mode forced to {mode_text} -- Sloped has no unit selection yet")
+        self._log_status(f"Mode forced to {mode_text}: Sloped has no unit selection yet")
 
     def _update_title(self) -> None:
         if self.scenario is None:
@@ -1420,6 +1444,8 @@ class ViewerWindow(
         gc_hold.reset()
         # A window closed mid-stroke never sees the release that would re-enable gc.
         self.map_view.resume_stroke_gc()
+        # Nor the Spray Can's tick: the close commits nothing, and a shared QApplication outlives the window.
+        self.map_view.stop_stroke_tick()
         # Same lifetime reasoning as the warm above, and the teardown
         # trigger_panel_variables.py already does for its own variables dialog:
         # close() doesn't destroy the window, so a stray top-level dialog
@@ -1721,7 +1747,8 @@ def main() -> None:
     # touch to know the app is up, and a modal sweep dialog inserted earlier
     # would hold it up until READY_TIMEOUT fires -- on exactly the launch
     # mode (double-click via bootstrap) that hard-abort dumps come from.
-    QTimer.singleShot(0, _sweep_pending_crash_reports)
+    # Addons load after the sweep, not inside its dialog's event loop: each new one asks "Run addon?" (GH #320).
+    QTimer.singleShot(0, lambda: (_sweep_pending_crash_reports(), addon_menu.load_startup(window)))
     code = app.exec_()
     # Before interpreter shutdown, where Qt may still print through a Python handler (GH #236).
     qt_messages.uninstall()

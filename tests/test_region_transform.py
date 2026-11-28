@@ -16,7 +16,7 @@ import math
 
 import pytest
 
-from descape import gate_orientation, iso_geometry, render_units, unit_rotation
+from descape import bridge_piece_frames, gate_orientation, iso_geometry, render_units, unit_rotation
 from descape.mirror_tools import AXIS_SWAPPING, TRANSFORMS, compose, facing_image, invert
 from descape.region_clipboard import RegionBlock, RegionUnit
 from descape.region_transform import (
@@ -47,6 +47,7 @@ WALL = 117  # 1x1, five wall shapes
 CLIFF = 264  # 3x3 cliff
 BRIDGE = 605  # (2, 3), an `a` bridge's top piece
 MOLE = 2421  # (3, 1), no orientation sibling
+WOODEN_2X2 = 911  # (2, 2), a wooden bridge with no `b` art
 _RADIAN_3 = 3 * 2 * math.pi / 5
 
 
@@ -209,10 +210,43 @@ def test_kept_orientation_counts_cliffs_always_and_unsquare_spans_under_a_swap()
         _unit(GATE_NE, *render_units.span_anchor(0, 4, 4, 1)),
         _unit(ARCHER, 8.5, 5.5),
         _unit(MOLE, *render_units.span_anchor(4, 3, 3, 1)),
+        _unit(DE_END, *render_units.span_anchor(8, 0, 1, 2)),
     ]
     block = _block(9, 6, units)
-    assert transform_block(block, "r", False).kept_orientation == 2  # the cliff and the mole, not the bridge
+    assert transform_block(block, "r", False).kept_orientation == 2  # the cliff and the mole, not the bridges
     assert transform_block(block, "mx", False).kept_orientation == 1
+
+
+DE_END, DE_MIDDLE = 1993, 1996  # cd end and middle, (1, 2); an end's frame is its run sense (TASK-705)
+
+
+@pytest.mark.parametrize("element", [e for e in TRANSFORMS if e != "id"])
+def test_a_de_bridge_run_keeps_its_ends_facing_its_middles(element):
+    """A run along y: 1993 frame 1 (inward +y) at the low end, two 1996
+    middles, 1993 frame 0 (inward -y) at the high end."""
+    units = [
+        _unit(DE_END, *render_units.span_anchor(0, 0, 1, 2), rotation=1.0),
+        _unit(DE_MIDDLE, *render_units.span_anchor(0, 2, 1, 2), rotation=0.0),
+        _unit(DE_MIDDLE, *render_units.span_anchor(0, 4, 1, 2), rotation=1.0),
+        _unit(DE_END, *render_units.span_anchor(0, 6, 1, 2), rotation=0.0),
+    ]
+    result = transform_block(_block(1, 8, units), element, False)
+    assert result.kept_orientation == 0
+    low, mid_a, mid_b, high = result.block.units
+    middle = ((mid_a.dx + mid_b.dx) / 2, (mid_a.dy + mid_b.dy) / 2)
+    for source, image in ((units[1], mid_a), (units[2], mid_b)):
+        row = bridge_piece_frames.frames(image.unit_const)
+        assert row[int(image.rotation)] == bridge_piece_frames.frames(DE_MIDDLE)[int(source.rotation)]
+    for end in (low, high):
+        _kind, (vx, vy) = bridge_piece_frames.frames(end.unit_const)[int(end.rotation)]
+        to_middle = (middle[0] - end.dx, middle[1] - end.dy)
+        assert vx * to_middle[0] + vy * to_middle[1] > 0, (element, end)
+
+
+def test_a_2x2_wooden_bridge_is_kept_under_an_axis_swap_only():
+    block = _block(4, 4, [_unit(WOODEN_2X2, *render_units.span_anchor(0, 0, 2, 2)), _unit(904, 3.5, 3.5)])
+    assert transform_block(block, "r", False).kept_orientation == 1  # 911, not the 1x1 904
+    assert transform_block(block, "r2", False).kept_orientation == 0
 
 
 def test_rotate_cw_turns_a_facing_the_way_rotate_step_does():
@@ -485,22 +519,25 @@ def test_image_on_map_wants_the_whole_footprint():
 
 
 @pytest.mark.parametrize("element", ELEMENTS)
-def test_a_turned_bridge_keeps_its_top_and_bottom_at_the_screen_top_and_bottom_ends(element):
-    """TASK-329: an `a` bridge (bottom 607 at low x, middle 606, top 605 at
-    high x) under each D4 element takes its orientation siblings, a top piece
-    at the end nearer the screen top and a bottom piece at the other, measured
-    through tile_screen_origin() rather than the top-ward table."""
+@pytest.mark.parametrize(("run", "span"), [((607, 606, 605), (2, 3)), ((906, 905, 904), (1, 1))], ids=["classic", "wooden"])
+def test_a_turned_bridge_keeps_its_top_and_bottom_at_the_screen_top_and_bottom_ends(element, run, span):
+    """TASK-329, TASK-706: an `a` bridge (bottom at low x, middle, top at high
+    x; classic 607-605 or 1x1 wooden 906-904) under each D4 element takes its
+    orientation siblings, a top piece at the end nearer the screen top and a
+    bottom piece at the other, measured through tile_screen_origin() rather
+    than the top-ward table."""
     from descape import object_orientation
 
-    pieces = [_unit(c, *render_units.span_anchor(2 * k, 0, 2, 3)) for k, c in enumerate((607, 606, 605))]
-    turned = transform_block(_block(6, 3, pieces), element, False)
+    sx, sy = span
+    pieces = [_unit(c, *render_units.span_anchor(sx * k, 0, sx, sy)) for k, c in enumerate(run)]
+    turned = transform_block(_block(3 * sx, sy, pieces), element, False)
     assert turned.kept_orientation == 0
     block = turned.block
     proj = iso_geometry.canvas_size_and_origin(block.width, block.height, 32, 0, 0)
 
     def screen_y(unit) -> float:
         tiles = render_units.occupied_tiles_for(unit.unit_const, unit.dx, unit.dy, block.width, block.height)
-        assert len(tiles) == 6, (element, unit)
+        assert len(tiles) == sx * sy, (element, unit)
         return sum(iso_geometry.tile_screen_origin(tx, ty, 0, proj)[1] for tx, ty in tiles) / len(tiles)
 
     # Units keep their order, so where the run reverses the first piece's image is the new top.
@@ -508,7 +545,7 @@ def test_a_turned_bridge_keeps_its_top_and_bottom_at_the_screen_top_and_bottom_e
     assert sorted(by_end, key=str) == [0, 1, None], element
     assert screen_y(by_end[0]) < screen_y(by_end[None]) < screen_y(by_end[1]), element
     assert len({tile for u in block.units for tile in render_units.occupied_tiles_for(
-        u.unit_const, u.dx, u.dy, block.width, block.height)}) == 18, "the pieces still tile the turned block"
+        u.unit_const, u.dx, u.dy, block.width, block.height)}) == 3 * sx * sy, "the pieces still tile the turned block"
 
 
 @pytest.mark.parametrize("element", [e for e in ELEMENTS if e != "id"])

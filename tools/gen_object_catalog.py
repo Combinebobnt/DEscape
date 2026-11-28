@@ -318,13 +318,23 @@ def _unique_building_units(data, availability: dict) -> dict[int, set[int]]:
     return implicit
 
 
-def _commands(data, effect_id: int) -> list:
-    return data.effects[effect_id].effect_commands if 0 <= effect_id < len(data.effects) else []
+def _commands(data, effect_id: int | None) -> list:
+    """An effect's commands; none for -1 or for a field the 1997 .dat lacks (None: no team bonus)."""
+    if effect_id is None or not 0 <= effect_id < len(data.effects):
+        return []
+    return data.effects[effect_id].effect_commands
 
 
 def _in_standard_game(tech) -> bool:
     mode = tech.full_tech_mode
+    if mode is None:  # the 1997 .dat has no game modes: every tech is a standard game's
+        return True
     return mode in _STANDARD_MODES or (mode < 0 and mode != _FULL_TECH_TREE_ONLY)
+
+
+def _for_civ(tech, civ_index: int) -> bool:
+    """The tech is every civ's (-1, or None in the 1997 .dat, which ties no tech to a civ) or this one's."""
+    return tech.civ is None or tech.civ in (-1, civ_index)
 
 
 def _tech_costs(data, tree: list) -> dict[int, dict[int, float]]:
@@ -354,7 +364,7 @@ def _one_civ(data, civ_index: int, implicit: dict[int, set[int]]) -> tuple[set[i
         if (
             tech is not None
             and tech.name
-            and tech.civ in (-1, civ_index)
+            and _for_civ(tech, civ_index)
             and _in_standard_game(tech)
             and tech.required_tech_count == 0
             and not costs[tech_id]
@@ -380,7 +390,7 @@ def _one_civ(data, civ_index: int, implicit: dict[int, set[int]]) -> tuple[set[i
                 or tech is None
                 or not tech.name
                 or tech_id in disabled
-                or tech.civ not in (-1, civ_index)
+                or not _for_civ(tech, civ_index)
                 or not _in_standard_game(tech)
             ):
                 continue
@@ -492,13 +502,11 @@ def main() -> None:
     args = parser.parse_args()
     _game_root.set_lenient(args.lenient)
 
-    from genieutils.datfile import DatFile
-
     dat_path = _game_root.dat_path(args.aoe2de_root, args.dataset, args.dat)
     if not dat_path.is_file():
         raise SystemExit(f"Not found: {dat_path}")
 
-    data = DatFile.parse(str(dat_path))
+    data = _game_root.parse_dat(dat_path)
     # civs[0] (Gaia) carries the master unit list -- every other civ's own
     # list is a copy with per-civ stat overrides, same source
     # gen_tree_unit_ids.py already reads.

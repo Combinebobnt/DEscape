@@ -79,11 +79,12 @@ SEG_TRIGGERS = "Triggers+Files"
 
 # Plausibility filters. Each held for every unit, effect and condition of a
 # 144-file corpus (1.37 to 1.59, measured 2026-11-01), so a true layout never trips one.
-UNIT_STATUS_RANGE = (0, 7)
-UNIT_CONST_RANGE = (0, 4095)  # corpus 1..2708, the frozen re-save keeps a const 0; headroom above
-UNIT_Z_RANGE = (0.0, float(fs.ELEVATION_MAX))
-CAPTURE_FLAG_RANGE = (-1, 3)
-CAPTION_STRING_ID_MIN = -1
+# The unit ones live in format_scan, shared with the in-app compat view.
+UNIT_STATUS_RANGE = fs.UNIT_STATUS_RANGE
+UNIT_CONST_RANGE = fs.UNIT_CONST_RANGE
+UNIT_Z_RANGE = fs.UNIT_Z_RANGE
+CAPTURE_FLAG_RANGE = fs.CAPTURE_FLAG_RANGE
+CAPTION_STRING_ID_MIN = fs.CAPTION_STRING_ID_MIN
 # A trigger struct's count field (static_value_N, right after the type) equals its
 # 4-byte scalar fields minus 2. Exact for every effect and condition, 1.37 to 1.59.
 COUNT_FIELD_BIAS = 2
@@ -534,16 +535,6 @@ class Probe:
     stream: int | None = None  # the earliest evidence that misframes what follows (not a whole-path break)
 
 
-def _np_values(walk: sw.Walk, path: tuple[str, ...]) -> tuple[sw.Column, np.ndarray] | None:
-    col = walk.columns.get(path)
-    if col is None or not len(col):
-        return None
-    values = _column_np(col)
-    if not isinstance(values, np.ndarray):
-        return None
-    return col, values
-
-
 def count_field_formula(fields: Sequence[sw.FieldSpec]) -> int:
     four = sum(1 for f in fields if f.kind in ("int", "float") and f.size == 4 and f.repeat == 1 and f.rule is None and not f.eof)
     return four - COUNT_FIELD_BIAS
@@ -574,12 +565,12 @@ def filter_violation(walk: sw.Walk, compiled: sw.CompiledStructure, ctx: FilterC
                 _unit_filters(walk, prefix, ctx, note)
             count = count_field(spec)
             if count is not None:
-                got = _np_values(walk, (*prefix, count))
+                got = fs.column_array(walk, (*prefix, count))
                 if got is not None:
                     want = count_field_formula(spec.fields)
                     note(got[0], got[1] != want, f"{'/'.join(block)}.{count} != {want}")
             if prefix == ("Triggers",) and ctx.trigger_range is not None:
-                got = _np_values(walk, ("Triggers", "trigger_version"))
+                got = fs.column_array(walk, ("Triggers", "trigger_version"))
                 if got is not None:
                     bad = np.asarray([not fs.plausible_trigger_version(float(v), ctx.trigger_range) for v in got[1].tolist()])
                     note(got[0], bad, f"trigger_version outside {ctx.trigger_range}")
@@ -587,36 +578,7 @@ def filter_violation(walk: sw.Walk, compiled: sw.CompiledStructure, ctx: FilterC
 
 
 def _unit_filters(walk: sw.Walk, prefix: tuple[str, ...], ctx: FilterContext, note) -> None:
-    def get(name: str):
-        return _np_values(walk, (*prefix, name))
-
-    w, h = ctx.map_size if ctx.map_size else (math.inf, math.inf)
-    with np.errstate(invalid="ignore"):
-        for name, limit in (("x", w), ("y", h)):
-            got = get(name)
-            if got is not None:
-                v = got[1].astype(np.float64)
-                note(got[0], ~(np.isfinite(v) & (v >= 0) & (v <= limit)), f"unit {name} off the map")
-        checks = (
-            ("z", UNIT_Z_RANGE),
-            ("status", UNIT_STATUS_RANGE),
-            ("unit_const", UNIT_CONST_RANGE),
-            ("capture_flag", CAPTURE_FLAG_RANGE),
-            ("caption_string_id", (CAPTION_STRING_ID_MIN, math.inf)),
-        )
-        for name, (lo, hi) in checks:
-            got = get(name)
-            if got is not None:
-                v = got[1].astype(np.float64)
-                note(got[0], ~(np.isfinite(v) & (v >= lo) & (v <= hi)), f"unit {name} outside {lo}..{hi}")
-    got = get("reference_id")
-    if got is not None:
-        v = got[1]
-        bad = v < 0
-        _, first = np.unique(v, return_index=True)
-        dup = np.ones(len(v), dtype=bool)
-        dup[first] = False
-        note(got[0], bad | dup, "unit reference_id negative or repeated")
+    fs.unit_filter_violations(walk, prefix, ctx.map_size, note)
 
 
 def block_prefixes(compiled: sw.CompiledStructure) -> dict[tuple[str, ...], tuple[sw.StructSpec, list[tuple[str, ...]]]]:
@@ -804,7 +766,7 @@ def count_field_growth(compiled: sw.CompiledStructure, walk: sw.Walk) -> dict[tu
             continue
         seen: set[int] = set()
         for prefix in prefixes:
-            got = _np_values(walk, (*prefix, count))
+            got = fs.column_array(walk, (*prefix, count))
             if got is not None:
                 seen.add(int(got[1][0]))
         if len(seen) == 1:

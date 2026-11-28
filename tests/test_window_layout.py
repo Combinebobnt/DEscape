@@ -292,13 +292,46 @@ def test_the_first_launch_after_the_splitter_layout_keeps_its_widths(tmp_path) -
 
 def test_a_seeded_log_height_under_the_minimap_floor_holds_until_the_minimap_opens(tmp_path) -> None:
     """The minimap shares the log's row (GH #54), so once opened its minimum height is the row's."""
-    (tmp_path / "config.yaml").write_text("split_sizes: [520, 900]\nlog_height: 150\n")
+    seeded = MINIMAP_MIN_HEIGHT - 8
+    (tmp_path / "config.yaml").write_text(f"split_sizes: [520, 900]\nlog_height: {seeded}\n")
     window = _window()
     try:
-        assert abs(window.status_log.height() - 150) <= _SLACK, "a closed minimap floors nothing"
+        assert abs(window.status_log.height() - seeded) <= _SLACK, "a closed minimap floors nothing"
         _open_minimap(window)
         assert window.minimap_panel.height() == MINIMAP_MIN_HEIGHT
         assert abs(window.status_log.height() - MINIMAP_MIN_HEIGHT) <= _SLACK
+    finally:
+        conftest.close_window(window)
+
+
+def test_opening_the_minimap_keeps_a_row_already_over_its_floor(tmp_path) -> None:
+    """GH #404: opening the minimap no longer forces a taller bottom row."""
+    (tmp_path / "config.yaml").write_text("split_sizes: [520, 900]\nlog_height: 150\n")
+    window = _window()
+    try:
+        _open_minimap(window)
+        assert abs(window.status_log.height() - 150) <= _SLACK
+        assert abs(window.minimap_panel.height() - 150) <= _SLACK
+    finally:
+        conftest.close_window(window)
+
+
+def test_a_floating_minimap_shrinks_to_its_floor_and_still_fits_the_map() -> None:
+    from descape.scenario_io import BLANK_TEMPLATE_PATH
+
+    window = _window()
+    try:
+        window.load_scenario(BLANK_TEMPLATE_PATH)
+        _open_minimap(window)
+        dock, panel = window.minimap_dock, window.minimap_panel
+        dock.setFloating(True)
+        _settle()
+        title = dock.height() - panel.height()
+        dock.resize(dock.width(), MINIMAP_MIN_HEIGHT + title)
+        _settle()
+        window._rebuild_minimap()
+        assert panel.height() == MINIMAP_MIN_HEIGHT
+        assert panel.fit() is not None and panel.viewport_polygon() is not None
     finally:
         conftest.close_window(window)
 

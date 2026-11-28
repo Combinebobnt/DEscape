@@ -25,9 +25,9 @@ def _defined(cls: type) -> set[str]:
     return names
 
 
-def test_six_mixins_precede_qgraphicsview():
+def test_seven_mixins_precede_qgraphicsview():
     mro = MapView.__mro__
-    assert len(MIXINS) == 6
+    assert len(MIXINS) == 7
     assert all(mro.index(mixin) < mro.index(QGraphicsView) for mixin in MIXINS)
 
 

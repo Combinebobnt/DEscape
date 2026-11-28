@@ -65,7 +65,7 @@ from descape.scenario_new import (
     clamp_cameras,
     validate_map_size,
 )
-from descape.scenario_write import PatchedBody, WriteBlockedError, _compress_bytes, build_patched
+from descape.scenario_write import PatchedBody, WriteBlockedError, _compress_bytes, build_patched, refuse_legacy
 from descape.trigger_model import TriggerEditModel
 from descape.unit_model import UnitEditModel
 
@@ -248,11 +248,13 @@ def dangling_reference_count(scenario: LoadedScenario, removed: Iterable) -> int
     )
 
 
-def _refusal(scenario: LoadedScenario, new_w: int, new_h: int, dx: int, dy: int, deleted: int) -> str | None:
+def _refusal(
+    scenario: LoadedScenario, new_w: int, new_h: int, dx: int, dy: int, deleted: int, min_tiles: int
+) -> str | None:
     mm = scenario.map_manager
     old_w, old_h = mm.map_width, mm.map_height
     try:
-        validate_map_size(new_w, new_h)
+        validate_map_size(new_w, new_h, min_tiles=min_tiles)
     except MapSizeError as e:
         return f"{e}."
     if old_w != old_h or new_w != new_h:
@@ -277,12 +279,15 @@ def _refusal(scenario: LoadedScenario, new_w: int, new_h: int, dx: int, dy: int,
     return None
 
 
-def resize_plan(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor) -> ResizePlan:
-    """What resize_scenario() would do, without doing it."""
+def resize_plan(
+    scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor, *, min_tiles: int = MIN_MAP_TILES
+) -> ResizePlan:
+    """What resize_scenario() would do, without doing it. `min_tiles` lowers
+    the size floor for probe tools only; no app path passes it."""
     mm = scenario.map_manager
     old_w, old_h = mm.map_width, mm.map_height
     dx, dy = origin_offset(old_w, old_h, new_w, new_h, anchor)
-    in_range = min(new_w, new_h) >= MIN_MAP_TILES and max(new_w, new_h) <= MAX_MAP_TILES
+    in_range = min(new_w, new_h) >= min_tiles and max(new_w, new_h) <= MAX_MAP_TILES
     units = scenario.unit_manager.units
     removed = removal_closure(units, dx, dy, new_w, new_h, old_w=old_w, old_h=old_h) if in_range else []
     deleted = len(removed)
@@ -302,7 +307,7 @@ def resize_plan(scenario: LoadedScenario, new_w: int, new_h: int, anchor: Anchor
         units_deleted=deleted,
         triggers=triggers,
         trigger_note=note,
-        refusal=_refusal(scenario, new_w, new_h, dx, dy, deleted),
+        refusal=_refusal(scenario, new_w, new_h, dx, dy, deleted, min_tiles),
         dangling_references=dangling_reference_count(scenario, removed),
         removed=tuple(removed),
     )
@@ -449,11 +454,13 @@ def resize_scenario(
     options: OptionsEditModel | None = None,
     units: UnitEditModel | None = None,
     messages: MessagesEditModel | None = None,
+    min_tiles: int = MIN_MAP_TILES,
 ) -> ResizeResult:
     """Resizes `scenario` with its pending edits (the same models
     write_scenario() takes). Raises ResizeRefusedError for anything
     resize_plan() refuses. `scenario` itself is left untouched."""
-    plan = resize_plan(scenario, new_w, new_h, anchor)
+    refuse_legacy(scenario)  # build_patched() would accept a pre-DE document's allowed edits
+    plan = resize_plan(scenario, new_w, new_h, anchor, min_tiles=min_tiles)
     if plan.refusal is not None:
         raise ResizeRefusedError(plan.refusal)
     patched = build_patched(scenario, triggers, options, units, messages)

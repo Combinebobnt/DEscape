@@ -30,6 +30,7 @@ from descape import (
     asset_source,
     content_roots,
     edge_ticks,
+    game_launch,
     games,
     grid_overlay,
     iso_geometry,
@@ -168,6 +169,23 @@ aoe2de_install: /path/to/steamapps/common/AoE2DE
 # See content_roots.py's module docstring.
 # aoe2de_profile: /path/to/Games/Age of Empires 2 DE
 
+# What Tools > Launch in AoE2:DE passes the game after Steam's app id, split
+# like a shell command line. Default: "{' '.join(game_launch.DEFAULT_LAUNCH_ARGS)}" (boot into the
+# scenario editor). See game_launch.py.
+# aoe2de_launch_args: EDITOR
+
+# Path to your Age of Kings / The Conquerors install, the folder holding
+# Data/ and language.dll. Optional: with it, 1999 .scn/.scx files show with
+# that game's own data, view-only. Also settable from Settings >
+# Advanced, or via the AOC_INSTALL_PATH env var (checked first). No default.
+# aoc_install: /path/to/Age of Empires II
+
+# Path to your Age of Empires II: HD Edition install, the Age2HD folder
+# holding resources/. Optional: with it, HD Edition .scx files show with that
+# game's own data, view-only. Also settable from Settings > Advanced, or via
+# the HD_INSTALL_PATH env var (checked first). No default.
+# hd_install: /path/to/steamapps/common/Age2HD
+
 # Language folder under the install's resources/ (e.g. de, fr, es) that
 # trigger reference pickers resolve real object/tech display names from --
 # see object_catalog.py's resolve_name(). Only takes effect with
@@ -184,6 +202,11 @@ graphics_quality: {settings.GRAPHICS_QUALITY_DEFAULT}
 # nearest one on read, see settings.ELEV_STEP_PCT_STOPS.
 # Default: {iso_geometry.ELEV_STEP_DEFAULT_PCT}.
 elev_step_pct: {iso_geometry.ELEV_STEP_DEFAULT_PCT}
+
+# Sloped elevation height, its own setting: the same stops, snapped the same
+# way. {iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT} matches the game's own height.
+# Default: {iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT}.
+sloped_elev_step_pct: {iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT}
 
 # Held-key pan speed for the Pan Up/Down/Left/Right keybinds, in viewport
 # pixels per second, Settings > Appearance. Measured in screen pixels like
@@ -331,8 +354,8 @@ favorite_star_style: {settings.FAVORITE_STAR_STYLE_DEFAULT}
 terrain_picker_mode: {settings.TERRAIN_PICKER_MODE_DEFAULT}
 
 # Which game's data draws every opened scenario, Settings > Advanced (GH #67):
-# {_GAME_DATA_IDS}. auto follows the file's own header; aoe2 or ror shows every
-# file in that game's data, read-only when it is the other game's file.
+# {_GAME_DATA_IDS}. auto follows the file's own game; a game id shows every
+# file in that game's data, read-only when it is another game's file.
 # Anything else falls back to the default on read. Default: {settings.GAME_DATA_DEFAULT}.
 game_data: {settings.GAME_DATA_DEFAULT}
 

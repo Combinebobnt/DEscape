@@ -252,7 +252,7 @@ def entry_label(kind: str, index: int, entry: Any, vocabulary: TriggerVocabulary
     if definition is None:
         name = f"type {read_value(entry, _TYPE_ATTRIBUTE[kind])}"
     else:
-        name = definition.name.replace("_", " ")
+        name = definition.label
     return f"{kind} {index + 1} ({name})"
 
 

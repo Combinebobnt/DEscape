@@ -40,7 +40,7 @@ from collections.abc import Mapping
 
 from AoE2ScenarioParser.datasets.object_support import Civilization, CivilizationOld
 
-from descape import data_mod_side, games
+from descape import data_mod_side, game_dataset, games
 
 Art = tuple[int | None, int, int | None]
 """(art_civ, age, tech_civ), one player's building art."""
@@ -53,6 +53,12 @@ MAX_CIV_INDEX = 62
 
 ROR_MAX_CIV_INDEX = 17
 """The Return of Rome .dat's last civ index (Lac Viet)."""
+
+AOC_MAX_CIV_INDEX = 18
+"""The Conquerors .dat's last civ index (Koreans)."""
+
+HD_MAX_CIV_INDEX = 31
+"""HD Edition's expansion .dat's last civ index (Vietnamese)."""
 
 DARK_AGE = 2
 IMPERIAL_AGE = 5
@@ -70,7 +76,7 @@ PLAYER_COUNT = 9
 
 _MAX_CIV_INDEX_BY_GAME = games.PerGame(
     "civ_art: the game .dat's last civ index",
-    {"aoe2": MAX_CIV_INDEX, "ror": ROR_MAX_CIV_INDEX},
+    {"aoe2": MAX_CIV_INDEX, "ror": ROR_MAX_CIV_INDEX, "aoc": AOC_MAX_CIV_INDEX, "hd": HD_MAX_CIV_INDEX},
 )
 
 
@@ -143,10 +149,10 @@ def player_art(
     overlaid with `pending` ({field_id: {player_id: value}}, the viewer's
     pending Players-mode edits). A field the file does not carry reads as
     missing, which falls through like a random value. Civs are indexed in
-    the file's own game (GH #67), whatever dataset is active."""
+    the file's game (GH #67, game_dataset.file_game()), whatever dataset is active."""
     from descape import player_fields
 
-    game = games.for_scenario(loaded)
+    game = game_dataset.file_game(loaded)
 
     specs = {s.field_id: s for s in player_fields.specs_for(loaded) if s.field_id in _FIELDS}
     pending = pending or {}
@@ -158,7 +164,7 @@ def player_art(
             if player_id in overlay:
                 values.append(overlay[player_id])
             elif field_id in specs:
-                values.append(player_fields.current_value(loaded, specs[field_id], player_id))
+                values.append(player_fields.shown_value(loaded, specs[field_id], player_id))
             else:
                 values.append(None)
         result.append(resolve(*values, game=game))

@@ -482,7 +482,7 @@ def test_the_settings_say_whether_the_dlc_was_detected(qtbot, monkeypatch, tmp_p
 
     _dlc(monkeypatch, dlc)
     monkeypatch.setattr(unit_sprites, "own_x2_art_installed", lambda game=None: ror and (game or game_dataset.game()) is games.ROR)
-    monkeypatch.setattr(asset_source, "get_install_path", lambda: tmp_path)
+    monkeypatch.setattr(asset_source, "get_de_install_path", lambda: tmp_path)  # the label is about DE's DLC
     dialog, window = conftest.dialog_and_window()
     try:
         text = dialog.x2_art_label.text()

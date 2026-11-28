@@ -184,7 +184,7 @@ def test_a_garrison_copy_from_a_pre_de_file_is_refused_at_paste(monkeypatch) -> 
 
         assert viewer_tests._unit_count(window) == count
         assert len(window.edit_history.records) == records
-        assert "older-format (.scn/.scx)" in _last_status(window)
+        assert "older-format (.scn/.scx/.scx2)" in _last_status(window)
         panel.garrison_copy_button.click()
         panel.garrison_paste_button.click()
         assert viewer_tests._unit_count(window) == count + 1, "a copy from this DE file still pastes"

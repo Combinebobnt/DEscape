@@ -241,6 +241,7 @@ def test_stitched_chunks_match_the_full_render(blend_install, backend, kind):
     _assert_equal(_stitched(_cache(kind, scenario)), _full(kind, scenario), f"{kind} on {backend}")
 
 
+@pytest.mark.usefixtures("one_elev_step")
 def test_stepped_equals_sloped_on_a_flat_map(blend_install):
     """The shared square top block makes this hold by construction."""
     scenario = _scenario("sloped-flat-map")

@@ -14,7 +14,7 @@ scope.
 - Never write into a subscribed-mods `mods/subscribed/` folder: the game's
   mod manager re-syncs it, so an edit there is silently lost. Every path that writes a scenario
   file (Save, autosave, and the tools that write one directly) and every
-  CSV, theme or settings export refuses an output path with the consecutive parts
+  CSV, theme, settings or prefab export refuses an output path with the consecutive parts
   `mods`, `subscribed` (case-insensitive), as written or resolved through
   symlinks (`scenario_io.is_workshop_subscribed()`). A new one must too.
   The game profile itself (Proton `compatdata/` on Linux,
@@ -29,25 +29,52 @@ scope.
   7..53). Every write path must pass it through verbatim, never normalize it.
 - **Per game (GH #67).** A scenario is edited with its own game's data.
   Each game is a descriptor in `descape/games.py` (Return of Rome claims
-  header variant 2, AoE2 every other). The viewer refuses every edit and
+  header variant 2 and the Age of Empires 1.15 format, Age of Kings / The
+  Conquerors the 1999 `.scn`/`.scx` formats and the 1.23 band (UserPatch
+  `.scx2`, some HD Edition `.scx`), HD Edition its header-2 bands 1.21,
+  1.24 and 1.26 (its header-3 files stay AoE2's), AoE2 every other). A file whose game's install is not configured
+  is its `stand_in`'s file (`game_dataset.file_game()`). The viewer refuses every edit and
   save of a document shown with another game's data
   (`game_dataset.lock_reason()`, behind
   `ViewerWindow.game_data_lock_reason()`), while the model guards below
-  still raise in a batch script. Every const set the rules below name is
+  still raise in a batch script. A view-only game's (`writable=False`)
+  files are refused whatever data shows them, in the viewer and in
+  `scenario_write.check_destination()`, except a pre-DE document: its band's
+  edit families (next rule) decide under the 1999 game's own data as under
+  its stand-in's (`lock_reason(..., legacy=True)`). Every const set the rules below name is
   the active game's: a generated table through `game_dataset.table_path()`
   (under AoE2, a loaded data mod's, GH #58), a hand-measured set through
   its `games.PerGame` table. The viewer activates the game on open, a
   script through `batch_api.load()`, not a bare
   `scenario_io.load_map_and_units()`. `docs/GAME_DATA.md` has the
   registry, the per-game tables and adding a game.
-- **Pre-DE documents are read-only.** A FileHeader-version-2 file (Age of
-  Kings, The Conquerors and HD Edition `.scn`/`.scx`,
-  `LoadedScenario.source_format.legacy`) opens for viewing only.
-  `scenario_write.refuse_legacy()` raises `LegacyFormatReadOnly` (a
-  `WriteBlockedError`) in `write_scenario()`, `build_patched_body()`,
-  `build_patched()`, `tools/strip_units.py` and `tools/gen_blank_template.py`
-  (the fixture generators splice only fixed DE donors). Any new direct
-  writer of a file a user names must call it too. `docs/SCENARIO_IO.md` "Older formats" has the detail.
+- **Pre-DE documents save only their band's allowed edit families.** A
+  FileHeader-version-2 file (Age of Empires, Rise of Rome, Age of Kings, The
+  Conquerors and HD Edition `.scn`/`.scx`, UserPatch `.scx2`,
+  `LoadedScenario.source_format.legacy`)
+  saves back to its own format only the families `legacy_write.ALLOWED`
+  gives its band (terrain, elevation, Messages text, diplomacy stances; a
+  band gains one only once its oracle pair opened in that game). Enforced in
+  `scenario_write.build_patched()`, which raises `LegacyEditNotAllowed` (a
+  `WriteBlockedError`) for any other kind of edit and for a changed tile
+  outside the band's corpus-measured terrain ids or elevation;
+  `check_destination()` refuses an `.aoe2scenario` name for one. The band
+  decides under the file's own game's data, the view-only Age of Kings /
+  The Conquerors game's included, as under its stand-in's.
+  `legacy_write._allow_for_oracle()` is for `tools/legacy_oracle_pairs.py`
+  and tests only. `refuse_legacy()` (`LegacyFormatReadOnly`) still raises in
+  resize, Convert to Version, `_patch_header_trigger_count()`,
+  `tools/strip_units.py` and `tools/gen_blank_template.py` (the fixture
+  generators splice only fixed DE donors). Any new writer of a file a user
+  names calls it too, unless it writes `build_patched()`'s result as is
+  (`write_scenario()`): one that reshapes that result, as resize and Convert
+  to Version do, still refuses. Conversion
+  (`legacy_convert.convert()`) only reads a legacy document and writes a new
+  one built from the DE blank template, and refuses an Age of Empires one
+  (`scenario_format.converts()`). `docs/SCENARIO_IO.md` "Older formats" has the detail.
+  Likewise a newer version open in compatibility mode is a proxy that only
+  `scenario_compat.write_compat()` may write: a new writer calls
+  `scenario_write.refuse_compat()` (`docs/WRITE_RULES.md`).
 - **The exceptions to "verbatim".** This list is
   exhaustive: every other write path stays verbatim as above, and each
   exception that goes through a model method raises rather than silently
@@ -61,15 +88,17 @@ scope.
   - *Region turn's unit images* (GH #197): `region_transform.transform_block()`,
     new units only, the eight D4 elements only; `tests/test_region_transform.py`.
   - *Selection transform's in-place unit images* (TASK-256):
-    `region_transform.plan_in_place()` plus the three setters' own guards,
+    `region_transform.plan_in_place()` plus the four setters' own guards,
     a gate's carried corner piece taking `corner_piece()` of its gate's
-    image; `tests/test_region_transform.py`.
+    image, a DE bridge piece's frame (TASK-705) written by `set_variant()`;
+    `tests/test_region_transform.py`.
   - *Map mirroring's unit images*: `mirror_tools.plan_mirror_units()`, new
     units only, no model guard; `tests/test_mirror_units.py`.
   - *Cycle Variant*: `UnitEditModel.set_variant()`, cyclable consts only
     (`descape/unit_variant.py`), never a wall, cliff or gate;
     `tests/test_unit_variant.py`, `tests/test_unit_model.py`. A script's
-    `editor.set_variant()` is a caller, under the same guard. The particle
+    `editor.set_variant()` and the Selection transform's DE bridge piece
+    frame (`bridge_piece_frames`) are callers, under the same guard. The particle
     waterfalls (896, 1635, 2598) are cyclable, their variants being their
     effect's `ImageAngles` runs; their 4 corpus placements store literal indices.
   - *Wall shapes re-derived from neighbours*:
@@ -89,6 +118,11 @@ scope.
     `tests/test_scripting.py`.
   - *Terrain planting's variant*: `terrain_units.variant_for()`;
     `tests/test_terrain_units.py`.
+  - *Convert to .aoe2scenario's unit images* (GH #315):
+    `legacy_convert.plan_units()`, new units in a new document only (through
+    `UnitEditModel.import_units()`, which refuses a document that had units),
+    the rule table only (`unit_rule()`); `tests/test_legacy_convert.py`,
+    `tests/test_legacy_convert_oracle.py`.
 - Gates carry no rotation at all: every visible gate const has
   `angle_count == 1`, and a gate's orientation lives in its `unit_const`,
   one const per orientation, so "rotating" a gate means swapping the const
@@ -99,8 +133,10 @@ scope.
   that is draw-only too, and orientation, footprint and `set_unit_const()`
   stay on the placed const. The render draws a wall with at most one
   neighbour as the tower whatever its stored index, and every wall of a
-  radian-encoded file by its neighbours (`unit_sprites.wall_drawn_shape()`);
-  that is draw-only too, and no write path may use it.
+  radian-encoded file by its neighbours (`unit_sprites.wall_drawn_shape()`),
+  and a pre-DE file's trees with the variant AoE2:DE's importer gives them
+  (`legacy_import.drawn_rotation_overrides()`); those are draw-only too, and
+  no write path may use them.
 - **The two exceptions to "a placed unit's `unit_const` never changes".**
   `UnitEditModel.set_unit_const()` and
   `UnitEditModel.replace_type()` are the only code anywhere that may change an
@@ -110,8 +146,9 @@ scope.
   - `replace_type()`: Edit > Find and Replace only (GH #144), refusals in
     `replace_refusal()`; `tests/test_unit_replace_type.py`.
   - `set_unit_const()`: a gate's four orientation siblings, or a
-    non-square object's (bridge, chain, longhouse, blocker) own siblings,
-    only (`descape/gate_orientation.py`, `descape/object_orientation.py`),
+    non-square object's (bridge, chain, longhouse, blocker) or a 1x1
+    wooden bridge's own siblings, only (`descape/gate_orientation.py`,
+    `descape/object_orientation.py`),
     including a gate's 1x1 corner piece, which a turn carrying it gives its
     gate's orientation (`placement_rules.companion_landing()`),
     re-anchored on the footprint's low corner; `tests/test_unit_model.py`,
@@ -135,12 +172,15 @@ scope.
   unloads and is always allowed. Type and capacity are not model rules: every
   UI path checks them through `garrison.refusal()`, and so does a script's
   `editor.garrison()`, so only a batch script stays unvalidated, as with
-  `add()`. Clipboard paste (a region or copied units) and `add()` set the
-  field at construction only.
+  `add()`. Clipboard paste (a region or copied units), `add()` and
+  `import_units()` (GH #315) set the field at construction only.
 - **A new unit's `reference_id` is minted by `UnitEditModel.add()`**, except
   a same-document paste of a Unit Cut, which hands `add(reference_id=)` each
   cut unit's own id; `add()` raises for an id a live unit holds or one at or
-  past its mint counter, and the `editor` facade passes none;
+  past its mint counter, and the `editor` facade passes none. Convert to
+  .aoe2scenario (GH #315) keeps a legacy file's ids through
+  `import_units()`, which fills an empty document once and raises for a
+  negative, repeated or dangling id;
   `tests/test_unit_model.py`, `tests/test_region_clipboard.py`,
   `tests/test_unit_clipboard_viewer.py`.
 - **Code run against the open scenario (a script or an addon command,

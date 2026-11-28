@@ -218,7 +218,7 @@ class TriggerDiffRecord(DiffRecord):
         if triggers is None:
             raise RuntimeError(
                 f"Undo record {self.label!r} is a trigger edit, but no TriggerEditModel "
-                f"was passed -- refusing to move the cursor past an edit that cannot be "
+                f"was passed: refusing to move the cursor past an edit that cannot be "
                 f"restored"
             )
 
@@ -286,7 +286,7 @@ class OptionsDiffRecord(DiffRecord):
         if options is None:
             raise RuntimeError(
                 f"Undo record {self.label!r} is a map-option edit, but no OptionsEditModel "
-                f"was passed -- refusing to move the cursor past an edit that cannot be "
+                f"was passed: refusing to move the cursor past an edit that cannot be "
                 f"restored"
             )
 
@@ -353,7 +353,7 @@ class UnitDiffRecord(DiffRecord):
         if units is None:
             raise RuntimeError(
                 f"Undo record {self.label!r} is a unit edit, but no UnitEditModel "
-                f"was passed -- refusing to move the cursor past an edit that cannot be "
+                f"was passed: refusing to move the cursor past an edit that cannot be "
                 f"restored"
             )
 
@@ -410,7 +410,7 @@ class MessagesDiffRecord(DiffRecord):
         if messages is None:
             raise RuntimeError(
                 f"Undo record {self.label!r} is a Messages mode edit, but no MessagesEditModel "
-                f"was passed -- refusing to move the cursor past an edit that cannot be "
+                f"was passed: refusing to move the cursor past an edit that cannot be "
                 f"restored"
             )
 
@@ -919,7 +919,7 @@ class EditHistory:
         the same no-phantom-record rule commit_stroke() already enforces for
         a no-op stroke."""
         if not record.children:
-            raise ValueError("push_composite_record() called with no children -- push nothing instead")
+            raise ValueError("push_composite_record() called with no children: push nothing instead")
         self._push(record)
 
     def apply(self, label: str, tiles: Sequence, mutate_fn: Callable[[], None]) -> list[int]:

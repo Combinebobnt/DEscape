@@ -740,6 +740,14 @@ except SystemExit as e:
 """
 
 
+def _child_report(proc, crash_dir: Path) -> str:
+    # main()'s crash hooks send a traceback to crash_dir, not stderr, so show those files too.
+    parts = [f"returncode {proc.returncode}", f"stdout tail:\n{proc.stdout[-2000:]}", f"stderr tail:\n{proc.stderr[-2000:]}"]
+    dumps = sorted(crash_dir.glob("*")) if crash_dir.is_dir() else []
+    parts.extend(f"{path.name}:\n{path.read_text(encoding='utf-8', errors='replace')[-4000:]}" for path in dumps)
+    return "\n".join(parts)
+
+
 @pytest.mark.gui
 def test_main_applies_a_staged_import_before_the_first_settings_read(tmp_path) -> None:
     """A staged import whose theme differs, then a fresh `viewer.main()` in its own process.
@@ -759,8 +767,9 @@ def test_main_applies_a_staged_import_before_the_first_settings_read(tmp_path) -
     _stage(tmp_path, _doc({"theme": "high_contrast_light", "theme_colors": {"highlight": "#123456"}}))
 
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_QPA_PLATFORMTHEME="", XDG_CONFIG_HOME=str(tmp_path / "xdg"))
+    # Unbuffered, so a child that dies still shows what it printed (TASK-697).
     proc = subprocess.run(
-        [sys.executable, "-c", _STARTUP_PROBE, str(_config())],
+        [sys.executable, "-u", "-X", "faulthandler", "-c", _STARTUP_PROBE, str(_config())],
         cwd=Path(__file__).resolve().parent.parent,
         env=env,
         check=False,
@@ -769,7 +778,7 @@ def test_main_applies_a_staged_import_before_the_first_settings_read(tmp_path) -
         timeout=300,
     )
     out = dict(line.split(" ", 1) for line in proc.stdout.splitlines() if line.startswith(("HIGHLIGHT ", "WINDOW ", "STATUS ", "EXIT ")))
-    assert out.get("EXIT") == "0", proc.stderr[-2000:]
+    assert out.get("EXIT") == "0" and proc.returncode == 0, _child_report(proc, _config().parent / "crashes")
     assert out["HIGHLIGHT"] == "#123456"
     assert out["WINDOW"] == themes.PRESETS["high_contrast_light"][1]["window"]
     assert out["STATUS"].startswith("Settings imported from")
@@ -816,10 +825,13 @@ def _save_to(monkeypatch, path: Path) -> None:
 _LOCAL_KEY_WORDS: dict[str, str | None] = {
     "aoe2de_install": "folder paths",
     "aoe2de_profile": "folder paths",
+    "aoc_install": "folder paths",
+    "hd_install": "folder paths",
     "autosave_dir": "folder paths",
     "recent_files": "recent files",
     "new_map": "New Map dialog's last choices",
     "data_mod_by_scenario": "Data Mod",
+    "saved_views": "Saved Views",
     "window_size": "window",
     "window_state": "window",
     "split_sizes": "window",
@@ -827,7 +839,7 @@ _LOCAL_KEY_WORDS: dict[str, str | None] = {
     "objectives_columns": "window",
     "xwayland_on_wayland": "X11 compatibility on Wayland",
     settings_file.IMPORT_APPLIED_KEY: None,
-    # No menu writes these yet; the guide names them once Tools > Scripts and Addons exist.
+    # Consent records the "Run script?" and "Run addon?" boxes write, not settings any page shows.
     "confirmed_scripts": None,
     "confirmed_addons": None,
 }

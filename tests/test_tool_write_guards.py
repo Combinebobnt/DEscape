@@ -197,3 +197,15 @@ def test_strip_units_refuses_a_file_in_a_linked_subscribed_folder(tmp_path, monk
         module.main()
     assert (real / "map.aoe2scenario").read_bytes() == before
     assert [p.name for p in real.iterdir()] == ["map.aoe2scenario"]
+
+
+@conftest.requires_symlinks
+def test_legacy_oracle_pairs_refuses_a_linked_subscribed_folder(tmp_path, monkeypatch) -> None:
+    real, link = _linked_subscribed_dir(tmp_path)
+    module = conftest.load_verify_module("legacy_oracle_pairs")
+    source = str(conftest.ROOT / "tests" / "fixtures" / "blank_120x120_v158.aoe2scenario")
+    monkeypatch.setattr(sys, "argv", ["legacy_oracle_pairs", source, "--out", str(link / "out")])
+
+    with pytest.raises(WriteBlockedError):
+        module.main()
+    assert list(real.iterdir()) == []

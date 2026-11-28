@@ -227,7 +227,7 @@ def _raw_unit_blobs(loaded: LoadedScenario) -> list[list[bytes]]:
     and the last player's end is players_units_end."""
     spans = loaded.unit_spans
     if spans is None:
-        raise UnitEditsUnavailableError("This load recorded no unit spans -- refusing to construct an edit model")
+        raise UnitEditsUnavailableError("This load recorded no unit spans: refusing to construct an edit model")
     body = loaded.decompressed_body
     offset = loaded.units_block_offset
     blobs: list[list[bytes]] = []
@@ -237,7 +237,7 @@ def _raw_unit_blobs(loaded: LoadedScenario) -> list[list[bytes]]:
         for start, length in player_spans:
             if start != offset:
                 raise UnitEditsUnavailableError(
-                    f"Unit span starts at {start}, expected {offset} -- refusing to construct an edit model"
+                    f"Unit span starts at {start}, expected {offset}: refusing to construct an edit model"
                 )
             player_blobs.append(body[start : start + length])
             offset += length
@@ -245,7 +245,7 @@ def _raw_unit_blobs(loaded: LoadedScenario) -> list[list[bytes]]:
     if offset != loaded.players_units_end:
         raise UnitEditsUnavailableError(
             f"Units section walk landed at {offset}, expected players_units_end "
-            f"{loaded.players_units_end} -- refusing to construct an edit model"
+            f"{loaded.players_units_end}: refusing to construct an edit model"
         )
     return blobs
 
@@ -268,7 +268,7 @@ def _check_all_units_reproduce(blobs_by_player, entries_by_player) -> None:
                 ref_id = entry.retriever_map["reference_id"].data
                 raise UnitEditsUnavailableError(
                     f"Unit reference_id {ref_id} does not reproduce its original bytes "
-                    f"({len(produced)} vs {len(raw)} bytes) -- refusing to construct an "
+                    f"({len(produced)} vs {len(raw)} bytes): refusing to construct an "
                     f"edit model for this file"
                 )
 
@@ -295,7 +295,7 @@ def _check_all_units_encode(unit_format, blobs_by_player) -> None:
                 fields = dict(zip(unit_format.names, values or (), strict=False))
                 raise UnitEditsUnavailableError(
                     f"Unit reference_id {fields.get('reference_id')} does not reproduce its original bytes "
-                    f"({len(produced)} vs {len(raw)} bytes) -- refusing to construct an "
+                    f"({len(produced)} vs {len(raw)} bytes): refusing to construct an "
                     f"edit model for this file"
                 )
 
@@ -664,7 +664,7 @@ class UnitEditModel:
         if loaded.number_of_unit_sections != 9:
             raise UnitEditsUnavailableError(
                 f"This file has {loaded.number_of_unit_sections} unit sections, expected "
-                f"9 (GAIA + 8 players) -- refusing to construct an edit model for an "
+                f"9 (GAIA + 8 players): refusing to construct an edit model for an "
                 f"unfamiliar layout"
             )
 
@@ -676,7 +676,7 @@ class UnitEditModel:
             if len(units) != len(blobs):
                 raise UnitEditsUnavailableError(
                     f"Player {player} has {len(units)} parsed units but {len(blobs)} raw "
-                    f"unit spans -- refusing to construct an edit model"
+                    f"unit spans: refusing to construct an edit model"
                 )
 
         codec = scenario_io.unit_codec(loaded)
@@ -714,6 +714,7 @@ class UnitEditModel:
         self._next_unit_id = _NEXT_UNIT_ID_STRUCT.unpack_from(loaded.decompressed_body, 0)[0]
         self._dirty = False
         self._has_added_units = False
+        self._had_units_at_build = any(manager.units)  # import_units()'s scope (GH #315)
         # Set only between begin_unit_edit() and commit/abort -- the
         # pre-mutation snapshot of the player list(s) the caller declared
         # this edit may touch. A UnitFieldSnapshot between a fields_only=True
@@ -792,7 +793,7 @@ class UnitEditModel:
         entry = self._pos_hit(unit)
         if entry is not None:
             return entry
-        raise ValueError("unit is not tracked by this model -- was it added through it?")
+        raise ValueError("unit is not tracked by this model. Was it added through it?")
 
     def _build_garrison_map(self) -> dict[int, list]:
         """garrisoned_in_id -> the units carrying it, in the same nine-list
@@ -919,7 +920,7 @@ class UnitEditModel:
         if isinstance(self._pending, UnitFieldSnapshot):
             raise RuntimeError(
                 f"{op}() changes unit membership/order and cannot run inside a fields_only "
-                f"unit edit -- only set_position/set_rotation/set_unit_const/replace_type/"
+                f"unit edit. Only set_position/set_rotation/set_unit_const/replace_type/"
                 f"set_status/set_capture_flag/set_wall_variant may"
             )
 
@@ -999,7 +1000,7 @@ class UnitEditModel:
         if not unit_rotation.rotation_is_angle(unit.unit_const):
             raise ValueError(
                 f"unit_const {unit.unit_const} stores a graphic-variant index in `rotation`, "
-                f"not an angle ({unit_rotation.semantics_for(unit.unit_const)}) -- refusing to "
+                f"not an angle ({unit_rotation.semantics_for(unit.unit_const)}): refusing to "
                 f"transform it"
             )
         player, index = self._locate(unit)
@@ -1020,12 +1021,14 @@ class UnitEditModel:
         value derived from those neighbours goes through set_wall_variant()
         or set_cliff_frame() instead. On a unit_variant.frame_follows_variant()
         const (AoE2 type 10) `initial_animation_frame` takes the same index, as
-        the game stores it; every other const keeps its stored frame.
+        the game stores it; every other const keeps its stored frame. The
+        Selection transform is a caller too, for a DE bridge piece's turned
+        frame (mirror_tools.reorient_piece_frame(), TASK-705).
         """
         if not unit_variant.is_cyclable(unit.unit_const):
             raise ValueError(
                 f"unit_const {unit.unit_const} has no cyclable graphic variants "
-                f"({unit_rotation.semantics_for(unit.unit_const)}) -- refusing to transform it"
+                f"({unit_rotation.semantics_for(unit.unit_const)}): refusing to transform it"
             )
         follows = unit_variant.frame_follows_variant(unit.unit_const)
         if follows and rotation != int(rotation):
@@ -1109,7 +1112,7 @@ class UnitEditModel:
         if not unit_sprites.rotation_variant_eligible(unit.unit_const):
             raise ValueError(
                 f"unit_const {unit.unit_const} is not one of the wall consts whose `rotation` is "
-                f"a neighbour-derived shape index -- refusing to transform it"
+                f"a neighbour-derived shape index: refusing to transform it"
             )
         if index not in range(5):
             raise ValueError(f"wall variant index must be 0..4, got {index!r}")
@@ -1147,7 +1150,7 @@ class UnitEditModel:
         if unit.unit_const not in unit_sprites.cliff_consts():
             raise ValueError(
                 f"unit_const {unit.unit_const} is not a cliff const whose `rotation` is a "
-                f"neighbour-derived shape frame -- refusing to transform it"
+                f"neighbour-derived shape frame: refusing to transform it"
             )
         limit = min(24, cliff_catalog.frame_count(unit.unit_const))
         if frame not in range(limit):
@@ -1161,7 +1164,7 @@ class UnitEditModel:
         self._bump_unit_gen(self._own_index())
 
     def set_unit_const(self, unit: Unit, new_const: int) -> None:
-        """Swaps a gate's or a non-square object's `unit_const` for one of its
+        """Swaps a gate's or an object's `unit_const` for one of its own
         orientation siblings and re-anchors x/y so the footprint keeps the low
         corner it had.
 
@@ -1185,6 +1188,8 @@ class UnitEditModel:
         0.0 or the junk sentinel 7.0 and every sibling has angle_count == 1,
         so normalizing it here would be exactly the violation the hard rule
         names. A longhouse's index is a roof style its two orientations share.
+        A DE bridge piece's frame is its end (TASK-705): the Selection
+        transform writes the turned one right after, through set_variant().
         """
         siblings = gate_orientation.orientation_siblings(unit.unit_const)
         if siblings is None:
@@ -1192,7 +1197,7 @@ class UnitEditModel:
         if siblings is None or new_const not in siblings:
             raise ValueError(
                 f"unit_const {unit.unit_const} cannot become {new_const}: a placed unit's const "
-                f"may only change among a gate's or a non-square object's own orientation siblings "
+                f"may only change among a gate's or an object's own orientation siblings "
                 f"({siblings if siblings is not None else 'this const has none'})"
             )
         player, index = self._locate(unit)
@@ -1630,6 +1635,49 @@ class UnitEditModel:
         self._bump_unit_gen(own, lambda ix: ix.added(units))
         return units
 
+    def import_units(self, lists: Sequence[Sequence[dict]], next_unit_id: int) -> list[list[Unit]]:
+        """Convert to .aoe2scenario's whole-document fill (GH #315): nine lists
+        (GAIA..P8) of new_unit() keyword dicts, each carrying its own
+        `reference_id`, appended in order. The only add path that keeps given
+        ids, so it refuses outside its scope: a document that had units at
+        construction, a second call, a negative or repeated id, or a
+        garrison link to itself or to an id outside the imported set. The counter becomes
+        max(next_unit_id, highest id + 1), so later adds never collide."""
+        self._refuse_inside_field_delta("import_units")
+        if len(lists) != 9:
+            raise ValueError(f"import_units() takes 9 player lists, got {len(lists)}")
+        if self._had_units_at_build or self._has_added_units or any(self._tracked) or any(self.loaded.unit_manager.units):
+            raise ValueError("import_units() fills an empty document only")
+        ids = [spec["reference_id"] for specs in lists for spec in specs]
+        if any(not isinstance(i, int) or i < 0 for i in ids) or len(set(ids)) != len(ids):
+            raise ValueError("import_units() needs unique non-negative reference_ids")
+        known = set(ids)
+        bad = [
+            s["reference_id"]
+            for specs in lists
+            for s in specs
+            if s.get("garrisoned_in_id", -1) not in known | {-1} or s.get("garrisoned_in_id") == s["reference_id"]
+        ]
+        if bad:
+            raise ValueError(f"import_units(): garrison links to the unit itself or outside the imported units on {bad[:5]}")
+        library_compat.depoison()
+        uuid = self.loaded._scenario.uuid
+        out = []
+        for player, specs in enumerate(lists):
+            units = [new_unit(uuid, player, depoison=False, **spec) for spec in specs]
+            self.loaded.unit_manager.units[player].extend(units)
+            self._blobs[player].extend([None] * len(units))
+            self._tracked[player].extend(units)
+            out.append(units)
+        self._rebuild_pos()
+        self._garrison = None
+        self._live_ref_ids = None
+        self._highest_ref_id = max(ids, default=0)
+        self._next_unit_id = max(next_unit_id, self._highest_ref_id + 1, self._next_unit_id)
+        self._dirty = self._has_added_units = True
+        self._bump_unit_gen()
+        return out
+
     def remove_many(self, units: Sequence[Unit]) -> None:
         """Batch counterpart to remove(): builds the whole batch's garrison-
         reference set once, then deletes the batch from each touched player's
@@ -1662,7 +1710,7 @@ class UnitEditModel:
         if referencing:
             raise UnitEditsUnavailableError(
                 f"{len(units)} unit(s) in this batch are referenced by garrisoned_in_id on "
-                f"{len(referencing)} other unit(s) -- refusing to remove any of them"
+                f"{len(referencing)} other unit(s): refusing to remove any of them"
             )
 
         by_index = self._removal_indices(units) if len(to_remove) <= _REMOVE_BY_INDEX_MAX else None
@@ -1740,7 +1788,7 @@ class UnitEditModel:
         if referencing:
             raise UnitEditsUnavailableError(
                 f"Unit reference_id {unit.reference_id} is referenced by garrisoned_in_id "
-                f"on {len(referencing)} other unit(s) -- refusing to remove it"
+                f"on {len(referencing)} other unit(s): refusing to remove it"
             )
         own = self._own_index()
         del self.loaded.unit_manager.units[player][index]
@@ -1981,7 +2029,7 @@ class UnitEditModel:
             raise RuntimeError(
                 "The unit lists changed behind the model's back (e.g. via the banned "
                 "`unit.player = ...` setter, or UnitManager.add_unit/remove_unit/"
-                "change_ownership) -- every blob's index mapping is untrustworthy"
+                "change_ownership), so every blob's index mapping is untrustworthy"
             )
         self._check_derived()
 
@@ -2105,7 +2153,7 @@ class UnitEditModel:
                 if len(entries) != len(blobs):
                     raise RuntimeError(
                         f"Player {player}: committed {len(entries)} unit structs but the "
-                        f"model tracks {len(blobs)} blobs -- an operation bypassed the "
+                        f"model tracks {len(blobs)} blobs: an operation bypassed the "
                         f"model's own API"
                     )
                 # The commit re-slotted every unit. A no-op since 0.9.3 links

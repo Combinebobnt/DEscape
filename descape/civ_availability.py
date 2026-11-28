@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 from AoE2ScenarioParser.datasets.effects import EffectId
 
-from descape import civ_art, command_buttons, data_mod_side, disables_fields, games
+from descape import civ_art, command_buttons, data_mod_side, disables_fields, game_dataset, games
 from descape.command_buttons import TECH, UNIT
 
 Item = tuple[int, str]
@@ -110,7 +110,7 @@ MISSING_START = "start"
 # Whether a later start age's generic techs were measured in the game (module docstring).
 _START_TECHS_MEASURED = games.PerGame(
     "civ_availability: a later start age researches the earlier ages' generic techs (measured)",
-    {"aoe2": True, "ror": False},
+    {"aoe2": True, "ror": False, "aoc": False, "hd": False},
 )
 
 
@@ -145,7 +145,7 @@ def _player_value(loaded, player: int, field_id: str):
     if spec is None:
         return None
     try:
-        return player_fields.current_value(loaded, spec, player)
+        return player_fields.shown_value(loaded, spec, player)
     except (ValueError, IndexError, AttributeError, TypeError):  # TypeError: a value neither int nor str
         return None
 
@@ -173,8 +173,8 @@ def start_age_text(start_age: int | None, civ_value: object = None) -> str:
 def player_civ(loaded, player: int) -> int | None:
     """The .dat civ index `player` plays, or None for a random, unset or
     unknown civilization. The civilization, never the architecture, read
-    with the file's own game's civ tokens (civ_art.player_art() does the same)."""
-    return civ_art.civ_index(player_civ_value(loaded, player), games.for_scenario(loaded))
+    with the file's game's civ tokens (game_dataset.file_game(); civ_art.player_art() does the same)."""
+    return civ_art.civ_index(player_civ_value(loaded, player), game_dataset.file_game(loaded))
 
 
 def civ_name(loaded, player: int) -> str:

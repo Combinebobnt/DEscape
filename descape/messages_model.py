@@ -23,12 +23,16 @@ from __future__ import annotations
 
 import struct
 
+from descape import legacy_write
 from descape.messages_fields import (
     MAX_FIELD_BYTES,
     MESSAGE_FIELDS,
     encode_for_write,
+    has_string_id,
     normalize_for_display,
     present_fields,
+    raw_payloads,
+    stored_text,
 )
 from descape.scenario_io import LoadedScenario
 
@@ -71,8 +75,8 @@ class MessagesEditModel:
     def __init__(self, loaded: LoadedScenario):
         if not loaded.messages_write_supported:
             raise MessageEditsUnavailableError(
-                "This file's Messages section failed its load-time verification -- "
-                "splicing would land at an offset that cannot be trusted."
+                "This file's Messages section failed its load-time verification. "
+                "Splicing would land at an offset that cannot be trusted."
             )
         self.loaded = loaded
 
@@ -83,13 +87,19 @@ class MessagesEditModel:
         self._original_id: dict[str, int] = {}
         self._pending_text: dict[str, str] = {}
         self._pending_id: dict[str, int] = {}
+        # A pre-DE file's stored bytes per field (TASK-520): an untouched field writes them verbatim,
+        # an edited one keeps its trailing NUL.
+        self._legacy = legacy_write.is_legacy(loaded)
+        self._raw = raw_payloads(loaded) if self._legacy else {}
+        self._header_nul = False
 
         for spec in self.fields:
-            text = retriever_map[spec.retriever].data
+            text = stored_text(loaded, spec, self._raw)
             display, newline_token = normalize_for_display(text)
             self._original_text[spec.field_id] = display
             self._original_newline[spec.field_id] = newline_token
-            self._original_id[spec.field_id] = retriever_map[spec.id_retriever].data
+            if has_string_id(spec, retriever_map):
+                self._original_id[spec.field_id] = retriever_map[spec.id_retriever].data
 
         self._header_sync_verified = self._check_header_sync(retriever_map)
 
@@ -107,6 +117,10 @@ class MessagesEditModel:
         header_retriever = self.loaded._scenario.sections["FileHeader"].retriever_map[
             "scenario_instructions"
         ]
+        if self._legacy:
+            stored = self.loaded.header_bytes[start:end]
+            self._header_nul = stored.endswith(b"\x00")
+            return _strip_one_trailing_nul(stored) == _strip_one_trailing_nul(self._raw[_INSTRUCTIONS_FIELD_ID])
         header_value = header_retriever.data
         if not isinstance(header_value, str):
             return False
@@ -122,6 +136,11 @@ class MessagesEditModel:
     @property
     def has_edits(self) -> bool:
         return bool(self._pending_text) or bool(self._pending_id)
+
+    def pending_kinds(self) -> set[str]:
+        """legacy_write's kinds for a pre-DE save: the text, or the string-table ids."""
+        kinds = {legacy_write.MESSAGES} if self._pending_text else set()
+        return kinds | {"string ids"} if self._pending_id else kinds
 
     def original_value(self, field_id: str):
         if field_id in self._original_text:
@@ -154,8 +173,10 @@ class MessagesEditModel:
         """
         if field_id in self._original_text:
             newline_token = self._original_newline[field_id]
-            encoded = encode_for_write(value, newline_token)  # raises ValueError
-            original_encoded = encode_for_write(self._original_text[field_id], newline_token)
+            encoded = encode_for_write(value, newline_token, self._legacy)  # raises ValueError
+            if self._legacy and self._raw[field_id].endswith(b"\x00") and len(encoded) >= MAX_FIELD_BYTES:
+                raise ValueError(f"message text is {len(encoded)} bytes, over this field's {MAX_FIELD_BYTES - 1}-byte limit")
+            original_encoded = encode_for_write(self._original_text[field_id], newline_token, self._legacy)
             if encoded == original_encoded:
                 self._pending_text.pop(field_id, None)
             else:
@@ -179,19 +200,26 @@ class MessagesEditModel:
     # -- serialization ------------------------------------------------------
 
     def _encoded(self, field_id: str) -> bytes:
-        return encode_for_write(self.current_value(field_id), self._original_newline[field_id])
+        if not self._legacy:
+            return encode_for_write(self.current_value(field_id), self._original_newline[field_id])
+        raw = self._raw[field_id]
+        if field_id not in self._pending_text:
+            return raw
+        text = encode_for_write(self._pending_text[field_id], self._original_newline[field_id], True)
+        return text + b"\x00" if raw.endswith(b"\x00") else text
 
     def section_span(self) -> tuple[int, int]:
         return self.loaded.messages_section_start, self.loaded.messages_section_end
 
     def serialize(self) -> bytes:
-        """The whole 12-retriever Messages section (10 on Age of Kings): six <I string-table ids
-        in field order, then six <h-length-prefixed UTF-8 payloads in the
+        """The whole 12-retriever Messages section (10 on Age of Kings, 5 texts and no ids on
+        Age of Empires 1.15): six <I string-table ids in field order, then six <h-length-prefixed UTF-8 payloads in the
         same field order. Never delegates to AoE2ScenarioParser's own
         serializer -- see this module's docstring."""
         out = bytearray()
         for spec in self.fields:
-            out += _ID_STRUCT.pack(self.current_value(_id_field_id(spec.field_id)))
+            if spec.field_id in self._original_id:  # Age of Empires 1.15 stores none
+                out += _ID_STRUCT.pack(self.current_value(_id_field_id(spec.field_id)))
         for spec in self.fields:
             encoded = self._encoded(spec.field_id)
             out += _TEXT_LEN_STRUCT.pack(len(encoded))
@@ -212,6 +240,8 @@ class MessagesEditModel:
             return None
         payload_start, payload_end = self.loaded.header_instructions_span
         encoded = self._encoded(_INSTRUCTIONS_FIELD_ID)
+        if self._legacy:
+            encoded = _strip_one_trailing_nul(encoded) + (b"\x00" if self._header_nul else b"")
         if len(encoded) > MAX_FIELD_BYTES:
             raise ValueError("instructions text exceeds the field size limit")
         replacement = _HEADER_LEN_STRUCT.pack(len(encoded)) + encoded

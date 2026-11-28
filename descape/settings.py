@@ -25,6 +25,7 @@ from descape import (
     games,
     grid_overlay,
     iso_geometry,
+    saved_views,
     terrain_style,
     themes,
     tool_options,
@@ -1292,6 +1293,7 @@ ELEV_STEP_PCT_STEP = 25
 ELEV_STEP_PCT_STOPS = tuple(range(ELEV_STEP_PCT_MIN, ELEV_STEP_PCT_MAX + 1, ELEV_STEP_PCT_STEP))
 
 _elev_step_pct: int | None = None
+_sloped_elev_step_pct: int | None = None
 
 
 def snap_elev_step_pct(value: int) -> int:
@@ -1329,13 +1331,16 @@ def get_elev_step_pct() -> int:
             legacy_divisor = config.get("elev_step_divisor")
             if isinstance(legacy_divisor, int) and legacy_divisor > 0:
                 raw = 100 // legacy_divisor
-        # Gates on 1 <= raw <= MAX rather than snapping bare, so a nonsense
-        # value still falls back to the default instead of snapping to MAX.
-        if isinstance(raw, int) and 1 <= raw <= ELEV_STEP_PCT_MAX:
-            _elev_step_pct = snap_elev_step_pct(raw)
-        else:
-            _elev_step_pct = iso_geometry.ELEV_STEP_DEFAULT_PCT
+        _elev_step_pct = _snapped_or_default(raw, iso_geometry.ELEV_STEP_DEFAULT_PCT)
     return _elev_step_pct
+
+
+def _snapped_or_default(raw, default: int) -> int:
+    # Gates on 1 <= raw <= MAX rather than snapping bare, so a nonsense
+    # value still falls back to the default instead of snapping to MAX.
+    if isinstance(raw, int) and 1 <= raw <= ELEV_STEP_PCT_MAX:
+        return snap_elev_step_pct(raw)
+    return default
 
 
 def set_elev_step_pct(value: int) -> None:
@@ -1347,6 +1352,24 @@ def set_elev_step_pct(value: int) -> None:
     config = _load_config()
     config["elev_step_pct"] = value
     config.pop("elev_step_divisor", None)  # fully migrated once set through the new control
+    _save_config(config)
+
+
+def get_sloped_elev_step_pct() -> int:
+    """Sloped mode's own elev_step stop (GH #288), read like get_elev_step_pct() but
+    with no legacy key and iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT as its default."""
+    global _sloped_elev_step_pct
+    if _sloped_elev_step_pct is None:
+        raw = _load_config().get("sloped_elev_step_pct")
+        _sloped_elev_step_pct = _snapped_or_default(raw, iso_geometry.SLOPED_ELEV_STEP_DEFAULT_PCT)
+    return _sloped_elev_step_pct
+
+
+def set_sloped_elev_step_pct(value: int) -> None:
+    global _sloped_elev_step_pct
+    _sloped_elev_step_pct = snap_elev_step_pct(value)
+    config = _load_config()
+    config["sloped_elev_step_pct"] = _sloped_elev_step_pct
     _save_config(config)
 
 
@@ -2591,6 +2614,33 @@ def set_data_mod_for(path: Path, identity: dict | None) -> None:
     _save_config(config)
 
 
+# TASK-270: View > Saved Views per scenario file, keyed as above, most recently saved first.
+MAX_SAVED_VIEW_SCENARIOS = 50
+_saved_views: list | None = None
+
+
+def get_saved_views(path: Path) -> dict[int, saved_views.SavedView]:
+    """The saved camera views of the scenario at `path` (a copy), slot -> SavedView."""
+    global _saved_views
+    if _saved_views is None:
+        _saved_views = saved_views.clean_store(_load_config().get("saved_views"), MAX_SAVED_VIEW_SCENARIOS)
+    key = _scenario_key(path)
+    return next((dict(views) for k, views in _saved_views if k == key), {})
+
+
+def set_saved_views(path: Path, views: dict[int, saved_views.SavedView]) -> None:
+    """Stores `views` for `path` first in the list, capped; empty views forget it. Writes only on a change."""
+    global _saved_views
+    get_saved_views(path)
+    updated = saved_views.with_views(_saved_views, _scenario_key(path), views, MAX_SAVED_VIEW_SCENARIOS)
+    if updated == _saved_views:
+        return
+    _saved_views = updated
+    config = _load_config()
+    config["saved_views"] = saved_views.store_rows(updated)
+    _save_config(config)
+
+
 # File > New Map…'s last choices (GH #243), written by its dialog on OK, not
 # by Settings. Game data is a game id (GH #67).
 NEW_MAP_DEFAULT_TERRAIN_ID = 0
@@ -2749,6 +2799,7 @@ TOOLS: list[ToolDef] = [
         "draw", "Draw", stroke_label="Paint terrain", default_key="D",
         param_widget="terrain", supports_brush=True, modes=("terrain",),
     ),
+    ToolDef("spray", "Spray Can", stroke_label="Spray terrain", param_widget="terrain", supports_brush=True, modes=("terrain",)),
     ToolDef(
         "fill", "Paint Can", stroke_label="Fill terrain", default_key="P",
         click_only=True, param_widget="terrain", modes=("terrain",),
@@ -2779,6 +2830,14 @@ TOOLS: list[ToolDef] = [
         param_widget="terrain", supports_brush=True, drag_shape="rect",
         modes=("terrain",),
     ),
+    # Draw's stroke, writing only over tiles matching the press tile (GH #296,
+    # descape/terrain_replace.py). Beside the shapes to keep the Terrain block contiguous; unbound.
+    ToolDef(
+        "replace_brush", "Replace Brush", stroke_label="Replace terrain", default_key="",
+        param_widget="terrain", supports_brush=True, modes=("terrain",),
+    ),
+    # Ctrl+click sets a source, a drag copies its terrain and elevation (GH #285, descape/clone_stamp.py). Unbound.
+    ToolDef("clone", "Clone Stamp", stroke_label="Clone Stamp", param_widget="clone", supports_brush=True, modes=("terrain",)),
     # Track B Stage 1+2 of the 2026-09-05 cliffs plan. Terrain-mode, like the
     # four tools above. Shipped click_only for Stage 1 (one cliff per click),
     # then widened to a drag stroke for Stage 2's auto-connecting chain -- a
@@ -2913,6 +2972,7 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("file_save", "Save", "Ctrl+S"),
     ("file_save_as", "Save As", "Ctrl+Shift+S"),
     ("file_convert", "Convert to Version 1.59…", ""),
+    ("file_convert_legacy", "Convert to .aoe2scenario…", ""),
     # Autosave's recovery dialog opener. Unbound, like edit_settings below.
     ("file_recover_autosave", "Recover from Autosave…", ""),
     ("file_exit", "Exit", "Ctrl+Q"),
@@ -2940,6 +3000,9 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     # Unbound by default, like edit_settings below: both are dialog openers,
     # and the clipboard history is reached by menu rather than by reflex.
     ("edit_clipboard_history", "Clipboard History…", ""),
+    # TASK-269's prefab pair: the active entry saved for good, and the Prefabs tab. Unbound openers.
+    ("edit_save_prefab", "Save as Prefab…", ""),
+    ("edit_prefabs", "Prefabs…", ""),
     # GH #30's edit-history window. Unbound for the same reason as the dialog
     # openers either side of it, and kept inside the contiguous edit_* run so
     # _build_keybinds_tab emits no second "Edit" header.
@@ -3049,15 +3112,24 @@ REBINDABLE_ACTIONS: list[tuple[str, str, str]] = [
     ("view_pan_left", "Pan Left", "Left"),
     ("view_pan_right", "Pan Right", "Right"),
 ] + [
+    # TASK-270's View > Saved Views, right after the view_* run. All unbound: the digits are taken.
+    *((f"savedview_go_{n}", f"Go to View {n}", "") for n in saved_views.SLOTS),
+    *((f"savedview_save_{n}", f"Save View as {n}", "") for n in saved_views.SLOTS),
+    ("savedview_clear", "Clear Saved Views", ""),
+] + [
     (f"elevation_{style}", f"{terrain_style.label_for(style)} Elevation View", "")
     for style in terrain_style.TERRAIN_STYLES
 ] + [
+    # Tools > Launch in AoE2:DE (GH #4). Unbound: Ctrl+Space toggles IMEs, and a stray press starts a game.
+    ("launch_game", "Launch in AoE2:DE", ""),
     # Tools > Map Analysis. "analysis_", not "tools_": the Keybinds tab
     # titles a section by prefix and "tool" already means the toolbar tools.
     # Ships unbound, same reasoning as view_distance_ticks above.
     ("analysis_run", "Map Analysis", ""),
     # Tools > Scripts. "script_", not "tools_", for analysis_run's reason; ships unbound.
     ("script_open_folder", "Open Scripts Folder", ""),
+    # Tools > Addons, likewise.
+    ("addon_open_folder", "Open Addons Folder", ""),
     # GH #160's guide items and web links, in menu order, kept inside the contiguous help_*
     # run so _build_keybinds_tab emits no second "Help" header. F1 is the guide's alone;
     # a config that already binds F1 elsewhere keeps it (_reconcile_load_time_collisions).
@@ -3188,9 +3260,12 @@ KEYBIND_SECTION_TITLES: dict[str, str] = {
     "file": "File",
     "edit": "Edit",  # renamed from "Copy/Paste" -- now covers the whole Edit menu
     "map": "Map",
+    "launch": "Game Launch",
     "analysis": "Analysis",
     "script": "Scripts",
+    "addon": "Addons",
     "view": "View",
+    "savedview": "Saved Views",
     "elevation": "Elevation View",
     "help": "Help",
     "mode": "Modes",

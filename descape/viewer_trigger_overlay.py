@@ -290,7 +290,7 @@ class _ViewerTriggerOverlayMixin:
         manager = parse_triggers(loaded)
         if (
             manager is None
-            or not library_compat.vocabulary_is_available(loaded.scenario_version)
+            or not library_compat.vocabulary_is_available(loaded.vocabulary_version)
             or not 0 <= trigger_index < len(manager.triggers)
         ):
             return
@@ -298,7 +298,7 @@ class _ViewerTriggerOverlayMixin:
         if not 0 <= entry_index < len(entries):
             return
         entry = entries[entry_index]
-        vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+        vocabulary = library_compat.load_vocabulary(loaded.vocabulary_version)
         if kind == "condition":
             definitions, presentation, type_attribute = (
                 vocabulary.conditions, vocabulary.condition_presentation, "condition_type"
@@ -544,13 +544,13 @@ class _ViewerTriggerOverlayMixin:
         indices, emphasis = ref
         if (
             manager is None
-            or not library_compat.vocabulary_is_available(loaded.scenario_version)
+            or not library_compat.vocabulary_is_available(loaded.vocabulary_version)
             or not all(0 <= index < len(manager.triggers) for index in indices)
         ):
             self._trigger_overlay_ref = None
             self._clear_trigger_drawing()
             return []
-        vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+        vocabulary = library_compat.load_vocabulary(loaded.vocabulary_version)
         references = None if ghosts_only else self._unit_reference_index()
         shapes = []
         records: list[trigger_geometry.CreatedUnit] = []

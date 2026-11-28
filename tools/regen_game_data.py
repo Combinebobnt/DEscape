@@ -49,8 +49,12 @@ for --check). Regenerating: 0 written, 1 nothing written because a generator
 failed or --only was refused, 2 could not run.
 
 The install is --install, else the one DEscape itself is configured with
-(AOE2DE_INSTALL_PATH, then config.yaml). Table bytes are compared, hashed and
-written with CRLF folded to LF, so a Windows run agrees with an LF checkout.
+(AOE2DE_INSTALL_PATH, then config.yaml). The 1999 game reads --aoc-install
+(AOC_INSTALL_PATH, config.yaml's aoc_install) and HD Edition --hd-install
+(HD_INSTALL_PATH, config.yaml's hd_install; unused until hd is registered),
+never the AoE2:DE install. Table
+bytes are compared, hashed and written with CRLF folded to LF, so a Windows
+run agrees with an LF checkout.
 """
 
 from __future__ import annotations
@@ -79,12 +83,88 @@ from descape.content_roots import AOE2DE_STEAM_APP_ID
 TOOLS_DIR = ROOT / "tools"
 TABLES_DIR = ROOT / "descape"
 STAMP_PATH = TOOLS_DIR / "game_data_stamp.json"
-DAT_SUBPATH = Path("resources") / "_common" / "dat" / "empires2_x2_p1.dat"
+DAT_SUBPATH = Path(games.DE_DAT_SUBPATH)
+# The 1999 install: --aoc-install, else this variable, else config.yaml's AOC_INSTALL_KEY.
+AOC_INSTALL_ENV = "AOC_INSTALL_PATH"
+AOC_INSTALL_KEY = "aoc_install"
+# The 1999 install's files besides the .dat that a generator reads; the stamp records their sizes.
+AOC_INSTALL_FILES = tuple(
+    Path("Data") / name
+    for name in ("graphics.drs", "gamedata.drs", "gamedata_x1.drs", "gamedata_x1_p1.drs", "terrain.drs", "interfac.drs")
+)
+# HD Edition's install (TASK-431): --hd-install, else this variable, else config.yaml's HD_INSTALL_KEY.
+HD_INSTALL_ENV = "HD_INSTALL_PATH"
+HD_INSTALL_KEY = "hd_install"
+HD_STEAM_APP_ID = 221380
+# HD Edition's files besides the .dat that a generator reads (sizes), and its art and texture folders (counts
+# of the files a generator reads there: *.slp, *_00_color.png).
+HD_INSTALL_FILES = (
+    Path("resources/_common/drs/interface/50500.bina"),
+    Path("resources/_common/dat/blendomatic_x1.dat"),
+)
+HD_COUNTED_FOLDERS = tuple(
+    Path("resources/_common") / sub
+    for sub in ("drs/graphics", "drs/gamedata_x1", "drs/gamedata_x2", "terrain/textures")
+)
+DAT57_PATH = TOOLS_DIR / "_dat57.py"
 
 
-def dat_subpath(game: games.Game) -> Path:
-    """`game`'s .dat, relative to the install: DAT_SUBPATH under its own root."""
-    return DAT_SUBPATH if game.root_subpath is None else Path(game.root_subpath) / DAT_SUBPATH
+def dat_subpath(game: games.Game, install: Path | None = None) -> Path:
+    """`game`'s .dat, relative to its install: the first of Game.dat_subpaths
+    under its own root that `install` has, else the first."""
+    base = Path(game.root_subpath) if game.root_subpath is not None else Path()
+    candidates = [base / subpath for subpath in game.dat_subpaths]
+    if install is not None:
+        for candidate in candidates:
+            if (install / candidate).is_file():
+                return candidate
+    return candidates[0]
+
+
+def dat57_digest() -> str | None:
+    """sha256 of tools/_dat57.py, the 1999 .dat reader: what the stamp records in place of genieutils-py's version."""
+    try:
+        return hashlib.sha256(normalise(DAT57_PATH.read_bytes())).hexdigest()
+    except OSError:
+        return None
+
+
+def _configured_install(env: str, key: str, config_path: Path | None) -> Path | None:
+    """`env`, else config.yaml's `key`, as a folder. None when unset or not a folder."""
+    raw = os.environ.get(env)
+    if not raw:
+        import yaml
+
+        config_path = config_path if config_path is not None else asset_source.CONFIG_PATH
+        try:
+            config = yaml.safe_load(asset_source.read_config_text(config_path)) or {}
+        except (OSError, yaml.YAMLError):
+            return None
+        raw = config.get(key) if isinstance(config, dict) else None
+    path = Path(raw) if raw else None
+    return path if path is not None and path.is_dir() else None
+
+
+def aoc_install_path(config_path: Path | None = None) -> Path | None:
+    """The configured 1999 install: AOC_INSTALL_PATH, else config.yaml's aoc_install. None when unset or not a folder."""
+    return _configured_install(AOC_INSTALL_ENV, AOC_INSTALL_KEY, config_path)
+
+
+def hd_install_path(config_path: Path | None = None) -> Path | None:
+    """The configured HD Edition install: HD_INSTALL_PATH, else config.yaml's hd_install. None when unset or not a folder."""
+    return _configured_install(HD_INSTALL_ENV, HD_INSTALL_KEY, config_path)
+
+
+def install_for(
+    game: games.Game, de_install: Path | None, aoc_install: Path | None, hd_install: Path | None = None,
+) -> Path | None:
+    """The install `game`'s generators read: the 1999 one for its game, HD Edition's for its game,
+    the AoE2:DE one for every other. A game with its own install never falls to the AoE2:DE one."""
+    if game.install == games.AOC_INSTALL:
+        return aoc_install
+    if game.install == games.HD_INSTALL:
+        return hd_install
+    return de_install
 
 
 def tables_subdir(game: games.Game) -> Path:
@@ -136,13 +216,15 @@ def dat_fingerprint(install: Path, dat_subpath: Path = DAT_SUBPATH) -> dict[str,
     return {"sha256": digest.hexdigest(), "size": size}
 
 
-def steam_buildid(install: Path) -> str | None:
-    """The build id in the Steam library's app manifest, or None (a Store install has none)."""
+def steam_buildid(install: Path, app_id: int | None = AOE2DE_STEAM_APP_ID) -> str | None:
+    """The build id in the Steam library's manifest of `app_id`, or None (a Store install, or no app id)."""
+    if app_id is None:
+        return None
     resolved = install.resolve()
     for ancestor in (resolved, *resolved.parents):
         if ancestor.name == "steamapps":
             try:
-                text = (ancestor / f"appmanifest_{AOE2DE_STEAM_APP_ID}.acf").read_text(encoding="utf-8", errors="replace")
+                text = (ancestor / f"appmanifest_{app_id}.acf").read_text(encoding="utf-8", errors="replace")
             except OSError:
                 return None
             match = _BUILDID.search(text)
@@ -176,20 +258,49 @@ class Context:
     dat_subpath: Path = DAT_SUBPATH
     generator_args: tuple[str, ...] = ()
     stamp_key: str | None = None
+    # A _dat57 game's: its reader's stamp field (genieutils_version() then gives _dat57.py's sha256),
+    # its other files' sizes and its folders' file counts.
+    reader_key: str = "genieutils"
+    install_files: tuple[Path, ...] = ()
+    counted_folders: tuple[Path, ...] = ()
+    install_hint: str = "no AoE2:DE install visible: pass --install or set AOE2DE_INSTALL_PATH"
+    # The Steam app whose manifest holds the build id; None reads none.
+    steam_app_id: int | None = AOE2DE_STEAM_APP_ID
 
 
-def dataset_context(ctx: Context, dataset: str) -> Context:
-    """ctx for one game: the default game (aoe2) as given, any other under its
-    own folder of tables_dir (ror/) with its own .dat and stamp section."""
-    game = games.get(dataset)
+# Per install kind read by _dat57: (its other files, its counted folders, its Steam app, the flag and variable naming it).
+_DAT57_INSTALLS = {
+    games.AOC_INSTALL: (AOC_INSTALL_FILES, (), None, "--aoc-install", AOC_INSTALL_ENV),
+    games.HD_INSTALL: (HD_INSTALL_FILES, HD_COUNTED_FOLDERS, HD_STEAM_APP_ID, "--hd-install", HD_INSTALL_ENV),
+}
+
+
+def dataset_context(ctx: Context, dataset: str | games.Game, install: Path | None = None) -> Context:
+    """ctx for one game (an id, or a Game not yet registered): the default game (aoe2)
+    as given, any other under its own folder of tables_dir (ror/) with its own .dat and
+    stamp section, a game whose own install _dat57 reads with that reader and its install's
+    files. `install` picks among .dat candidates."""
+    game = dataset if isinstance(dataset, games.Game) else games.get(dataset)
     if game.id == games.DEFAULT_ID:
         return ctx
-    return replace(
+    ctx = replace(
         ctx,
         tables_dir=ctx.tables_dir / tables_subdir(game),
-        dat_subpath=dat_subpath(game),
+        dat_subpath=dat_subpath(game, install),
         generator_args=("--dataset", game.id),
         stamp_key=game.stamp_key,
+    )
+    if game.install not in _DAT57_INSTALLS:
+        return ctx
+    files, folders, app_id, flag, env = _DAT57_INSTALLS[game.install]
+    return replace(
+        ctx,
+        genieutils_version=dat57_digest if ctx.genieutils_version is genieutils_version else ctx.genieutils_version,
+        reader_key="dat57",
+        install_files=files,
+        counted_folders=folders,
+        steam_app_id=app_id,
+        install_hint=f"no {game.display_name} install visible: pass {flag} or set {env}",
     )
 
 
@@ -271,6 +382,16 @@ def stale_against_stamp(
     recorded_build = stamp.get("steam_buildid")
     if buildid is not None and recorded_build is not None and buildid != recorded_build:
         stale.append(f"steam_buildid: install {buildid}, stamp {recorded_build}")
+    if ctx.install_files:
+        recorded_files = stamp.get("install_files") if isinstance(stamp.get("install_files"), dict) else {}
+        for name, size in fingerprint.get("install_files", {}).items():
+            if recorded_files.get(name) != size:
+                stale.append(f"install_files.{name}: install {size}, stamp {recorded_files.get(name)}")
+    if ctx.counted_folders:
+        recorded_counts = stamp.get("folder_counts") if isinstance(stamp.get("folder_counts"), dict) else {}
+        for name, count in fingerprint.get("folder_counts", {}).items():
+            if recorded_counts.get(name) != count:
+                stale.append(f"folder_counts.{name}: install {count}, stamp {recorded_counts.get(name)}")
     tables = stamp.get("tables") if isinstance(stamp.get("tables"), dict) else {}
     registered = outputs_of(ctx.generators)
     for name in registered:
@@ -335,22 +456,43 @@ def _scratch_dir(keep: bool, out: Callable[[str], None]) -> Iterator[Path]:
 
 def _read_install(install: Path | None, ctx: Context) -> tuple[dict[str, object], str | None] | None:
     if install is None:
-        ctx.out("no AoE2:DE install visible: pass --install or set AOE2DE_INSTALL_PATH")
+        ctx.out(ctx.install_hint)
         return None
     fingerprint = dat_fingerprint(install, ctx.dat_subpath)
     if fingerprint is None:
         ctx.out(f"not found: {install / ctx.dat_subpath}")
         return None
-    buildid = steam_buildid(install)
+    buildid = steam_buildid(install, ctx.steam_app_id)
     ctx.out(f"install: {install}")
     ctx.out(f"  {ctx.dat_subpath.as_posix()}: sha256 {fingerprint['sha256']}, {fingerprint['size']} bytes")
     ctx.out(f"  Steam buildid: {buildid if buildid is not None else 'none (no steamapps app manifest)'}")
+    if ctx.install_files:
+        # Sizes only: the archives are ~100 MB and a patch changes their size.
+        sizes = {path.as_posix(): (install / path).stat().st_size if (install / path).is_file() else None for path in ctx.install_files}
+        fingerprint = {**fingerprint, "install_files": sizes}
+    if ctx.counted_folders:
+        # File counts only: a patch that adds art or textures changes them.
+        counts = {path.as_posix(): _file_count(install / path) for path in ctx.counted_folders}
+        fingerprint = {**fingerprint, "folder_counts": counts}
     return fingerprint, buildid
+
+
+def _file_count(folder: Path) -> int | None:
+    suffixes = (".slp", "_00_color.png")
+    try:
+        return sum(1 for entry in os.scandir(folder) if entry.is_file() and entry.name.lower().endswith(suffixes))
+    except OSError:
+        return None
+
+
+def _dat_part(fingerprint: dict[str, object]) -> dict[str, object]:
+    """The stamp's `dat` field: the fingerprint without the install files' sizes and folder counts."""
+    return {key: value for key, value in fingerprint.items() if key not in ("install_files", "folder_counts")}
 
 
 def _describe_stamp(stamp: dict | None, ctx: Context) -> None:
     if stamp is not None:
-        ctx.out(f"stamp: {_shown(ctx.stamp_path)}, refreshed {stamp.get('refreshed')}, genieutils-py {stamp.get('genieutils')}")
+        ctx.out(f"stamp: {_shown(ctx.stamp_path)}, refreshed {stamp.get('refreshed')}, {ctx.reader_key} {stamp.get(ctx.reader_key)}")
 
 
 def _stale_and_said(stamp: dict | None, seen: tuple[dict[str, object], str | None], ctx: Context) -> list[str]:
@@ -371,6 +513,9 @@ def _verdict(stale: list[str], ctx: Context) -> int:
 
 
 def _missing_genieutils(ctx: Context) -> int:
+    if ctx.reader_key != "genieutils":
+        ctx.out(f"{_shown(DAT57_PATH)} is missing, so no generator can read this .dat")
+        return EXIT_CANNOT
     ctx.out("genieutils-py is not installed, so no generator can run: pip install -r requirements-dev.txt")
     return EXIT_CANNOT
 
@@ -407,8 +552,8 @@ def check(install: Path | None, ctx: Context, *, keep: bool = False) -> int:
                 ctx.out(f"  {name}: {'identical' if same else 'differs'}")
                 if not same:
                     stale.append(f"{name}: differs from a fresh regeneration")
-    if stamp is not None and stamp.get("genieutils") != version:
-        ctx.out(f"note: this run used genieutils-py {version}, the stamp records {stamp.get('genieutils')}")
+    if stamp is not None and stamp.get(ctx.reader_key) != version:
+        ctx.out(f"note: this run used {ctx.reader_key} {version}, the stamp records {stamp.get(ctx.reader_key)}")
     return _verdict(stale, ctx)
 
 
@@ -458,17 +603,27 @@ def regenerate(install: Path | None, ctx: Context, *, only: Sequence[str] = (), 
     if only:
         # Only the regenerated tables' entries move: `refreshed` and the rest describe the full run.
         new_stamp = {**stamp, "tables": {**stamp.get("tables", {}), **hashes}}
-        if stamp.get("genieutils") != version:
-            ctx.out(f"note: this run used genieutils-py {version}, the stamp still records {stamp.get('genieutils')}")
+        if stamp.get(ctx.reader_key) != version:
+            ctx.out(f"note: this run used {ctx.reader_key} {version}, the stamp still records {stamp.get(ctx.reader_key)}")
     else:
-        same_build = stamp is not None and stamp.get("dat") == fingerprint and stamp.get("steam_buildid") == buildid
+        dat = _dat_part(fingerprint)
+        same_build = (
+            stamp is not None
+            and stamp.get("dat") == dat
+            and stamp.get("steam_buildid") == buildid
+            and stamp.get("install_files") == fingerprint.get("install_files")
+            and stamp.get("folder_counts") == fingerprint.get("folder_counts")
+        )
         new_stamp = {
-            "dat": fingerprint,
+            "dat": dat,
             "steam_buildid": buildid,
-            "genieutils": version,
+            ctx.reader_key: version,
             "refreshed": stamp["refreshed"] if same_build and stamp.get("refreshed") else ctx.today(),
             "tables": hashes,
         }
+        for key in ("install_files", "folder_counts"):
+            if key in fingerprint:
+                new_stamp[key] = fingerprint[key]
         if ctx.stamp_key is None:
             new_stamp["_comment"] = STAMP_COMMENT
     if new_stamp == stamp:
@@ -496,6 +651,20 @@ def main(argv: Sequence[str] | None = None, *, ctx: Context | None = None) -> in
     ctx = ctx if ctx is not None else Context()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--install", type=Path, help="AoE2:DE install root (default: the configured install)")
+    parser.add_argument(
+        "--aoc-install", type=Path,
+        help=(
+            f"The 1999 Age of Kings / The Conquerors install, for --dataset aoc "
+            f"(default: {AOC_INSTALL_ENV}, then config.yaml's {AOC_INSTALL_KEY})"
+        ),
+    )
+    parser.add_argument(
+        "--hd-install", type=Path,
+        help=(
+            f"The Age of Empires II: HD Edition install, for --dataset hd "
+            f"(default: {HD_INSTALL_ENV}, then config.yaml's {HD_INSTALL_KEY})"
+        ),
+    )
     parser.add_argument("--tables-dir", type=Path, help="Directory holding the tables (default: descape/)")
     parser.add_argument("--stamp", type=Path, help="The stamp file (default: tools/game_data_stamp.json)")
     mode = parser.add_mutually_exclusive_group()
@@ -526,21 +695,29 @@ def main(argv: Sequence[str] | None = None, *, ctx: Context | None = None) -> in
     )
     if regenerating and ctx.stamp_path.resolve() == STAMP_PATH.resolve() and ctx.tables_dir.resolve() != TABLES_DIR.resolve():
         parser.error("regenerating into --tables-dir needs --stamp too, or the repo's own stamp would describe tables kept elsewhere")
-    install = args.install if args.install is not None else asset_source.get_install_path()
+    de_install = args.install if args.install is not None else asset_source.get_de_install_path()
+    aoc_install = args.aoc_install if args.aoc_install is not None else aoc_install_path()
+    hd_install = args.hd_install if args.hd_install is not None else hd_install_path()
     datasets = list(games.ids()) if args.dataset == "all" else [args.dataset]
-    if args.dataset == "all" and install is not None:
+    if args.dataset == "all" and de_install is not None:
         # The default game's .dat is never skipped: without it the run reports that it cannot look.
-        default_dat = (install / dat_subpath(games.default())).is_file()
-        skipped = [g for g in games.GAMES if g.id != games.DEFAULT_ID and not (install / dat_subpath(g)).is_file()]
-        datasets = [dataset for dataset in datasets if dataset not in {g.id for g in skipped}]
+        default_dat = (de_install / dat_subpath(games.default())).is_file()
+        skipped = []
+        for game in games.GAMES:
+            install = install_for(game, de_install, aoc_install, hd_install)
+            if game.id != games.DEFAULT_ID and (install is None or not (install / dat_subpath(game, install)).is_file()):
+                skipped.append((game, install))
+        datasets = [dataset for dataset in datasets if dataset not in {g.id for g, _install in skipped}]
         left = "looking at the AoE2 tables only" if datasets == [games.DEFAULT_ID] else "skipping its tables"
-        for game in skipped if default_dat else ():
-            ctx.out(f"note: no {game.display_name} .dat at {install / dat_subpath(game)}: {left}")
+        for game, install in skipped if default_dat else ():
+            where = f"at {install / dat_subpath(game, install)}" if install is not None else "(no install set)"
+            ctx.out(f"note: no {game.display_name} .dat {where}: {left}")
     worst = EXIT_OK
     for dataset in datasets:
         if len(datasets) > 1:
             ctx.out(f"=== {games.get(dataset).display_name} ===")
-        dctx = dataset_context(ctx, dataset)
+        install = install_for(games.get(dataset), de_install, aoc_install, hd_install)
+        dctx = dataset_context(ctx, dataset, install)
         if args.status:
             result = status(install, dctx)
         elif args.check:

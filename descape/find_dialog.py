@@ -825,7 +825,7 @@ def _entry_label(hit: TriggerHit) -> str:
     if hit.kind == "trigger":
         return "Trigger"
     # 1-based display position, so it matches the entry's row and the status labels' "condition N".
-    return f"{hit.kind.title()} #{hit.display_slot + 1} {hit.entry_name.replace('_', ' ')}"
+    return f"{hit.kind.title()} #{hit.display_slot + 1} {hit.entry_label or hit.entry_name.replace('_', ' ')}"
 
 
 class _TriggersTab(QWidget):

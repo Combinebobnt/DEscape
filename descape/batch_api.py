@@ -35,13 +35,17 @@ fixed it.
 
 from __future__ import annotations
 
+import contextlib
+import random
+
 from AoE2ScenarioParser.datasets.buildings import BuildingInfo
 from AoE2ScenarioParser.objects.data_objects.terrain_tile import TerrainTile
 from AoE2ScenarioParser.objects.data_objects.unit import Unit
 
-from descape import game_dataset, games, object_catalog
+from descape import asset_source, game_dataset, legacy_content, legacy_convert, object_catalog
 from descape.elevation_tools import set_tile_elevation
 from descape.iso_geometry import MAX_ELEVATION
+from descape.legacy_convert import ConversionReport
 from descape.scenario_io import LoadedScenario, load_map_and_units
 from descape.scenario_resize import Anchor, ResizeResult, resize_scenario
 from descape.scenario_write import write_scenario
@@ -86,11 +90,23 @@ save = write_scenario
 
 
 def load(path, **kwargs) -> LoadedScenario:
-    """load_map_and_units() (its keyword options pass through), then the file's own game
-    data made active (GH #67), so names, footprints and is_building() read Return of Rome's for a RoR file."""
+    """load_map_and_units() (its keyword options pass through), then the file's game
+    data made active (GH #67, game_dataset.file_game()), so names, footprints and
+    is_building() read Return of Rome's for a RoR file. A 1999 or HD Edition file's derived root
+    (legacy_content.recipe()) is built first when its install is set; a failed build leaves it its stand-in's."""
     loaded = load_map_and_units(path, **kwargs)
-    game_dataset.set_active(games.for_scenario(loaded).id)
+    _activate(loaded)
     return loaded
+
+
+def _activate(loaded) -> None:
+    game = game_dataset.file_game(loaded)
+    if game.derived_root and game_dataset.install_root(game) is None:
+        with contextlib.suppress(legacy_content.RootBuildError):
+            legacy_content.recipe(game.install).ensure_root(game_dataset.install_folder(game.install))
+        asset_source.clear_install_caches(None)  # the built root, or the failure configured() now reads
+        game = game_dataset.file_game(loaded)
+    game_dataset.set_active(game.id)
 
 # IMPORTANT: any new elevation-writing helper added to this module must go
 # through set_tile_elevation() above, never assign a tile's `elevation`
@@ -254,6 +270,21 @@ def resize_map(
     return resize_scenario(
         scenario, width, height, anchor, units=units, triggers=triggers, options=options, messages=messages
     )
+
+
+def convert_legacy(path, *, seed: int | None = None) -> tuple[LoadedScenario, ConversionReport]:
+    """A pre-DE .scn/.scx/.scx2 file as a NEW AoE2:DE document (GH #315),
+    the way File > Convert to .aoe2scenario makes it, plus the report of what
+    was rewritten or left out (report.lines()). The legacy file is only read.
+    `seed` fixes the random tree and building variants. To keep it:
+
+        loaded, report = batch_api.convert_legacy("old.scx")
+        batch_api.save(loaded, "old.aoe2scenario")
+    """
+    legacy = load(path)
+    loaded, report = legacy_convert.load_converted(legacy, rng=None if seed is None else random.Random(seed))
+    _activate(loaded)
+    return loaded, report
 
 
 def set_terrain(tile: TerrainTile, terrain_id: int) -> None:

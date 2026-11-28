@@ -16,10 +16,14 @@ from descape import (
     cliff_chain,
     debug_log,
     eraser,
+    legacy_write,
     perf_trace,
     place_rotation,
     render_cache_splice,
     scatter,
+    scenario_compat,
+    spray,
+    terrain_replace,
     terrain_target,
     terrain_units,
     unit_brush,
@@ -53,6 +57,8 @@ from descape.viewer_common import (
 
 # Stroke tools that write only tile.elevation, which Flat never draws: their live repaint is skipped there.
 _FLAT_SKIP_REPAINT_TOOLS = ("elevation", "set_level")
+# Stroke tools that honour the Target and take Draw's release (Trees/Eye candy, the layer status).
+_TARGET_STROKE_TOOLS = ("draw", "spray", "replace_brush")
 
 
 def _shape_shore(tiles) -> list[tuple[int, int]]:
@@ -79,6 +85,8 @@ class _ViewerStrokesMixin:
     def on_edit_stroke_start(self) -> None:
         if self.scenario is None:
             return
+        # A close or open mid-stroke skips the release's reset: never let a clone stroke's state reach this one.
+        self._stroke_clone = self._clone_stroke = None
         if self._current_tool == "convert":
             self._begin_convert_stroke()
             return
@@ -98,6 +106,9 @@ class _ViewerStrokesMixin:
                 self._begin_cliff_erase()
             else:
                 self._begin_cliff_stroke()
+            return
+        if self._current_tool == "clone":
+            self._begin_clone_stroke()
             return
         with perf_trace.phase("stroke_snapshot"):
             self.edit_history.begin_stroke(self.scenario.map_manager.terrain)
@@ -126,8 +137,19 @@ class _ViewerStrokesMixin:
         # reading them inside on_edit_stroke_tile would half-apply a
         # mid-stroke change across one undo record. A separate Water tool
         # would not have had this problem; the checkbox does.
-        # The Target is snapshotted the same way and for the same reason.
-        self._stroke_target = self._terrain_target() if self._current_tool == "draw" else terrain_target.TERRAIN
+        # The Target is snapshotted the same way and for the same reason, and so are Spray's Flow and Hardness.
+        tool = self._current_tool
+        self._stroke_target = self._terrain_target() if tool in _TARGET_STROKE_TOOLS else terrain_target.TERRAIN
+        self._stroke_spray = (
+            spray.SprayStroke(spray.new_seed(), self.spray_flow_spin.value() / 100, self.spray_hardness_spin.value() / 100)
+            if tool == "spray"
+            else None
+        )
+        # TASK-520: a pre-DE band's game lacks some DE terrains; such a stroke paints nothing.
+        self._stroke_terrain_refused = tool in _TARGET_STROKE_TOOLS and self._refuse_legacy_terrain()
+        # The Replace Brush's Flood too; its reference waits for the press tile (on_edit_stroke_tiles()).
+        replace = tool == "replace_brush"
+        self._stroke_replace = terrain_replace.ReplaceStroke(self.replace_flood_combo.currentData()) if replace else None
         self._stroke_auto_beach = (
             (
                 self._stroke_target == terrain_target.TERRAIN
@@ -181,6 +203,11 @@ class _ViewerStrokesMixin:
             self._current_tool, self._stroke_target, _STROKE_LABELS.get(self._current_tool, "Edit")
         )
         with self._close_stroke_on_error(label):
+            replace = self._stroke_replace
+            if replace is not None and not replace.pressed and tiles:
+                # MapView touches the press tile first, so tiles[0] is the reference even where the brush skips it.
+                terrain_replace.press(replace, self.scenario.map_manager, *tiles[0], self._stroke_target)
+            self._clone_press(tiles)
             touched: set[int] = set()
             for x, y in tiles:
                 touched |= self._mutate_stroke_tile(x, y, modifiers)
@@ -215,6 +242,9 @@ class _ViewerStrokesMixin:
                 self._stroke_written = set()
                 self._stroke_auto_beach = (False, None, 0)
                 self._stroke_target = terrain_target.TERRAIN
+                self._stroke_spray = None
+                self._stroke_replace = None
+                self._stroke_clone = self._clone_stroke = None
                 self._update_edit_actions()
                 self._update_title()
                 # The repaint can hit the same fault; the original exception is the one to report.
@@ -244,6 +274,13 @@ class _ViewerStrokesMixin:
         # +/-1 (see below) would raise/lower the same tile once per cursor
         # tile that overlapped it, not once per stroke.
         footprint = [t for t in footprint if t not in self._stroke_painted]
+        # Spray keeps only the tiles this dab crosses, BEFORE the painted update below:
+        # a tile that has not crossed yet keeps its coverage for the next dab.
+        if self._stroke_spray is not None and footprint:
+            footprint = spray.dab(
+                self._stroke_spray, footprint, x, y, self.brush_size_spin.value(),
+                self.brush_shape_combo.currentData(), self.brush_thickness_spin.value(),
+            )
         if not footprint:
             return set()
         with perf_trace.phase("stroke_mutate"):
@@ -256,7 +293,9 @@ class _ViewerStrokesMixin:
     def _mutate_footprint(self, mm, footprint, modifiers) -> set[int] | None:
         """_mutate_stroke_tile's write for the current tool: every flat index
         written, or None for a tool with no stroke mutation."""
-        if self._current_tool == "draw":
+        if self._current_tool in _TARGET_STROKE_TOOLS and self._stroke_terrain_refused:
+            return set()
+        if self._current_tool in ("draw", "spray"):
             terrain_id = self.terrain_panel.terrain_id()
             width = mm.map_width
             # The stroke's own Target, never the live combo. On Terrain this also clears
@@ -274,6 +313,14 @@ class _ViewerStrokesMixin:
             beach_on, beach_id, beach_width = self._stroke_auto_beach
             if beach_on:
                 touched.update(apply_beach_ring(mm, footprint, terrain_id, beach_id, beach_width))
+        elif self._current_tool == "replace_brush":
+            # A set even when nothing matched, so the footprint still counts as visited.
+            stroke = self._stroke_replace
+            touched = set(terrain_replace.replace_tiles(
+                mm, footprint, stroke.ref, self._stroke_target, self.terrain_panel.terrain_id(), stroke.region
+            ))
+        elif self._current_tool == "clone":
+            touched = self._clone_footprint(mm, footprint)
         elif self._current_tool == "elevation":
             delta = -1 if modifiers & Qt.ShiftModifier else 1
             # Clamp to the legal range Set Elevation's spinbox already
@@ -295,8 +342,9 @@ class _ViewerStrokesMixin:
             # footprint-wide xys), and reading "current" late would apply
             # delta on top of that propagated value instead of the value
             # this cursor tile's drag actually found.
+            top = legacy_write.max_elevation(self.scenario, ELEVATION_LEVEL_MAX)  # a pre-DE band's own
             targets = [
-                (tx, ty, max(0, min(ELEVATION_LEVEL_MAX, mm.get_tile(tx, ty).elevation + delta)))
+                (tx, ty, max(0, min(top, mm.get_tile(tx, ty).elevation + delta)))
                 for tx, ty in footprint
             ]
             touched = set_tiles_elevation(mm, targets)
@@ -329,7 +377,8 @@ class _ViewerStrokesMixin:
         if self.scenario is None:
             return
         # The per-step overlay timer skips kept selections while MapView's stroke is active.
-        if self._selection and self._current_tool in ("elevation", "set_level") and self._terrain_style != "flat":
+        elevates = self._current_tool in ("elevation", "set_level") or (self._stroke_clone or (False, False))[1]
+        if self._selection and elevates and self._terrain_style != "flat":
             self.map_view.schedule_footprint_refresh()
         # First, and on the open stroke rather than the tool, so no tool state
         # can strand its unit edit and tile stroke open.
@@ -354,13 +403,18 @@ class _ViewerStrokesMixin:
         target = self._stroke_target
         label = terrain_target.stroke_label(self._current_tool, target, base_label)
         mm = self.scenario.map_manager
-        if self._current_tool == "draw":
+        if self._current_tool == "clone" and self._stroke_clone is not None:
+            self._end_clone_stroke(label)
+        elif self._current_tool in _TARGET_STROKE_TOOLS:
             # Not commit_stroke(): terrain_units needs the built-but-unpushed
             # record first, to decide whether it rides alone or inside a
             # CompositeDiffRecord with the trees/eye-candy it triggers.
             with perf_trace.phase("stroke_record"):
                 tile_record = self.edit_history.build_stroke_record(label, mm.terrain, self._stroke_written)
             if target == terrain_target.TERRAIN:
+                if self._stroke_replace is not None:
+                    # Before the unit plan, so its read-only warning stays the last line.
+                    self._log_status(self._replace_status(tile_record))
                 with perf_trace.phase("unit_plan"):
                     record, splices = self._apply_terrain_unit_plan(tile_record, mm, with_splices=True)
             else:
@@ -381,6 +435,9 @@ class _ViewerStrokesMixin:
         self._stroke_written = set()
         self._stroke_auto_beach = (False, None, 0)
         self._stroke_target = terrain_target.TERRAIN
+        self._stroke_spray = None
+        self._stroke_replace = None
+        self._stroke_clone = self._clone_stroke = None
         with perf_trace.phase("edit_actions"):
             self._update_edit_actions()
             self._update_title()
@@ -419,6 +476,8 @@ class _ViewerStrokesMixin:
         if self._current_tool in _WALL_TOOLS:
             self._commit_wall_run(tiles, self.units_panel.selected_object_const())
             return
+        if self._refuse_legacy_terrain():
+            return
         mm = self.scenario.map_manager
         terrain_id = self.terrain_panel.terrain_id()
         # Read once, before the busy guard: one drag is one Target.
@@ -431,7 +490,7 @@ class _ViewerStrokesMixin:
         # because a stroke's count is bounded by brush size x drag length; a
         # filled rectangle has no such bound, so it needs the guard.
         # Off the Terrain target nothing is planted, so there is nothing to ask about.
-        paints_units = on_base and (self.paint_trees_check.isChecked() or self.paint_eye_candy_check.isChecked())
+        paints_units = on_base and any(self._terrain_unit_boxes())
         if paints_units and len(tiles) > TERRAIN_UNIT_CONFIRM_THRESHOLD:
             reply = QMessageBox.question(
                 self,
@@ -484,6 +543,33 @@ class _ViewerStrokesMixin:
             changed = len(tile_record.changes) if tile_record is not None else 0
             self._log_status(self._layer_edit_status(label, target, terrain_id, changed, len(tiles)))
 
+    def _replace_status(self, tile_record: TileDiffRecord | None) -> str:
+        """The Replace Brush's release line on the Terrain target: how many tiles of the press tile's terrain became the pick."""
+        ref = self._stroke_replace.ref
+        source = name_for_terrain_id(ref[0]) if ref is not None else "nothing (pressed off the map)"
+        changed = len(tile_record.changes) if tile_record is not None else 0
+        line = f"Replaced {changed} tiles of {source} with {name_for_terrain_id(self.terrain_panel.terrain_id())}"
+        return line if tile_record is not None else f"{line} (no change)"
+
+    def _refuse_legacy_terrain(self) -> bool:
+        """True (and says why) when the picked terrain is not one a pre-DE document's band holds."""
+        if not self._file_is_legacy() or self.terrain_panel.terrain_id() in legacy_write.legal_terrain(self.scenario):
+            return False
+        terrain_id = self.terrain_panel.terrain_id()
+        self._log_status(
+            f"{name_for_terrain_id(terrain_id)} (id {terrain_id}) is not a {self.scenario.source_format.display_name} "
+            "terrain, so it can't be painted on this file. Pick another.",
+            level=debug_log.WARNING,
+        )
+        return True
+
+    def _terrain_unit_boxes(self) -> tuple[bool, bool]:
+        """Trees and Eye candy as they plant: both off on a compat document (TASK-057) or a
+        pre-DE one (TASK-520), whose hidden boxes keep their ticks, since planting is a unit write."""
+        if scenario_compat.plan_of(self.scenario) is not None or self._file_is_legacy():
+            return False, False
+        return self.paint_trees_check.isChecked(), self.paint_eye_candy_check.isChecked()
+
     def _apply_terrain_unit_plan(
         self, tile_record: TileDiffRecord | None, mm, with_splices: bool = False
     ) -> tuple[DiffRecord | None, list[UnitSplice] | None]:
@@ -507,8 +593,7 @@ class _ViewerStrokesMixin:
         """
         if tile_record is None:
             return None, None
-        trees = self.paint_trees_check.isChecked()
-        doodads = self.paint_eye_candy_check.isChecked()
+        trees, doodads = self._terrain_unit_boxes()
         if not trees and not doodads:
             return tile_record, None
 
@@ -549,7 +634,7 @@ class _ViewerStrokesMixin:
 
         model = self._ensure_unit_edits()
         if model is None:
-            self._log_status("Trees/eye candy skipped -- units are read-only for this file", level=debug_log.WARNING)
+            self._log_status("Trees/eye candy skipped: units are read-only for this file", level=debug_log.WARNING)
             return tile_record, None
 
         gaia = self.scenario.unit_manager.units[GAIA_PLAYER_ID]

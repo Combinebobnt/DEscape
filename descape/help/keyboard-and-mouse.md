@@ -10,7 +10,7 @@ In DEscape this page shows your current keys and mouse wheel settings next, read
 - A double-click counts as two clicks, so on a stack of units it steps down twice.
 - Keys reach the map only while it has keyboard focus. If one seems to do nothing, click the map first.
 - Esc cancels whatever is in progress, nearest first: a pick on the map, an area drag, a line, rectangle or wall drag, a ruler measurement, a unit drag or selection box, a region move or a region drag. Next, a live flip or turn of a selection or region goes back to where it started; Enter keeps it instead. With nothing in progress, Esc clears the unit selection under Units mode's Select tool, and otherwise clears the selected region.
-- Dropping a `.aoe2scenario`, `.scn` or `.scx` file onto the window opens it.
+- Dropping a `.aoe2scenario`, `.scn`, `.scx` or `.scx2` file onto the window opens it.
 
 ## Picking on the map
 
@@ -31,7 +31,8 @@ These apply while a trigger field's Set, Pick or eyedropper button, or the Garri
 ## Terrain mode
 
 - Elevate: right-drag or Shift+drag lowers instead of raising.
-- Draw, Set Elevation and the Eraser: right-drag does the same as a left drag.
+- Draw, the Spray Can, the Replace Brush, Set Elevation and the Eraser: right-drag does the same as a left drag.
+- Clone Stamp: Ctrl+click sets the source; right-drag does the same as a left drag.
 - Cliff: right-click or right-drag erases cliffs.
 - Draw Line: hold Shift to snap to one of 16 directions. Draw Rectangle: hold Shift for a square. Both follow Shift as you press or release it during the drag.
 - Right-click cancels a line or rectangle drag.
@@ -72,6 +73,6 @@ These apply while a trigger field's Set, Pick or eyedropper button, or the Garri
 - Text boxes in the trigger form and Messages mode: drag the grip on the bottom edge to change the height in whole lines; double-click the grip to reset it.
 - Filters menu: a click or Space toggles an entry, and the menu stays open.
 - Find and Replace results: Space ticks or unticks the highlighted rows, and right-click offers Tick selected and Untick selected. Double-click a row to centre the map on that object (Objects tab) or open the trigger (Triggers tab). Click a type chip to remove it.
-- Map Analysis, History and Clipboard History: double-click a row to go to that finding, jump to that point in the history, or make that copy the one Paste uses.
+- Map Analysis, History and Clipboard History: double-click a row to go to that finding, jump to that point in the history, or make that copy (or, on the Prefabs tab, that prefab) the one Paste uses.
 - Disabled Objects: Enter or a double-click moves a row to the other list.
 - View mode's stats table: Ctrl+C (Cmd+C on a Mac) copies the selected rows as tab-separated text.

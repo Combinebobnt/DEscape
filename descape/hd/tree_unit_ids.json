@@ -1,0 +1,33 @@
+{
+  "_comment": "unit_const ids for tree/tree-like GAIA flora -- see tools/gen_tree_unit_ids.py",
+  "ids": {
+    "284": "TREETD",
+    "302": "BUSH",
+    "348": "FBAM",
+    "349": "FOAK",
+    "350": "FPIN",
+    "351": "FPAL",
+    "399": "TREEA",
+    "400": "TREEB",
+    "401": "TREEC",
+    "402": "TREED",
+    "403": "TREEE",
+    "404": "TREEF",
+    "405": "TREEG",
+    "406": "TREEH",
+    "407": "TREEI",
+    "408": "TREEJ",
+    "409": "TREEK",
+    "410": "TREEL",
+    "411": "FORTR",
+    "413": "FSNO",
+    "414": "FJUN",
+    "1051": "FDRA",
+    "1052": "FBAO",
+    "1053": "BUSH2",
+    "1054": "BUSH3",
+    "1063": "FACA",
+    "1144": "FMANGRO",
+    "1146": "FRAIN"
+  }
+}

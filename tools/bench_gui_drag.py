@@ -27,6 +27,10 @@ What it reports, per drag:
     --unit-density, rules on, and adds a `unit brush:` line: the press with
     its first dab (the lazy BlockerGrid build lands there), the later
     per-event dabs' median and p95, and the release.
+  - --tool spray (GH #295) sprays at --spray-flow and holds --dwell-ms at
+    each waypoint so its 40 ms ticks fire, and adds the same line as
+    `spray:` plus dabs per second. Its steps are ticks, not cursor steps,
+    so steps per paint, the cursor-tile gap and continuity print n/a.
 
 Settings are isolated (pin_install_path() + isolate_settings()), so nothing
 here writes the real config.yaml.
@@ -340,11 +344,14 @@ class _PatchProfile:
 
 
 class _StrokeTimer:
-    """--tool unit_brush: the press (with the first dab, where the lazy
-    BlockerGrid build lands), every later per-event dab, and the release, in ms."""
+    """--tool unit_brush and spray: the press (with the first dab, where the
+    Unit Brush's lazy BlockerGrid build lands), every later per-event dab, and
+    the release, in ms. For Spray, also the dab rate from the dabs' start times."""
 
-    def __init__(self, view) -> None:
+    def __init__(self, view, label: str = "unit brush") -> None:
+        self.label = label
         self.events: list[float] = []
+        self.stamps: list[float] = []
         self.press = self.release = None
         start, tiles, end = view._on_stroke_start, view._on_stroke_tiles, view._on_stroke_end
 
@@ -355,6 +362,7 @@ class _StrokeTimer:
 
         def timed_tiles(path, modifiers):
             t = time.perf_counter()
+            self.stamps.append(t)
             tiles(path, modifiers)
             ms = (time.perf_counter() - t) * 1000
             if self.events or self.press is None:
@@ -372,16 +380,19 @@ class _StrokeTimer:
 
     def take(self) -> list[str]:
         events = sorted(ms for ms in self.events[1:])
-        line = "  unit brush: no stroke"
+        line = f"  {self.label}: no stroke"
         if self.press is not None:
             median = events[len(events) // 2] if events else float("nan")
             p95 = events[min(len(events) - 1, int(len(events) * 0.95))] if events else float("nan")
             line = (
-                f"  unit brush: press+first dab {self.press:.1f}ms, later events {len(events)} "
+                f"  {self.label}: press+first dab {self.press:.1f}ms, later events {len(events)} "
                 f"median {median:.1f}ms p95 {p95:.1f}ms max {max(events, default=float('nan')):.1f}ms, "
                 f"release {self.release if self.release is not None else float('nan'):.1f}ms"
             )
-        self.events, self.press, self.release = [], None, None
+            if self.label == "spray" and len(self.stamps) > 1:
+                span = self.stamps[-1] - self.stamps[0]
+                line += f", {(len(self.stamps) - 1) / span:.1f} dabs/s over {span:.2f}s"
+        self.events, self.stamps, self.press, self.release = [], [], None, None
         return [line]
 
 
@@ -393,10 +404,11 @@ def _unit_owners(window) -> dict[int, int]:
 def _drag(
     window, record, paints, *, row: int, px: int, delay_ms: float, button: str, profile=None,
     start: tuple[int, int] | None = None, length: int = 1000, timer: _StrokeTimer | None = None,
-    until_release: list | None = None,
+    until_release: list | None = None, dwell_ms: float = 0.0,
 ) -> list[str]:
     """One horizontal drag of `length` px; `start` is its viewport point (default: row `row` of the 1:1 grid).
-    until_release: pump only until the viewer's stroke end has appended to it (--zoom-after), not 0.3 s."""
+    until_release: pump only until the viewer's stroke end has appended to it (--zoom-after), not 0.3 s.
+    dwell_ms: a hold at each waypoint (Spray, whose ticks dab while the cursor is still)."""
     from PyQt5.QtCore import QPoint
     from PyQt5.QtWidgets import QApplication
 
@@ -410,6 +422,8 @@ def _drag(
     for i in range(1, length // px + 1):
         # A 3px zig-zag, so the drag is not perfectly axis-aligned.
         cmd += ["sleep", str(delay_ms / 1000), "mousemove", str(x0 + i * px), str(y0 + (i % 2) * 3)]
+        if dwell_ms:
+            cmd += ["sleep", str(dwell_ms / 1000)]
     cmd += ["sleep", "0.3", "mouseup", button]
 
     _pump(0.5)
@@ -458,14 +472,19 @@ def _drag(
     placed = sum(1 for k in owners1 if k not in owners0)
 
     mean = sum(per_paint) / len(per_paint) if per_paint else 0.0
+    # Spray's steps are timer ticks, not cursor steps, so the step and continuity figures mean nothing for it.
+    ticked = window._current_tool == "spray"
+    per_paint_text = "n/a" if ticked else f"mean {mean:.2f} max {max(per_paint, default=0)}"
     return [
         f"  units converted {converted}, placed {placed}",
         (
             f"  wall {t1 - t0:.2f}s, steps {len(record)}, paints {len(paint_times)}, "
-            f"steps per paint mean {mean:.2f} max {max(per_paint, default=0)}, ru_maxrss {_maxrss_mb():.0f}MB"
+            f"steps per paint {per_paint_text}, ru_maxrss {_maxrss_mb():.0f}MB"
         ),
-        f"  cursor-tile gap hist {_hist(cursor_gaps)} (skipped >1: {sum(g > 1 for g in cursor_gaps)})",
-        f"  delivered-tile continuity hist {_hist(continuity)} (holes: {sum(c > 1 for c in continuity)})",
+        "  cursor-tile gap n/a" if ticked
+        else f"  cursor-tile gap hist {_hist(cursor_gaps)} (skipped >1: {sum(g > 1 for g in cursor_gaps)})",
+        "  delivered-tile continuity n/a" if ticked
+        else f"  delivered-tile continuity hist {_hist(continuity)} (holes: {sum(c > 1 for c in continuity)})",
         "  " + debug_log.get_log_text().strip().replace("\n", "\n  "),
         *(profile.take() if profile is not None else ()),
         *(timer.take() if timer is not None else ()),
@@ -534,6 +553,8 @@ def _run(args) -> list[str]:
             window.unit_brush_density_spin.setValue(args.unit_density)
         if args.tool == "cliff":
             _select_cliff_piece(window, args.cliff_piece)
+        if args.tool == "spray":
+            window.spray_flow_spin.setValue(args.spray_flow)
         if args.level is not None:
             window.elevation_level_spin.setValue(args.level)
         window.paint_trees_check.setChecked(args.trees)
@@ -557,7 +578,8 @@ def _run(args) -> list[str]:
         pin = (view.transform().m11(), view.mapToScene(view.viewport().rect().center()))  # --zoom-after's re-pin
 
         # MapView captured the bound callback at construction, so wrap its copy.
-        timer = _StrokeTimer(view) if args.tool == "unit_brush" else None
+        timer = _StrokeTimer(view, args.tool.replace("_", " ")) if args.tool in ("unit_brush", "spray") else None
+        dwell_ms = args.dwell_ms if args.tool == "spray" else 0.0
         record: list[tuple[float, list[tuple[int, int]]]] = []
         deliver = view._on_stroke_tiles
 
@@ -597,7 +619,7 @@ def _run(args) -> list[str]:
                     continue
                 output += _drag(
                     window, record, paints, row=row % 4, px=args.px, delay_ms=delay, button=args.button, profile=profile,
-                    timer=timer, **geometry,
+                    timer=timer, dwell_ms=dwell_ms, **geometry,
                 )
                 row += 1
     finally:
@@ -1597,8 +1619,10 @@ def main() -> None:
     parser.add_argument("--scenario", default=str(DEFAULT_SCENARIO))
     parser.add_argument("--style", default="Stepped", choices=["Flat", "Flat-topdown", "Stepped", "Sloped"])
     parser.add_argument(
-        "--tool", default="draw", choices=["draw", "elevation", "set_level", "convert", "cliff", "unit_brush"]
+        "--tool", default="draw", choices=["draw", "spray", "elevation", "set_level", "convert", "cliff", "unit_brush"]
     )
+    parser.add_argument("--spray-flow", type=int, default=10, help="--tool spray Flow %% (default 10)")
+    parser.add_argument("--dwell-ms", type=float, default=400.0, help="--tool spray hold at each waypoint, ms (default 400)")
     parser.add_argument("--convert-to", type=int, default=2, help="Convert's destination owner (--tool convert)")
     parser.add_argument("--unit-const", type=int, default=349, help="--tool unit_brush object (default Oak 349)")
     parser.add_argument("--unit-owner", type=int, default=0, help="--tool unit_brush owner (default GAIA)")

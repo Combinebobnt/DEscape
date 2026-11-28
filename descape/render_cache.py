@@ -62,7 +62,6 @@ from descape import (
     render_sloped,
     render_sprites,
     render_units,
-    settings,
     unit_sprites,
 )
 from descape.render_cache_base import _ChunkCacheBase
@@ -116,10 +115,10 @@ class IsoChunkCache(_LeveledChunkCache):
     (chunk_x*chunk_px, chunk_y*chunk_px) is that chunk's own origin. mip is
     real as of Phase B-D-a (previously always 0); Phase B-D-b (this
     version) enumerates the REAL per-level projection set via
-    iso_geometry.mip_projections_for(), keyed off settings.get_elev_step_pct()
-    -- the same function every real proj-construction site in this module
-    already calls, so the cache reading it too reproduces exactly what
-    built `proj`. Neither B-D-a nor B-D-b changes a single rendered pixel
+    iso_geometry.mip_projections_for(), keyed off
+    render_paint.elev_step_pct_for(style) (or the caller's explicit
+    elev_step_pct), the same function the proj builders call, so the cache
+    reading it too reproduces exactly what built `proj`. Neither B-D-a nor B-D-b changes a single rendered pixel
     reachable from the running app: nothing outside this class and its
     tests ever asks for mip != 0 until Phase B-D-c wires MapCanvasItem.
     paint() to a real LOD signal.
@@ -170,6 +169,7 @@ class IsoChunkCache(_LeveledChunkCache):
         unit_filter: UnitFilter = UnitFilter(),
         sprites: bool = SPRITES_ENABLED,
         layers: LayerState = DEFAULT_LAYERS,
+        elev_step_pct: int | None = None,
     ):
         self.scenario = scenario
         self.elevations = elevations
@@ -183,18 +183,18 @@ class IsoChunkCache(_LeveledChunkCache):
         # Same ordering constraint: _level() reads the build-time layer
         # fields (_BUILD_TIME_LAYER_FIELDS) to build a level's sprite layer.
         self.layers = render_key(layers)
-        # Phase B-D-b: the REAL per-level projection set. settings.
-        # get_elev_step_pct() is read here rather than threaded through as
-        # a parameter because it's exactly the same function every real
-        # proj-construction site in this module already calls to build
-        # `proj` itself -- so this reproduces what built `proj`, and
-        # mip_projections_for's own identity-level self-check (an assert)
-        # fails loudly if the two ever disagreed. Must happen before
+        # Phase B-D-b: the REAL per-level projection set, at the pct that
+        # built `proj`: this style's own setting through the same
+        # render_paint.elev_step_pct_for() the proj builders call, unless the
+        # caller passes the explicit elev_step_pct it built `proj` with.
+        # mip_projections_for's identity-level self-check (an assert) fails
+        # loudly if the two ever disagree. Must happen before
         # _init_max_chunks(), which reads canvas_dims() -> self._levels[0].proj.
         mm = scenario.map_manager
         self._init_levels(
             iso_geometry.mip_projections_for(
-                mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
+                mm.map_width, mm.map_height, proj,
+                render_paint.elev_step_pct_for(self.style) if elev_step_pct is None else elev_step_pct,
                 max_tile_px=render_paint.finest_tile_pixels(), native_tier_max=render_paint.native_tier_max(),
             )
         )
@@ -1014,6 +1014,7 @@ class SlopedChunkCache(_LeveledChunkCache):
         unit_filter: UnitFilter = UnitFilter(),
         sprites: bool = SPRITES_ENABLED,
         layers: LayerState = DEFAULT_LAYERS,
+        elev_step_pct: int | None = None,
     ):
         self.scenario = scenario
         self.elevations = elevations
@@ -1038,7 +1039,8 @@ class SlopedChunkCache(_LeveledChunkCache):
         assert proj.tile_px == tile_px, f"proj.tile_px {proj.tile_px} != tile_px {tile_px}"
         mm = scenario.map_manager
         projs = iso_geometry.mip_projections_for(
-            mm.map_width, mm.map_height, proj, settings.get_elev_step_pct(),
+            mm.map_width, mm.map_height, proj,
+            render_paint.elev_step_pct_for(self.style) if elev_step_pct is None else elev_step_pct,
             corner_headroom_steps=proj.corner_headroom_px // proj.elev_step,
             max_tile_px=render_paint.finest_tile_pixels(), native_tier_max=render_paint.native_tier_max(),
         )
@@ -1127,7 +1129,8 @@ class SlopedChunkCache(_LeveledChunkCache):
         building_bboxes reuses _building_bboxes_iso()/_unit_screen_bbox_
         iso() rather than a Sloped-specific reimplementation, but as of
         Track C5's Step 2 it must pass extra_top_px: Sloped's own proj is
-        geometrically identical to Stepped's for the same map (see
+        geometrically identical to Stepped's for the same map at the same
+        elev_step_pct (see
         IsoProjection.corner_headroom_px's own comment), yet a unit there
         no longer sits at elevation * elev_step -- it sits at
         iso_geometry.unit_rise_px(), which under SLOPE_CORNER_RULE = "max"

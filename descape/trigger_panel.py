@@ -65,6 +65,8 @@ from PyQt5.QtWidgets import (
 from descape import (
     library_compat,
     player_labels,
+    scenario_compat,
+    scenario_format,
     settings,
     trigger_form_layout,
     trigger_organize,
@@ -263,19 +265,30 @@ class TriggerPanel(
             "definition, which does not cover triggers.\n\n"
             "Terrain, elevation and unit editing work normally on this file."
         ),
-        # A pre-DE .scn/.scx (TASK-429): read-only, triggers never read.
+        # TASK-057: a newer version in compatibility mode; triggers never read.
+        "compat": "Triggers in scenario version {version} can't be read yet; they are kept as they are.",
+        # A pre-DE .scn/.scx whose triggers didn't read: trigger 1.3, or a section that misparsed.
         "legacy": (
-            "This file's Triggers section isn't read.\n\n"
-            "It is an older-format scenario (.scn/.scx from before AoE2:DE). DEscape shows its "
-            "map, units and players, but not its triggers, and it cannot be edited or saved here.\n\n"
-            "To edit it, open it in AoE2:DE's editor and save it as .aoe2scenario."
+            "This file's older trigger format isn't read yet.\n\n"
+            "It is an older-format scenario (.scn/.scx/.scx2 from before AoE2:DE). DEscape shows its "
+            "map, units and players, but not these triggers, and it cannot be edited or saved here.\n\n"
+            "To edit it, use File > Convert to .aoe2scenario, which makes an editable AoE2:DE copy "
+            "without these triggers."
+        ),
+        # TASK-515: Age of Empires (1997) files have no Triggers section and do not convert.
+        "legacy_no_triggers": (
+            "Age of Empires (1997) and Rise of Rome scenarios store no triggers.\n\n"
+            "DEscape shows this file's map, units and players, view-only: it cannot be edited, "
+            "saved or converted here."
         ),
     }
 
     @staticmethod
     def _unsupported_key(loaded: LoadedScenario) -> str:
-        if loaded.structure_source == "legacy":
-            return "legacy"
+        if loaded.structure_source == "legacy" and not scenario_format.converts(loaded.source_format):
+            return "legacy_no_triggers"
+        if loaded.structure_source in ("legacy", "compat"):
+            return loaded.structure_source
         if loaded.structure_source == "repo" and not repo_version_has_triggers(loaded.scenario_version):
             return "repo_no_vocabulary"
         return "library"
@@ -1116,7 +1129,8 @@ class TriggerPanel(
                 self._set_position_header(EXEC_MODE_UNKNOWN)
                 self.status.setText(
                     self._UNSUPPORTED[self._unsupported_key(loaded)].format(
-                        sentence=unsupported_version_sentence(loaded.scenario_version)
+                        sentence=unsupported_version_sentence(loaded.scenario_version),
+                        version=scenario_compat.display_version(loaded),
                     )
                 )
                 # This return leaves via the finally below, skipping the tail,
@@ -1131,14 +1145,17 @@ class TriggerPanel(
             self._editable = bool(loaded.trigger_write_supported)
             self.filter_edit.setEnabled(True)
             self._vocabulary = None
-            if library_compat.vocabulary_is_available(loaded.scenario_version):
-                self._vocabulary = library_compat.load_vocabulary(loaded.scenario_version)
+            if library_compat.vocabulary_is_available(loaded.vocabulary_version):
+                self._vocabulary = library_compat.load_vocabulary(loaded.vocabulary_version)
 
             triggers = manager.triggers
-            note = "" if self._editable else f". {self._READ_ONLY_NOTE}"
+            legacy = loaded.source_format.legacy
+            read_only = scenario_format.read_only_reason(loaded.source_format) if legacy else self._READ_ONLY_NOTE
+            note = "" if self._editable else f". {read_only.rstrip('.')}"  # the line adds its own
+            version = loaded.source_format.display_name if legacy else f"scenario {loaded.scenario_version}"
             self.status.setText(
                 f"{len(triggers)} trigger{'s' if len(triggers) != 1 else ''} — "
-                f"scenario {loaded.scenario_version}, trigger format "
+                f"{version}, trigger format "
                 f"{loaded.trigger_version:g}{note}. "
                 f"{self._exec_order_readout(loaded, pending_exec_order)}"
             )

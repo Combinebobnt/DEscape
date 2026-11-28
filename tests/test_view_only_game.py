@@ -40,11 +40,15 @@ def test_the_lock_says_view_only_whatever_data_shows_the_file(fake):
         reason = game_dataset.lock_reason("fake", shown)
         assert "view-only" in reason and "Fake Game" in reason, shown
     mismatch = game_dataset.lock_reason("aoe2", "fake")
-    assert "Fake Game game data for a Age of Empires II file" in mismatch and "Settings > Advanced" in mismatch
+    assert "Fake Game game data for an Age of Empires II file" in mismatch and "Settings > Advanced" in mismatch
     assert "view-only" not in mismatch, "a writable file's own game is not view-only"
-    for game_id in games.ids():
-        if game_id != "fake":
-            assert game_dataset.lock_reason(game_id, game_id) is None, game_id
+    # TASK-430.02: a pre-DE file's band families decide for it (legacy_write), its game view-only or not.
+    assert game_dataset.lock_reason("fake", "fake", legacy=True) is None
+    assert "for a Fake Game file" in game_dataset.lock_reason("fake", "aoe2", legacy=True), "still its own game's data only"
+    for game in games.GAMES:
+        if game.id != "fake":
+            reason = game_dataset.lock_reason(game.id, game.id)
+            assert (reason is None) == game.writable, game.id
 
 
 def test_write_scenario_refuses_a_view_only_games_file(fake, tmp_path):
@@ -166,12 +170,15 @@ def test_the_window_opens_its_file_locked_and_names_it(fake, tmp_path, monkeypat
 @_GUI[0]
 @_GUI[1]
 def test_settings_lists_it_and_data_mods_name_it(fake):
+    from descape import settings_dialog
+
     dialog, window = conftest.dialog_and_window()
     try:
         combo = dialog.game_data_combo
         assert [combo.itemData(i) for i in range(combo.count())][-1] == fake_game.FAKE_ID
         assert combo.itemText(combo.count() - 1) == "Fake Game"
-        assert "The other three show" in combo.toolTip() and "another game" in combo.toolTip()
+        assert f"The other {settings_dialog._COUNT_WORDS[len(games.GAMES)]} show" in combo.toolTip()
+        assert "another game" in combo.toolTip()
         # The fake game takes data mods (Game.data_mods), so File > Data Mod names it beside AoE2.
         game_dataset.set_active(game_dataset.ROR)
         reason = window.data_mod_menu.unusable_reason(SimpleNamespace(status_path="x", title="x"))

@@ -4,7 +4,9 @@ Shaped like clipboard_dialog.ClipboardHistoryDialog: non-modal (show(), never
 exec_()), it imports no model and reports intent through its callbacks. It is
 handed (id, CatalogEntry or None) rows in the user's order; None is an id the
 active dataset lacks, shown greyed as catalog_browser's "Unknown object (id)",
-selectable and removable but never picked.
+selectable and removable but never picked. Each row is named as the Owner's
+civ names it (an Athenian Archer reads Bowman), renamed on an Owner switch only
+when the two civs' own names differ, as the catalog does.
 
 Its list is a catalog_browser.CatalogList with the catalog's delegate, so the
 rows, the star, the right-press rule and the drag reorder are the catalog's.
@@ -62,7 +64,8 @@ class UnitFavoritesDialog(QDialog):
         self._on_pick = on_pick or (lambda _value: None)
         self._on_reorder = on_reorder or (lambda _ids: None)
         self._on_remove = on_remove or (lambda _value: None)
-        self._rows: list[tuple[int, object]] = []
+        self._base_rows: list[tuple[int, object]] = []
+        self._rows: list[tuple[int, object]] = []  # _base_rows named by the owner's civ
         self._items: dict[int, QListWidgetItem] = {}
         self._team_rgb: tuple[int, int, int] = PORTRAIT_COLORS[0]
         self._civ: int | None = None
@@ -119,11 +122,18 @@ class UnitFavoritesDialog(QDialog):
     # -- the API --------------------------------------------------------------
 
     def set_entries(self, rows) -> None:
-        """Refills from (id, CatalogEntry or None) rows in the user's order. The highlighted row
-        is kept by id while it is listed, and the visible rows' thumbnails are re-requested."""
+        """Refills from (id, CatalogEntry or None) rows in the user's order, each named as the
+        owner's civ names it. The highlighted row is kept by id while it is listed, and the
+        visible rows' thumbnails are re-requested."""
+        self._base_rows = list(rows)
+        self._fill()
+
+    def _fill(self) -> None:
         current = self.list.currentItem()
         keep = None if current is None else current.data(_VALUE_ROLE)
-        self._rows = list(rows)
+        values = [value for value, _entry in self._base_rows]
+        entries = catalog_browser.owner_entries((entry for _value, entry in self._base_rows), self._civ)
+        self._rows = list(zip(values, entries, strict=True))
         catalog_browser.sync_mode_combo(self.display_combo, self.mode(), self._has_install())
         catalog_browser.configure_list(self.list, self.mode())
         self.list.blockSignals(True)
@@ -141,9 +151,13 @@ class UnitFavoritesDialog(QDialog):
         self._request_viewport()
 
     def set_civ(self, civ: int | None) -> None:
+        """The Owner's portrait civ (GH #372); the rows are renamed only when the two civs' own names differ."""
         if civ == self._civ:
             return
-        self._civ = civ
+        old, self._civ = self._civ, civ
+        if catalog_browser.owner_renames(old, civ):
+            self._fill()
+            return
         self._request_viewport()
 
     def set_pick_enabled(self, enabled: bool, hint: str = "") -> None:
@@ -184,7 +198,7 @@ class UnitFavoritesDialog(QDialog):
         if mode != self._mode:
             self._mode = mode
             settings.set_units_favorites_mode(mode)
-        self.set_entries(self._rows)
+        self._fill()
 
     # -- picking and removing ---------------------------------------------------
 

@@ -68,8 +68,9 @@ def test_viewer_one_level_edit_patches_to_a_fresh_render(monkeypatch, style, pct
 
     from testkit.qt_window import show_and_settle
 
-    # Never the setter: it writes the real ini.
+    # Never the setter: it writes the real ini. Both styles' globals (GH #288).
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", pct)
     window = conftest.blank_window()
     try:
         mm = window.scenario.map_manager
@@ -162,6 +163,7 @@ def test_viewer_one_level_edit_patches_a_coarse_level_to_a_fresh_render(monkeypa
     from testkit.qt_window import show_and_settle
 
     monkeypatch.setattr(settings, "_elev_step_pct", pct)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", pct)
     window = conftest.blank_window()
     try:
         mm = window.scenario.map_manager
@@ -170,6 +172,8 @@ def test_viewer_one_level_edit_patches_a_coarse_level_to_a_fresh_render(monkeypa
         window.terrain_style_combo.setCurrentText(style.capitalize())
         window.refresh_map()
         assert window._render_style == style
+        proj = window._iso_proj
+        assert proj.elev_step == max(1, round(proj.half_h * pct / 100)), "pct did not reach the projection"
         show_and_settle(window, 800)
         cache = window._cache
         assert mip in cache.mip_levels(), cache.mip_levels()

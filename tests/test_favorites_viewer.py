@@ -92,6 +92,24 @@ def test_opening_pushes_the_rows_the_gate_the_colour_and_the_civ(monkeypatch) ->
         conftest.close_window(window)
 
 
+def test_the_window_opens_and_follows_with_the_owners_names(athenian_bowman, monkeypatch) -> None:
+    _favorites(_CASTLE, _ARCHER)
+    window = _units_window()
+    try:
+        civs = {1: 1, 2: athenian_bowman}
+        monkeypatch.setattr(window.units_panel, "_portrait_civ_for", civs.get)
+        assert window.units_panel.select_owner(2)
+        dialog = _open(window)
+        archer = window.units_panel.catalog_view.entry(_ARCHER).name
+        assert dialog.list.item(1).text() == "Bowman", "opened under an Athenian owner"
+        assert window.units_panel.select_owner(1)
+        assert dialog.list.item(1).text() == archer
+        assert window.units_panel.select_owner(2)
+        assert dialog.list.item(1).text() == "Bowman"
+    finally:
+        conftest.close_window(window)
+
+
 def test_a_catalog_change_refreshes_the_open_window() -> None:
     _favorites(_ARCHER)
     window = _units_window()
@@ -208,7 +226,7 @@ def test_the_window_greys_out_with_a_hint_outside_units_mode_and_without_a_map(m
         assert dialog.hint.text() == "Switch to Units mode to place a favorite."
         window.mode_combo.setCurrentText("Units")
         assert dialog.list.isEnabled() and dialog.hint.isHidden()
-        monkeypatch.setattr(window, "game_data_lock_reason", lambda: "Shown with the other game's data.")
+        monkeypatch.setattr(window, "game_data_lock_reason", lambda family=None: "Shown with the other game's data.")
         window._update_tool_enabled()
         assert not dialog.list.isEnabled() and dialog.hint.text() == "Shown with the other game's data."
     finally:

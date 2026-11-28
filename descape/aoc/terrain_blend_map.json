@@ -1,0 +1,210 @@
+{
+  "_comment": "terrain_id -> {priority, blend_type, overlay_mask} for every enabled terrain. Pure factual data extracted from the game's own terrain table via genieutils-py, not game asset content itself. Regenerate with tools/gen_terrain_blend_map.py.",
+  "terrains": {
+    "0": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 100
+    },
+    "1": {
+      "blend_type": 3,
+      "overlay_mask": "",
+      "priority": 140
+    },
+    "10": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 90
+    },
+    "11": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 72
+    },
+    "12": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 102
+    },
+    "13": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 82
+    },
+    "14": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 80
+    },
+    "15": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 0
+    },
+    "16": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 106
+    },
+    "17": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 98
+    },
+    "18": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 92
+    },
+    "19": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 98
+    },
+    "2": {
+      "blend_type": 2,
+      "overlay_mask": "",
+      "priority": 110
+    },
+    "20": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 94
+    },
+    "21": {
+      "blend_type": 7,
+      "overlay_mask": "",
+      "priority": 136
+    },
+    "22": {
+      "blend_type": 3,
+      "overlay_mask": "",
+      "priority": 142
+    },
+    "23": {
+      "blend_type": 3,
+      "overlay_mask": "",
+      "priority": 144
+    },
+    "24": {
+      "blend_type": 5,
+      "overlay_mask": "",
+      "priority": 120
+    },
+    "25": {
+      "blend_type": 5,
+      "overlay_mask": "",
+      "priority": 122
+    },
+    "26": {
+      "blend_type": 6,
+      "overlay_mask": "",
+      "priority": 40
+    },
+    "27": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 115
+    },
+    "28": {
+      "blend_type": 3,
+      "overlay_mask": "",
+      "priority": 141
+    },
+    "29": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 150
+    },
+    "3": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 74
+    },
+    "30": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 151
+    },
+    "31": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 152
+    },
+    "32": {
+      "blend_type": 7,
+      "overlay_mask": "",
+      "priority": 130
+    },
+    "33": {
+      "blend_type": 7,
+      "overlay_mask": "",
+      "priority": 132
+    },
+    "34": {
+      "blend_type": 7,
+      "overlay_mask": "",
+      "priority": 134
+    },
+    "35": {
+      "blend_type": 6,
+      "overlay_mask": "",
+      "priority": 42
+    },
+    "36": {
+      "blend_type": 7,
+      "overlay_mask": "",
+      "priority": 138
+    },
+    "37": {
+      "blend_type": 6,
+      "overlay_mask": "",
+      "priority": 44
+    },
+    "38": {
+      "blend_type": 5,
+      "overlay_mask": "",
+      "priority": 162
+    },
+    "39": {
+      "blend_type": 5,
+      "overlay_mask": "",
+      "priority": 164
+    },
+    "4": {
+      "blend_type": 4,
+      "overlay_mask": "",
+      "priority": 60
+    },
+    "40": {
+      "blend_type": 5,
+      "overlay_mask": "",
+      "priority": 120
+    },
+    "5": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 0
+    },
+    "6": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 70
+    },
+    "7": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 155
+    },
+    "8": {
+      "blend_type": 1,
+      "overlay_mask": "",
+      "priority": 157
+    },
+    "9": {
+      "blend_type": 0,
+      "overlay_mask": "",
+      "priority": 104
+    }
+  }
+}

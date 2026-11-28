@@ -53,6 +53,8 @@ from AoE2ScenarioParser.sections.retrievers.retriever_object_link_group import (
 
 from descape.scenario_io import load_map_and_units, parse_triggers
 
+import conftest
+
 
 def test_scenario_io_private_functions_importable() -> None:
     """descape/scenario_io.py imports these four module-level private
@@ -131,6 +133,40 @@ def test_retriever_object_links_expose_group_and_disabled() -> None:
     )
 
 
+def test_cross_version_paste_reaches_link_support_and_instance_storage() -> None:
+    """descape/trigger_version_compat.py (GH #317) builds its version matrix
+    from each link's `link`, `name` and `support` (a Support whose
+    supports() takes a version string), reads and pops gated values straight
+    from the objects' instance dicts, and reads ObjectAttribute._storage_type
+    and Trigger.__init__'s defaults; trigger_clipboard reads
+    getters.get_trigger_version for the armour/attack packing rule. A library
+    that moves attribute storage off `__dict__` breaks the paste's strip."""
+    import inspect
+
+    from AoE2ScenarioParser.datasets.trigger_lists import ObjectAttribute
+    from AoE2ScenarioParser.scenarios.scenario_store import getters
+    from AoE2ScenarioParser.sections.retrievers.support import Support
+
+    from descape import library_compat
+
+    links = [link for cls in (Trigger, Condition, Effect) for link in library_compat._iter_links(cls._link_list)]
+    gated = [link for link in links if link.support is not None]
+    assert gated
+    for link in gated:
+        assert isinstance(link.support, Support)
+        assert isinstance(link.link, str) and isinstance(link.name, str)
+        assert isinstance(link.support.supports("1.54"), bool)
+    assert callable(ObjectAttribute._storage_type)
+    assert "execute_on_load" in inspect.signature(Trigger.__init__).parameters
+
+    loaded = load_map_and_units(library_compat.VERSIONS_DIR / "v1.59" / "default.aoe2scenario")
+    manager = parse_triggers(loaded)
+    assert isinstance(getters.get_trigger_version(manager._uuid), float)
+    trigger = manager.add_trigger("guard")
+    effect = trigger.new_effect.display_instructions(source_player=1)
+    assert "execute_on_load" in vars(trigger) and "use_tag_color_for_icon" in vars(effect)
+
+
 def test_trigger_manager_exposes_the_structural_api_the_edit_model_wraps() -> None:
     """descape/trigger_model.py's structural_edit() is a wrapper around these:
     each one renumbers trigger ids and remaps (de)activate-trigger references,
@@ -179,7 +215,7 @@ def test_trigger_exposes_the_generic_condition_and_effect_constructors() -> None
     # them through the same private route.
     uncovered = [
         (version, kind, entry.name)
-        for version in library_compat.vocabulary_versions()
+        for version in conftest.every_vocabulary_version()
         for kind, entries, support in (
             ("condition", library_compat.load_vocabulary(version).conditions, NewConditionSupport),
             ("effect", library_compat.load_vocabulary(version).effects, NewEffectSupport),

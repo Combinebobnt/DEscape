@@ -207,13 +207,15 @@ def _setup() -> None:
 
 
 def _render(scenario, style: str) -> np.ndarray:
-    from descape import render_flat, render_iso, render_sloped
+    from descape import iso_geometry, render_flat, render_iso, render_sloped
 
     if style == "flat":
         return render_flat.overlay_units(render_flat.render_terrain(scenario), scenario, with_sprites=True)
     if style == "stepped":
         return render_iso.render_terrain_iso_with_proj(scenario, with_sprites=True)[0]
-    return render_sloped.render_terrain_sloped_with_proj(scenario, with_sprites=True)[0]
+    # Stepped's default pct, explicit: Sloped's own default (GH #288) must not move a recorded crop.
+    pct = iso_geometry.ELEV_STEP_DEFAULT_PCT
+    return render_sloped.render_terrain_sloped_with_proj(scenario, with_sprites=True, elev_step_pct=pct)[0]
 
 
 def _full_images(inject: str | None, extra=()) -> dict[str, np.ndarray]:

@@ -13,7 +13,7 @@ rule forbids writing to.
 tests/test_content_roots.py scans this module's source for write calls.
 
 Profile location, in priority order (the same shape as
-asset_source.get_install_path()):
+asset_source.get_de_install_path()):
   1. the AOE2DE_PROFILE_PATH environment variable
   2. an "aoe2de_profile" key in config.yaml (the profile folder row in
      Settings > Mods writes it, through asset_source.save_profile_path_to_config())
@@ -146,7 +146,7 @@ def derive_profile_from_install(install: Path) -> Path | None:
 def profile_path(install: Path | None = None, *, platform: str | None = None) -> Path | None:
     """The AoE2:DE profile folder (the parent of the numeric profile id
     folders), or None. See the module docstring for the precedence.
-    `install` defaults to asset_source.get_install_path(); `platform` to
+    `install` defaults to asset_source.get_de_install_path(); `platform` to
     sys.platform (both parameters exist for tests)."""
     env_raw = os.environ.get(PROFILE_ENV_VAR)
     if env_raw:
@@ -164,7 +164,7 @@ def profile_path(install: Path | None = None, *, platform: str | None = None) ->
         return candidate if candidate.is_dir() else None
 
     if install is None:
-        install = asset_source.get_install_path()
+        install = asset_source.get_de_install_path()
     if install is None:
         return None
     return derive_profile_from_install(install)
@@ -359,7 +359,7 @@ def content_roots(install=_UNSET, profile=_UNSET, *, include_disabled: bool = Fa
     mod-status.json disables too (enabled=False): the game selects a data
     mod in the lobby, so one is listed disabled (GH #58)."""
     if install is _UNSET:
-        install = asset_source.get_install_path()
+        install = asset_source.get_de_install_path()
     if profile is _UNSET:
         profile = profile_path(install)
     roots: list[ContentRoot] = []

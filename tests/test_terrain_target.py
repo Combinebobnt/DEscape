@@ -122,6 +122,9 @@ def test_stroke_label_per_target() -> None:
     assert terrain_target.stroke_label("draw_line", CLEAR, "Draw line") == "Clear layer (line)"
     assert terrain_target.stroke_label("draw_rect", LAYER, "Draw rectangle") == "Draw layer rectangle"
     assert terrain_target.stroke_label("draw_rect", CLEAR, "Draw rectangle") == "Clear layer (rectangle)"
+    assert terrain_target.stroke_label("replace_brush", TERRAIN, "Replace terrain") == "Replace terrain"
+    assert terrain_target.stroke_label("replace_brush", LAYER, "Replace terrain") == "Replace layer"
+    assert terrain_target.stroke_label("replace_brush", CLEAR, "Replace terrain") == "Clear layer (replace)"
     # A tool with no per-target label keeps its own.
     assert terrain_target.stroke_label("elevation", LAYER, "Elevate") == "Elevate"
 

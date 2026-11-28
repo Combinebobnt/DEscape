@@ -38,7 +38,16 @@ from dataclasses import dataclass, field
 from functools import cache, lru_cache
 from typing import NamedTuple
 
-from descape import gate_orientation, object_orientation, render_units, unit_kind, unit_rotation, unit_sprites
+from descape import (
+    bridge_piece_frames,
+    gate_orientation,
+    object_orientation,
+    render_units,
+    unit_kind,
+    unit_rotation,
+    unit_sprites,
+    unit_variant,
+)
 from descape.edit_history import TileState, tile_state
 from descape.terrain_palette import tile_span
 
@@ -663,9 +672,9 @@ POSITION_TRANSFORMS: dict[str, Callable[[float, float, int], tuple[float, float]
     "a": lambda x, y, n: (n - y, n - x),
 }
 
-# The four elements that exchange the x and y axes. A footprint whose span is
-# not square cannot be expressed under one of these unless a sibling const
-# carries the swapped shape (gates, object_orientation's groups), and a wall's
+# The four elements that exchange the x and y axes. A non-square footprint, or a
+# square wooden bridge's run axis, cannot be expressed under one of these unless a sibling
+# const carries the swapped shape (gates, object_orientation's groups), and a wall's
 # stored run-direction index has to swap with them -- Resolution 1's "axis-swapping class".
 AXIS_SWAPPING = frozenset({"r", "r3", "d", "a"})
 
@@ -821,7 +830,7 @@ def reorient_gate_const(unit_const: int, name: Element) -> int:
 
 
 def reorient_object_const(unit_const: int, name: Element) -> int:
-    """The sibling a non-square object (bridge, chain, longhouse, blocker)
+    """The sibling an object (bridge, 1x1 wooden bridge, chain, longhouse, blocker)
     becomes under element `name` (object_orientation.py, TASK-329).
 
     The axis flips iff swaps_axes(name). In a group with two ends (the
@@ -843,9 +852,32 @@ def reorient_object_const(unit_const: int, name: Element) -> int:
     return object_orientation.sibling(unit_const, new_axis, 0 if along > 0 else 1)
 
 
+def frame_turns(unit_const: int) -> bool:
+    """Whether a turn remaps this const's frame: a measured DE bridge piece
+    that has its sibling (a data mod that changed only its partner's art
+    leaves it alone, kept as a non-square span)."""
+    return bridge_piece_frames.covers(unit_const) and object_orientation.has_siblings(unit_const)
+
+
+def reorient_piece_frame(unit_const: int, rotation, name: Element):
+    """A DE bridge piece's rotation frame under element `name`, on the const
+    image_const() gives it (bridge_piece_frames.py, TASK-705): an end by the
+    nearest image of its inward vector, a cosmetic frame by its kind. The
+    stored value comes back verbatim when neither the frame nor the const
+    changes, else the new frame as a literal integer. Raises for a const with
+    no measured row."""
+    count = unit_variant.variant_count_for(unit_const)
+    frame = unit_variant.variant_of(float(rotation), unit_rotation.angle_count_for(unit_const), count)
+    new_const = image_const(unit_const, name)
+    new_frame = bridge_piece_frames.image_frame(unit_const, frame, new_const, _linear_part(name))
+    if new_frame == frame and new_const == unit_const:
+        return rotation
+    return float(new_frame)
+
+
 def image_const(unit_const: int, name: Element) -> int:
-    """The const of `unit_const`'s image under `name`: a gate's or a
-    non-square object's orientation sibling, else the const itself."""
+    """The const of `unit_const`'s image under `name`: a gate's or an
+    object's orientation sibling, else the const itself."""
     if gate_orientation.is_gate(unit_const):
         return reorient_gate_const(unit_const, name)
     if object_orientation.has_siblings(unit_const):
@@ -886,9 +918,9 @@ class UnitMirrorPlan:
     # that was asked for.
     garrisoned_blockers: list[object]
     straddling: list[object]
-    # Report-only: a source unit whose footprint is not square cannot be
-    # reflected under an axis-swapping element, because no const carries the
-    # swapped shape. Its image keeps the original footprint orientation.
+    # Report-only: a source unit with no turned form under an axis-swapping
+    # element (a non-square footprint, or a 2x2 wooden bridge's run axis), because
+    # no const carries the swapped shape. Its image keeps the original orientation.
     # Gates and the object_orientation groups CAN (each orientation is its
     # own const), so they are reoriented rather than listed here.
     unsquare_spans: list[object]
@@ -1076,7 +1108,8 @@ def unit_image(unit, x: float, y: float, element: Element, n: int, file_radian: 
 
 
 def _image_rotation(unit, element: Element, file_radian: bool) -> float:
-    """An ANGLE const's facing goes through facing_image(); a wall's stored
+    """An ANGLE const's facing goes through facing_image(); a DE bridge
+    piece's frame through reorient_piece_frame(); a wall's stored
     shape index goes through wall_index_image() under a D4 element, in a file
     that encodes it as a literal index; every other rotation passes through
     verbatim. Under an angular element only the axis runs swap, by nearest
@@ -1097,6 +1130,8 @@ def _image_rotation(unit, element: Element, file_radian: bool) -> float:
     rotation = float(unit.rotation)
     if unit_rotation.rotation_is_angle(unit.unit_const):
         return facing_image(rotation, element, unit_rotation.angle_count_for(unit.unit_const))
+    if frame_turns(unit.unit_const):
+        return reorient_piece_frame(unit.unit_const, rotation, element)
     if file_radian or not unit_sprites.rotation_variant_eligible(unit.unit_const):
         return rotation
     index = float(unit_sprites.variant_index(rotation, _WALL_ANGLE_COUNT))
@@ -1290,9 +1325,15 @@ def plan_mirror_units(
                 off_map.append((unit, element))
                 continue
             changed = reoriented if not is_gate else gates
-            if new_const != unit.unit_const and unit not in changed:
+            # A DE bridge end reversed in place (r2, mx, my) keeps its const but not its frame.
+            turned = new_const != unit.unit_const or (
+                frame_turns(unit.unit_const)
+                and _image_rotation(unit, element, file_radian) != float(unit.rotation)
+            )
+            if turned and unit not in changed:
                 changed.append(unit)
-            if span_x != span_y and swaps_axes(element) and not has_siblings and not reported_span:
+            unturned = span_x != span_y or object_orientation.has_unturned_axis(unit.unit_const)
+            if unturned and swaps_axes(element) and not has_siblings and not reported_span:
                 unsquare_spans.append(unit)
                 reported_span = True
             collides = new_const not in passable

@@ -69,6 +69,19 @@ def test_refuse_rejects_an_unknown_kind_either_way(tools, lenient, strict):
     assert warnings == []
 
 
+def test_an_empty_subject_raises_when_strict_and_records_nothing_when_lenient(tools, lenient):
+    """TASK-701: an empty tuple means nothing is affected, so the status log counts no object for it."""
+    root = tools("_game_root")
+    root.set_lenient(False)
+    with pytest.raises(SystemExit, match="re-verify the scope"):
+        root.refuse("re-verify the scope", "nothing changes", kind="age_art", subject=())
+    warnings = lenient(root)
+    root.refuse("re-verify the scope", "nothing changes", kind="age_art", subject=())
+    assert warnings == []
+    root.refuse("a row broke", "unchecked", kind="placement_unchecked")
+    assert warnings[-1]["subject"] is None, "an unspecified subject is still recorded, counted once"
+
+
 def test_a_strict_run_after_a_lenient_one_raises_again(tools, lenient):
     root = tools("_game_root")
     lenient(root)

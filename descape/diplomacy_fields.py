@@ -51,6 +51,14 @@ _CELL_STRUCT = struct.Struct("<I")  # every stance/allied-victory cell is a u32
 # would otherwise silently derive different, still self-consistent offsets
 # instead of refusing to write.
 _EXPECTED_SECTION_LENGTH = 12616
+# The four 1-byte team scalars that end the section on DE and HD 1.26; Age of
+# Kings and The Conquerors (1.20, 1.22) have none, so theirs is 12612 (TASK-520).
+_TEAM_SCALARS = ("lock_teams", "allow_players_choose_teams", "random_start_points", "max_number_of_teams")
+
+
+def expected_section_length(retriever_map: dict) -> int:
+    """_EXPECTED_SECTION_LENGTH less one byte per team scalar this file's structure lacks."""
+    return _EXPECTED_SECTION_LENGTH - sum(1 for name in _TEAM_SCALARS if name not in retriever_map)
 
 
 @dataclass(frozen=True)
@@ -196,7 +204,7 @@ def verify_diplomacy_block(loaded: LoadedScenario) -> bool:
     dependency entirely rather than relying on it happening to hold.
 
     Also gates on the section's total measured length matching every corpus
-    file measured (_EXPECTED_SECTION_LENGTH) -- fails closed rather than
+    file measured (expected_section_length(), 12616 on every DE file) -- fails closed rather than
     silently deriving offsets against a structure version this was never
     checked against. Fails closed (False) if the anchor is unavailable.
     """
@@ -204,7 +212,7 @@ def verify_diplomacy_block(loaded: LoadedScenario) -> bool:
     if layout is None:
         return False
     total_length = sum(fo.length for fo in layout.retrievers.values())
-    if total_length != _EXPECTED_SECTION_LENGTH:
+    if total_length != expected_section_length(loaded._scenario.sections["Diplomacy"].retriever_map):
         return False
 
     body = loaded.decompressed_body

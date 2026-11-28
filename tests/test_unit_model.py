@@ -1494,7 +1494,23 @@ def test_set_unit_const_swaps_a_bridges_end_in_place_on_grid() -> None:
     assert (bridge.unit_const, bridge.x, bridge.y) == (607, *before)
 
 
-@pytest.mark.parametrize(("old_const", "new_const"), [(605, 606), (2421, 2422)])
+def test_set_unit_const_turns_a_1x1_wooden_bridge_in_place_on_grid() -> None:
+    loaded, model = _open()
+    piece = _bridge(loaded, 904)
+    piece.x, piece.y = 10.5, 20.5
+    model.set_unit_const(piece, 909)
+    assert (piece.unit_const, piece.x, piece.y) == (909, 10.5, 20.5)
+
+
+def test_set_unit_const_snaps_an_off_centre_1x1_wooden_bridge_to_its_tile_centre() -> None:
+    loaded, model = _open()
+    piece = _bridge(loaded, 904)
+    piece.x, piece.y = 10.2, 20.9
+    model.set_unit_const(piece, 907)
+    assert (piece.unit_const, piece.x, piece.y) == (907, 10.5, 20.5)
+
+
+@pytest.mark.parametrize(("old_const", "new_const"), [(605, 606), (2421, 2422), (904, 1312), (911, 913)])
 def test_set_unit_const_refuses_an_object_outside_its_orientation_group(old_const, new_const) -> None:
     loaded, model = _open()
     before = model.serialize()
@@ -1503,3 +1519,71 @@ def test_set_unit_const_refuses_an_object_outside_its_orientation_group(old_cons
         model.set_unit_const(unit, new_const)
     assert not model.has_edits
     assert model.serialize() == before
+
+
+# -- import_units() (GH #315, Convert to .aoe2scenario) ----------------------
+
+
+def _spec(reference_id: int, garrisoned_in_id: int = -1, **kw) -> dict:
+    return {"unit_const": 4, "x": 5.5, "y": 6.5, "reference_id": reference_id, "garrisoned_in_id": garrisoned_in_id, **kw}
+
+
+def _lists(**players) -> list[list[dict]]:
+    out: list[list[dict]] = [[] for _ in range(9)]
+    for name, specs in players.items():
+        out[int(name[1:])] = specs
+    return out
+
+
+def test_import_units_keeps_ids_order_and_a_cross_player_garrison_through_a_write() -> None:
+    from descape.scenario_write import _compress_bytes, build_patched_body
+
+    loaded = load_map_and_units(BLANK_TEMPLATE_PATH)
+    model = UnitEditModel(loaded)
+    # Player 2's unit sits inside player 1's host, listed after it.
+    model.import_units(_lists(p1=[_spec(900), _spec(7)], p2=[_spec(40, garrisoned_in_id=900)]), next_unit_id=950)
+    assert model.next_unit_id == 950
+    header, body = build_patched_body(loaded, units=model)
+    back = load_map_and_units_from_bytes(header + _compress_bytes(body), "imported.aoe2scenario")
+    assert [[u.reference_id for u in us] for us in back.unit_manager.units][1:3] == [[900, 7], [40]]
+    assert back.unit_manager.units[2][0].garrisoned_in_id == 900
+    assert unit_model._NEXT_UNIT_ID_STRUCT.unpack_from(back.decompressed_body, 0)[0] == 950
+    # A legacy counter below the ids still yields one above every id, and a later add() mints above it.
+    loaded = load_map_and_units(BLANK_TEMPLATE_PATH)
+    model = UnitEditModel(loaded)
+    model.import_units(_lists(p0=[_spec(12)]), next_unit_id=3)
+    assert model.next_unit_id == 13
+    assert model.add(0, 4, 1.5, 1.5).reference_id == 13
+
+
+@pytest.mark.parametrize(
+    ("lists", "match"),
+    [
+        (_lists(p1=[_spec(5), _spec(5)]), "unique"),  # repeated id
+        (_lists(p1=[_spec(5)], p3=[_spec(5)]), "unique"),  # repeated across players
+        (_lists(p1=[_spec(-1)]), "non-negative"),  # negative id
+        (_lists(p1=[_spec(5, garrisoned_in_id=6)]), "garrison links"),  # host outside the imported set
+        (_lists(p1=[_spec(5, garrisoned_in_id=5)]), "garrison links"),  # garrisoned in itself
+    ],
+)
+def test_import_units_refuses_bad_ids_and_links(lists, match) -> None:
+    loaded = load_map_and_units(BLANK_TEMPLATE_PATH)
+    model = UnitEditModel(loaded)
+    with pytest.raises(ValueError, match=match):
+        model.import_units(lists, next_unit_id=0)
+    assert not model.has_edits and not any(loaded.unit_manager.units)
+
+
+def test_import_units_refuses_a_document_with_units_and_a_second_call() -> None:
+    _loaded, model = _open()
+    with pytest.raises(ValueError, match="empty document"):
+        model.import_units(_lists(p1=[_spec(5000)]), next_unit_id=0)
+    model.remove_many([u for units in _loaded.unit_manager.units for u in units])
+    with pytest.raises(ValueError, match="empty document"):  # emptied is not empty at construction
+        model.import_units(_lists(p1=[_spec(5000)]), next_unit_id=0)
+    model = UnitEditModel(load_map_and_units(BLANK_TEMPLATE_PATH))
+    model.import_units(_lists(p1=[_spec(1)]), next_unit_id=0)
+    with pytest.raises(ValueError, match="empty document"):
+        model.import_units(_lists(p1=[_spec(2)]), next_unit_id=0)
+    with pytest.raises(ValueError, match="9 player lists"):
+        UnitEditModel(load_map_and_units(BLANK_TEMPLATE_PATH)).import_units([[]], next_unit_id=0)

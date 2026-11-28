@@ -23,7 +23,10 @@ guard encode_for_write() adds belong to the Messages block alone.
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass
+
+from descape import legacy_write
 
 # 0xFFFFFFFE means "unset" for a string-table id -- the same sentinel across
 # all six id retrievers.
@@ -56,8 +59,38 @@ MESSAGE_FIELDS: tuple[MessageFieldSpec, ...] = (
 
 
 def present_fields(retriever_map: dict) -> tuple[MessageFieldSpec, ...]:
-    """MESSAGE_FIELDS this file's structure has (Age of Kings has no scouts pair)."""
-    return tuple(s for s in MESSAGE_FIELDS if s.retriever in retriever_map and s.id_retriever in retriever_map)
+    """MESSAGE_FIELDS this file's structure has (Age of Kings has no scouts pair). A field
+    counts by its text alone: an Age of Empires 1.15 file stores no string-table ids."""
+    return tuple(s for s in MESSAGE_FIELDS if s.retriever in retriever_map)
+
+
+def has_string_id(spec: MessageFieldSpec, retriever_map: dict) -> bool:
+    return spec.id_retriever in retriever_map
+
+
+def raw_payloads(loaded) -> dict[str, bytes]:
+    """Each present text field's stored bytes, trailing NUL included, walked
+    from messages_section_start (ids first, if any, then <h-prefixed payloads)."""
+    retriever_map = loaded._scenario.sections["Messages"].retriever_map
+    fields = present_fields(retriever_map)
+    ids = sum(has_string_id(s, retriever_map) for s in fields)
+    body, pos = loaded.decompressed_body, loaded.messages_section_start + 4 * ids
+    out = {}
+    for spec in fields:
+        n = max(0, struct.unpack_from("<h", body, pos)[0])
+        out[spec.field_id] = body[pos + 2 : pos + 2 + n]
+        pos += 2 + n
+    return out
+
+
+def stored_text(loaded, spec: MessageFieldSpec, payloads: dict[str, bytes] | None = None) -> str:
+    """A field's stored text: the library's parse on a DE file, the legacy
+    codec's decode of its bytes (minus one trailing NUL) on a pre-DE one."""
+    if not legacy_write.is_legacy(loaded):
+        text = loaded._scenario.sections["Messages"].retriever_map[spec.retriever].data
+        return text if isinstance(text, str) else str(text)
+    raw = (payloads if payloads is not None else raw_payloads(loaded))[spec.field_id]
+    return legacy_write.decode(raw[:-1] if raw.endswith(b"\x00") else raw)
 
 
 def normalize_for_display(text: str) -> tuple[str, str | None]:
@@ -98,8 +131,10 @@ def substitute_newlines(display: str, newline_token: str | None) -> str:
     return display.replace("\n", token) if token != "\n" else display
 
 
-def encode_for_write(display: str, newline_token: str | None) -> bytes:
-    """substitute_newlines(), then UTF-8 encode, for the Messages block.
+def encode_for_write(display: str, newline_token: str | None, legacy: bool = False) -> bytes:
+    """substitute_newlines(), then UTF-8 encode (the legacy codec on a pre-DE
+    file, which also raises ValueError naming a character it cannot store),
+    for the Messages block.
 
     Raises ValueError on a NUL character (the game's strings are C-style;
     the library's del_str_trail would silently eat one on the next read) or
@@ -107,9 +142,10 @@ def encode_for_write(display: str, newline_token: str | None) -> bytes:
     """
     if "\x00" in display:
         raise ValueError("message text cannot contain a NUL character")
-    encoded = substitute_newlines(display, newline_token).encode("utf-8")
+    text = substitute_newlines(display, newline_token)
+    encoded = legacy_write.encode(text) if legacy else text.encode("utf-8")
     if len(encoded) > MAX_FIELD_BYTES:
         raise ValueError(
-            f"message text is {len(encoded)} UTF-8 bytes, over the {MAX_FIELD_BYTES}-byte field limit"
+            f"message text is {len(encoded)} {'' if legacy else 'UTF-8 '}bytes, over the {MAX_FIELD_BYTES}-byte field limit"
         )
     return encoded

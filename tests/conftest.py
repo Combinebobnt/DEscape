@@ -82,6 +82,31 @@ def differing_ranges(before: bytes, after: bytes) -> list[tuple[int, int]]:
     return ranges
 
 
+def every_vocabulary_version() -> list[str]:
+    """library_compat.vocabulary_versions() plus each pre-DE "legacy-X" key: what a sweep over every vocabulary loops."""
+    from descape import library_compat
+
+    legacy = sorted(
+        library_compat.LEGACY_VOCABULARY_PREFIX + d.name[1:]
+        for d in library_compat.LEGACY_VERSIONS_DIR.glob("v*")
+        if library_compat.vocabulary_is_available(library_compat.LEGACY_VOCABULARY_PREFIX + d.name[1:])
+    )
+    return [*library_compat.vocabulary_versions(), *legacy]
+
+
+def legacy_loaded(path: Path | None = None, game: str = "scn-aoc"):
+    """A DE fixture loaded, then marked as a header-2 file of `game`'s band
+    (a scenario_format label), as a real legacy load sets it; player_art is re-read under that format."""
+    from descape import scenario_io
+    from descape.scenario_format import AOC, AOK, HD, UP, ScenarioFormat
+
+    loaded = scenario_io.load_map_and_units(path or scenario_io.BLANK_TEMPLATE_PATH)
+    data = {AOK: "1.20", AOC: "1.22", UP: "1.23", HD: "1.26"}[game]
+    loaded.source_format, loaded.structure_source = ScenarioFormat("1.21", 2, data, game, True), "legacy"
+    loaded.player_art = scenario_io._player_art_or_none(loaded)
+    return loaded
+
+
 @functools.cache
 def symlinks_supported() -> bool:
     """False for a Windows user without the symlink privilege (unelevated, no
@@ -189,6 +214,17 @@ def fake_install(tmp_path):
     asset_source.set_install_path_override(_fake_install(tmp_path))
     yield
     asset_source.set_install_path_override(None)
+
+
+@pytest.fixture
+def one_elev_step(monkeypatch):
+    """Stepped and Sloped at one stop, Stepped's default, for a test that compares Sloped against
+    Stepped's geometry: each style has its own setting since GH #288, so two defaults give two canvases."""
+    from descape import iso_geometry, settings
+
+    monkeypatch.setattr(settings, "_elev_step_pct", iso_geometry.ELEV_STEP_DEFAULT_PCT)
+    monkeypatch.setattr(settings, "_sloped_elev_step_pct", iso_geometry.ELEV_STEP_DEFAULT_PCT)
+
 
 # GH #372: the Archer's own portrait for one civ, a blue one beside GAIA's red 017.
 CIV_PORTRAIT_CIV = 46
@@ -547,6 +583,14 @@ def pytest_addoption(parser):
         default=None,
         help="A data mod's folder (Galactic Battlegrounds Test - Data) for "
         "tests/test_data_mod_side_corpus.py, which skips without it.",
+    )
+    parser.addoption(
+        "--aoe1-dir",
+        action="store",
+        default=None,
+        help="An Age of Empires (1997) + Rise of Rome install for the corpus items of "
+        "tests/test_aoe1_corpus.py (its scenario/ and campaign/ folders), test_dat37.py "
+        "and test_classic_game_root.py (its .dat files), which skip without it.",
     )
     parser.addoption(
         "--corpus-full",
@@ -952,6 +996,14 @@ def _isolated_settings(tmp_path, monkeypatch):
     from descape import dat_cache
 
     monkeypatch.setattr(dat_cache, "CACHE_ROOT", tmp_path / "dat_tables_cache")
+    # TASK-430, TASK-431: nor the 1999 game's and HD Edition's derived roots, and a developer's
+    # AOC_INSTALL_PATH or HD_INSTALL_PATH configures nothing here (tools/regen_game_data.py reads the second too).
+    from descape import hd_content, legacy_content
+
+    for recipe, folder in ((legacy_content, "game_roots_cache"), (hd_content, "hd_roots_cache")):
+        monkeypatch.setattr(recipe, "CACHE_ROOT", tmp_path / folder)
+        monkeypatch.delenv(recipe.INSTALL_ENV, raising=False)
+        recipe.forget_failures()
     # Mod art (TASK-378) is module state the viewer switches on; every test starts with it off.
     from descape import mod_graphics
 

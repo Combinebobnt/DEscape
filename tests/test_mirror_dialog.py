@@ -1194,12 +1194,12 @@ def test_summary_counts_reoriented_objects_apart_from_gates_and_unsquare_spans()
         dialog = _units_dialog(window, 1)
         text = dialog.summary_label.text()
         assert "2 object(s) reoriented" in text
-        assert "gate(s) reoriented" not in text and "non-square footprint" not in text
+        assert "gate(s) reoriented" not in text and "have no turned form" not in text
         _place(window, 2421, *render_units.span_anchor(10, 20, 3, 1))
         dialog.reject()
         dialog = _units_dialog(window, 1)
         text = dialog.summary_label.text()
-        assert "2 object(s) reoriented" in text and "1 non-square footprint(s) cannot be reflected" in text
+        assert "2 object(s) reoriented" in text and "1 object(s) have no turned form and keep their orientation" in text
         dialog.reject()
     finally:
         window.edit_history.mark_saved()

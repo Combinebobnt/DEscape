@@ -1306,33 +1306,20 @@ def _assert_live_matches_numpy(style: str, window, cache, counts, step: str) -> 
 @pytest.mark.gui
 @pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
 @pytest.mark.parametrize("style", ["Stepped", "Sloped"])
-def test_a_brush_9_elevate_stroke_matches_a_fresh_render(style, sprite_install, monkeypatch):  # noqa: F811
-    """A real multi-step Elevate drag through ViewerWindow, with NO repaint of
-    the whole canvas afterwards: this checks the dirty bbox and the splice
-    together, the way the app composes them. A stacked sprite pair (a shared
-    by_anchor key, so paint order is in pixels) and a Mill with a unit on its
-    anchor tile (MILL_CONST has no art here, so that one checks the bbox union
-    and the component walk) make it the end-to-end shared-tile check. The
-    oracle renders under numpy, so a native live path is held to numpy."""
-    window = _brush_9_window(style)
-    try:
-        cache = window._cache
-        counts = _call_counts(monkeypatch)
-        _brush_9_drag(window)
-        _assert_live_matches_numpy(style, window, cache, counts, "stroke")
-    finally:
-        conftest.close_window(window)
-
-
-@pytest.mark.gui
-@pytest.mark.skipif(not conftest.PYQT5_AVAILABLE, reason="PyQt5 not importable")
-@pytest.mark.parametrize("style", ["Stepped", "Sloped"])
 def test_a_brush_9_elevate_stroke_undoes_and_redoes_to_a_fresh_render(style, sprite_install, monkeypatch):  # noqa: F811
     """TASK-031.06 step 4 / TASK-031.07 step 2 (Elevate): the brush-9 stroke,
     then window.undo() and window.redo(). After each step:
     - the window keeps its cache and the repaint takes no wholesale walk;
     - level 0, never repainted whole in between, equals a fresh numpy render.
-    And undo puts every tile's elevation back, redo the stroke's."""
+    And undo puts every tile's elevation back, redo the stroke's.
+
+    The stroke is a real multi-step Elevate drag through ViewerWindow, with NO
+    repaint of the whole canvas afterwards: this checks the dirty bbox and the
+    splice together, the way the app composes them. A stacked sprite pair (a
+    shared by_anchor key, so paint order is in pixels) and a Mill with a unit
+    on its anchor tile (MILL_CONST has no art here, so that one checks the bbox
+    union and the component walk) make it the end-to-end shared-tile check.
+    The oracle renders under numpy, so a native live path is held to numpy."""
     window = _brush_9_window(style)
     try:
         cache = window._cache

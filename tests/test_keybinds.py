@@ -171,7 +171,7 @@ def test_assigning_a_taken_keybind_auto_clears_the_conflict_and_warns() -> None:
             assert settings.get_keybind("mode_terrain") == ""
             assert dialog._keybind_edits["mode_terrain"].keySequence().isEmpty()
             assert dialog._keybind_warning_label.text() == (
-                "'Ctrl+E' was already assigned to Terrain Mode -- that binding has been cleared."
+                "'Ctrl+E' was already assigned to Terrain Mode, so that binding has been cleared."
             )
         finally:
             dialog.close()
@@ -346,7 +346,7 @@ def test_default_button_refuses_to_clear_another_actions_custom_binding() -> Non
             assert settings.get_keybind("mode_terrain") == ""
             assert dialog._keybind_edits["mode_terrain"].keySequence() == terrain_sequence_before
             assert dialog._keybind_warning_label.text() == (
-                "'Ctrl+E' is assigned to View Mode -- Terrain Mode's default was not restored."
+                "'Ctrl+E' is assigned to View Mode, so Terrain Mode's default was not restored."
             )
         finally:
             dialog.close()
@@ -1272,7 +1272,8 @@ def _row_widgets(dialog, action_id: str) -> list:
 
 def test_the_recover_autosave_row_sits_between_save_as_and_exit_blank_and_its_bound_key_opens_the_dialog() -> None:
     """Pass conditions:
-    - the File section lists file_save_as, file_convert (GH #307), file_recover_autosave, file_exit consecutively;
+    - the File section lists file_save_as, file_convert (GH #307), file_convert_legacy (GH #315),
+      file_recover_autosave, file_exit consecutively;
     - its key edit starts empty;
     - typing Ctrl+F10 into that edit binds the action, and pressing Ctrl+F10 on the shown,
       active window opens a visible RecoverAutosaveDialog.
@@ -1292,7 +1293,7 @@ def test_the_recover_autosave_row_sits_between_save_as_and_exit_blank_and_its_bo
         try:
             ids = _file_section_ids(dialog)
             at = ids.index("file_recover_autosave")
-            assert ids[at - 2 : at + 2] == ["file_save_as", "file_convert", "file_recover_autosave", "file_exit"]
+            assert ids[at - 3 : at + 2] == ["file_save_as", "file_convert", "file_convert_legacy", "file_recover_autosave", "file_exit"]
             edit = dialog._keybind_edits["file_recover_autosave"]
             assert edit.keySequence().isEmpty()
             assert settings.keybind_holder("Ctrl+F10") is None
@@ -1340,7 +1341,7 @@ def test_reassigning_the_recover_autosave_key_clears_its_row_with_a_warning_and_
             assert settings.get_keybind("file_recover_autosave") == ""
             assert window.recover_autosave_action.shortcut().isEmpty()
             assert dialog._keybind_warning_label.text() == (
-                "'Ctrl+F10' was already assigned to Recover from Autosave… -- that binding has been cleared."
+                "'Ctrl+F10' was already assigned to Recover from Autosave…, so that binding has been cleared."
             )
 
             recover_edit.setKeySequence(QKeySequence("Ctrl+Alt+F10"))
@@ -1520,7 +1521,7 @@ def test_the_keybinds_tab_tags_two_rows_sharing_a_key_and_select_clears_both() -
             edits["tool_place_unit"].setKeySequence(QKeySequence("S"))
             assert edits["tool_select"].keySequence().isEmpty()
             assert dialog._keybind_warning_label.text() == (
-                "'S' was already assigned to Select Tool (Terrain, Units) -- that binding has been cleared."
+                "'S' was already assigned to Select Tool (Terrain, Units), so that binding has been cleared."
             )
             edits["tool_set_level"].setKeySequence(QKeySequence("S"))
             assert dialog._keybind_warning_label.text() == ""
@@ -1541,7 +1542,7 @@ def test_the_keybinds_tab_tags_two_rows_sharing_a_key_and_select_clears_both() -
             _row_widgets(dialog, "tool_select")[2].click()
             assert edits["tool_select"].keySequence().isEmpty() and settings.get_keybind("tool_select") == ""
             assert dialog._keybind_warning_label.text() == (
-                "'S' is assigned to Set Elevation Tool (Terrain) and Place Unit Tool (Units) -- "
+                "'S' is assigned to Set Elevation Tool (Terrain) and Place Unit Tool (Units), so "
                 "Select Tool's default was not restored."
             )
 
@@ -1550,7 +1551,7 @@ def test_the_keybinds_tab_tags_two_rows_sharing_a_key_and_select_clears_both() -
             for action_id in ("tool_place_unit", "tool_set_level"):
                 assert edits[action_id].keySequence().isEmpty() and settings.get_keybind(action_id) == "", action_id
             assert dialog._keybind_warning_label.text() == (
-                "'S' was already assigned to Set Elevation Tool (Terrain) and Place Unit Tool (Units) -- "
+                "'S' was already assigned to Set Elevation Tool (Terrain) and Place Unit Tool (Units), so "
                 "those bindings have been cleared."
             )
         finally:
@@ -1571,7 +1572,7 @@ def test_a_warning_names_three_cleared_holders_with_commas_then_and() -> None:
         dialog._keybind_edits["edit_undo"].setKeySequence(QKeySequence(_SHARED_KEY))
         assert dialog._keybind_warning_label.text() == (
             f"'{_SHARED_KEY}' was already assigned to Set Elevation Tool (Terrain), Place Unit Tool (Units) "
-            "and Create Objects Tool (Triggers) -- those bindings have been cleared."
+            "and Create Objects Tool (Triggers), so those bindings have been cleared."
         )
     finally:
         dialog.close()
